@@ -309,6 +309,58 @@ journalctl -u napcat -f | grep 接收         # NapCat 有没有收到
 
 ---
 
+## 7.5 安装掉线看门狗（可选但强烈建议）
+
+```bash
+sudo bash scripts/install-watchdog.sh
+```
+
+验证：
+
+```bash
+systemctl is-active qq-watchdog.timer     # 期望 active
+systemctl list-timers qq-watchdog.timer   # 期望 NEXT 在 2 分钟内
+```
+
+行为：3001 不通超过 2 分钟 → 自动重启 napcat 尝试快速登录（每小时最多 2 次）。
+
+### 邮件告警（可选，⚠️ 未实测）
+
+创建 `~/.dsh/onebot-bridge/mail.json`：
+
+```json
+{
+  "host": "smtp.qq.com",
+  "port": 465,
+  "user": "你的QQ邮箱@qq.com",
+  "pass": "SMTP授权码",
+  "to": "接收告警的邮箱@qq.com"
+}
+```
+
+| 项 | 说明 |
+|---|---|
+| `pass` | **SMTP 授权码**，不是 QQ 登录密码 |
+| 获取方式 | QQ 邮箱 → 设置 → 账户 → 开启 SMTP → 生成授权码 |
+| 限制 | 新邮箱可能需注册满 14 天才能开 SMTP |
+| 触发 | 掉线 ≥ 3 分钟，12 小时内不重复 |
+
+> ⚠️ **这个功能没有经过实际发送验证**（开发环境无可用授权码）。
+> 代码路径完整，但必须自己测一次：
+>
+> ```bash
+> # 临时停掉 napcat 模拟掉线，或在配置好后等第一次真实掉线
+> python3 ~/.dsh/onebot-bridge/watchdog.py
+> tail -5 ~/.dsh/onebot-bridge/alert.log   # 期望看到「已发送掉线邮件」或「发送失败：...」
+> ```
+>
+> 如果日志显示「发送失败」，常见原因：
+> - 授权码写成了登录密码
+> - 邮箱未开启 SMTP 服务
+> - 服务器出口 IP 被邮箱服务商拦截
+
+---
+
 ## 8. 配置配套插件
 
 通常**自动完成**：新会话出现时桥会写进三个插件的配置。
@@ -369,4 +421,5 @@ ssh -N -L 3080:127.0.0.1:3080 -L 6099:127.0.0.1:6099 root@服务器IP
 | 快速登录票据可能失效 | 失效后必须人工扫码 |
 | 图片理解依赖模型 | deepseek-flash 支持视觉，但会显著增加 token |
 | 说说接口参数未验证 | `send_qzone_msg` 的 `content` 字段按 schema 推断 |
+| **邮件告警未实测** | SMTP 发送代码完整，但从未真实发出过邮件；首次启用请自行验证 |
 | 表情包版权 | 社区图，非商业使用 |
