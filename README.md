@@ -8,6 +8,9 @@
 > 本项目是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的一个 Cordis 插件，
 > 不是独立程序。你需要先有 DSH 和 NapCat。
 
+> 🤖 **让 AI 帮你部署**：把你的 AI agent 指向 [`DEPLOY.md`](DEPLOY.md)——
+> 那是可执行的步骤清单，每步带验证命令和失败排查，专门写给 agent 看的。
+
 ---
 
 ## ⚠️ 先看这里：强烈建议部署在服务器上
@@ -322,13 +325,20 @@ QQ 对第三方协议端有登录态限制：
 
 ## 配置项
 
-完整字段见 `config.example.json`。常用项：
+**完整字段、填写规则、验证方法见 [DEPLOY.md §6](DEPLOY.md)。** 这里只列最关键的：
+
+| 字段 | 必填 | 默认 | 说明 |
+|---|---|---|---|
+| `selfId` | ✅ | `0` | 机器人的 QQ 号 |
+| `ownerId` | ✅ | `0` | 你的 QQ 号（管理员） |
+| `token` | ✅ | — | 与 NapCat `onebot11` 配置一致 |
+| `prewarmGroups` | — | `[]` | 想让机器人常驻的群号 |
+| `DEEPSEEK_API_KEY` | ✅ | — | **只能放环境变量**，不进文件 |
+
+常用可调项：
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `selfId` / `ownerId` | `0` | **必填**：机器人 QQ / 你的 QQ |
-| `token` | — | **必填**：OneBot 鉴权 |
-| `wsUrl` | `ws://127.0.0.1:3001` | NapCat 地址 |
 | `ratePerMinute` | `6` | 每会话每分钟最多回几条 |
 | `ratePerUserHour` | `30` | 每人每小时上限 |
 | `followUpSeconds` | `60` | 续聊窗口时长 |
@@ -338,6 +348,7 @@ QQ 对第三方协议端有登录态限制：
 | `nightStart` / `nightEnd` | `1` / `6` | 最沉默时段 |
 | `qzonePerDayMax` | `3` | 每天最多发几条说说 |
 | `tokenDailyAlert` | `5000000` | 当日 token 超多少提醒 |
+| `autoConfigurePlugins` | `true` | 新会话自动接入配套插件 |
 
 ---
 
