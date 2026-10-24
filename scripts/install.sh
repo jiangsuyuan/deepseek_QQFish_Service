@@ -45,14 +45,18 @@ elif command -v apt-get >/dev/null; then
   DEBIAN_FRONTEND=noninteractive apt-get install -y xvfb ffmpeg git >/dev/null
 fi
 
+echo "==> 安装 DSH profile（首次会创建 ~/.dsh/profiles/web）"
+dsh plugin --profile web list >/dev/null 2>&1 || true
+
 cat <<'EOF'
 
 ✅ 依赖装好了。接下来：
 
   1. 安装 NapCat（自行从官方仓库）：https://napneko.github.io
   2. 扫码登录，开 OneBot WebSocket（端口 3001）
-  3. 把这个仓库装进 DSH：
+  3. 装桥插件和配套插件：
        dsh plugin --profile web add /path/to/this/repo
+       bash scripts/install-plugins.sh web
   4. 复制配置并填 selfId / ownerId / token：
        mkdir -p ~/.dsh/onebot-bridge
        cp config.example.json ~/.dsh/onebot-bridge/config.json

@@ -146,8 +146,16 @@ systemctl start napcat
 ### 第五步：装插件
 
 ```bash
+# 1. 桥本体
 dsh plugin --profile web add /path/to/这个仓库
+
+# 2. 配套插件（记忆、主动搭话、朗读、B 站、心情）
+bash scripts/install-plugins.sh web
 ```
+
+> 配套插件是**推荐必备**的：没有它们桥也能对话，
+> 但会失去长期记忆、主动搭话、心情起伏这些"人味"能力。
+> 详见下方「配套插件」章节。
 
 ### 第六步：配置
 
@@ -352,15 +360,20 @@ QQ 对第三方协议端有登录态限制：
 - **[pi-qq-bridge](https://github.com/xiaomengxinbb/pi-qq-bridge)**（Apache-2.0）
   上述项目的上游。
 
-### 可选集成
+### 配套插件（推荐必备）
 
-以下社区插件与本项目兼容（需自行安装）：
+以下插件提供记忆、主动搭话、朗读、B 站、心情能力，
+`bash scripts/install-plugins.sh` 会一并安装：
 
-- [dsh-fish-memory](https://github.com/Yuuyuko-uu/dsh-fish-memory) — MIT
-- [dsh-speak-up](https://github.com/Yuuyuko-uu/dsh-speak-up) — MIT
-- [dsh-tts-bridge](https://github.com/Yuuyuko-uu/dsh-tts-bridge) — MIT
-- [dsh-feiyu-mood](https://github.com/Yuuyuko-uu/dsh-feiyu-mood)
-- [dsh-bili-subagent](https://github.com/Yuuyuko-uu/dsh-bili-subagent)
+| 插件 | 作用 | 许可证 |
+|---|---|---|
+| [dsh-fish-memory](https://github.com/Yuuyuko-uu/dsh-fish-memory) | 会淡忘的长期记忆 | MIT |
+| [dsh-speak-up](https://github.com/Yuuyuko-uu/dsh-speak-up) | 主动搭话（没人在时自己开口） | MIT |
+| [dsh-tts-bridge](https://github.com/Yuuyuko-uu/dsh-tts-bridge) | 浏览器端朗读 | MIT |
+| [dsh-bili-subagent](https://github.com/Yuuyuko-uu/dsh-bili-subagent) | B 站内容子 agent | 见仓库 |
+| [dsh-feiyu-mood](https://github.com/Yuuyuko-uu/dsh-feiyu-mood) | 心情（影响语气底色） | 见仓库 |
+
+> 不装也不会报错——桥会检测不到这些服务，相应能力自动降级。
 
 ### 表情包
 
