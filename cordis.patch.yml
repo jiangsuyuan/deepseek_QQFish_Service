@@ -1,0 +1,3 @@
+- insert:
+    - id: onebot-bridge
+      name: dsh-onebot-bridge

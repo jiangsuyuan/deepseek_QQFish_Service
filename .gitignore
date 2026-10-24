@@ -1,0 +1,38 @@
+# 依赖
+node_modules/
+
+# 本地配置（含 QQ 号、token，绝对不能提交）
+config.json
+*.local.json
+
+# 凭据与密钥
+.env
+.env.*
+*.pem
+*.key
+**/id_*_*
+credentials*
+
+# 运行数据
+users.json
+facts.json
+self.json
+seen.json
+audit.log*
+alert.log
+alert_state.json
+auto_restart.json
+mail.json
+news.json
+qrcode.png
+latest-qrcode.png
+ALERT.txt
+
+# 会话与日志
+*.log
+sessions/
+profiles/
+
+# 系统
+.DS_Store
+Thumbs.db
