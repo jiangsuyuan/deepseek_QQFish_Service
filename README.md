@@ -1,4 +1,4 @@
-# deepseek_QQFish_Service
+﻿# deepseek_QQFish_Service
 
 把 **DeepSeek Harness** 接到 **QQ** 里的桥。
 
@@ -7,6 +7,10 @@
 
 > 本项目是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的一个 Cordis 插件，
 > 不是独立程序。你需要先有 DSH 和 NapCat。
+
+> 🔧 **好友申请需要额外打一个 NapCat 补丁**：NapCat 没把「联系人-好友通知」暴露成 OneBot 接口，
+> 桥查不到谁申请加好友。运行 `sudo python3 scripts/patch-napcat-buddy.py` 后重启 NapCat 即可，
+> 之后好友申请会私聊转告你，回「同意好友」就通过。不打补丁也能用，只是收不到好友申请通知。
 
 > 📊 **完整流程图**：[`docs/flow.html`](docs/flow.html)
 > 8 张图覆盖消息链路、指令分发、群聊私聊分支、Agent 与回复、定时任务、健康自愈、记忆数据流、工具调用链。

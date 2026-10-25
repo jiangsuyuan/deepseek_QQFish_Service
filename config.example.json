@@ -93,7 +93,7 @@
     "auditLog":  true,
     "compactThresholdMB":  50,
     "compactCheckMinutes":  30,
-    "tokenDailyAlert":  5000000,
+    "tokenDailyAlert":  50000000,
     "newsUrl":  "https://top.baidu.com/board?tab=realtime",
     "newsCacheMinutes":  30,
     "newsMaxItems":  8,
@@ -108,5 +108,13 @@
     "dailyDiary":  true,
     "dailyDiaryHour":  23,
     "toolWhitelist":  true,
-    "emptyAtLookback":  3
+    "emptyAtLookback":  3,
+    "nameMentionEnabled":  true,
+    "nameMentionChance":  0.7,
+    "nameMentionCooldownMinutes":  15,
+    "friendRequests":  true,
+    "searchPerHour":  8,
+    "stickerSavePerHour":  3,
+    "stickerMaxCount":  300,
+    "stickerMaxMB":  30
 }
