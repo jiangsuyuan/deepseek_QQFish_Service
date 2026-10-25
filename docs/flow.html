@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QQ 大鱼机器人 · 工作流程图</title>
+<style>
+  :root {
+    --bg: #0f1419;
+    --panel: #1a2332;
+    --line: #2d3d52;
+    --text: #e6edf3;
+    --dim: #8b9bb0;
+    --blue: #4a9fd8;
+    --green: #3fb950;
+    --amber: #d29922;
+    --red: #f85149;
+    --purple: #bc8cff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 32px 24px 80px;
+    background: var(--bg); color: var(--text);
+    font: 14px/1.7 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  }
+  h1 { font-size: 24px; margin: 0 0 6px; }
+  .sub { color: var(--dim); margin-bottom: 28px; font-size: 13px; }
+  h2 {
+    font-size: 17px; margin: 40px 0 16px;
+    padding-left: 10px; border-left: 3px solid var(--blue);
+  }
+  .note {
+    background: rgba(74,159,216,.08); border: 1px solid rgba(74,159,216,.25);
+    border-radius: 8px; padding: 12px 16px; margin: 16px 0; font-size: 13px;
+  }
+  .warn {
+    background: rgba(210,153,34,.08); border-color: rgba(210,153,34,.3);
+  }
+  .danger {
+    background: rgba(248,81,73,.08); border-color: rgba(248,81,73,.3);
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; margin: 14px 0 0; font-size: 12px; color: var(--dim); }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>QQ 大鱼机器人 · 工作流程图</h1>
+<div class="sub">DSH + NapCat + OneBot 桥 · 生成于 2026-10-25</div>
+
+<div class="note">
+  <b>阅读说明</b>：图中 <span style="color:var(--green)">绿色</span> 是正常路径，
+  <span style="color:var(--amber)">黄色</span> 是分支/降级，
+  <span style="color:var(--red)">红色</span> 是异常与拦截，
+  <span style="color:var(--purple)">紫色</span> 是定时任务。
+</div>
+
+<h2>一、消息入口与过滤链</h2>
+<div class="mermaid">
+flowchart TD
+    A([QQ 消息]) --> B[NapCat 解析<br/>OneBot 事件]
+    B -->|WebSocket 3001| C{桥收到事件}
+    C -->|post_type=request| C1[加群请求<br/>转发给主人]
+    C -->|post_type≠message| C2([丢弃])
+    C -->|message| D[记录 lastInbound<br/>更新 health.lastEventAt]
+    D --> E{自己发的?}
+    E -->|是| E1([丢弃])
+    E -->|否| F{dedupe<br/>见过这个 message_id?}
+    F -->|是| F1([丢弃])
+    F -->|否| G{agentReady?}
+    G -->|否| G1[暂存队列<br/>最多 30 条]:::warn
+    G -->|是| H[parseMessage]
+
+    H --> H1{有文本?}
+    H1 -->|否| H2{有 @ / 图 / 转发 / 文件?}
+    H2 -->|否| H3([丢弃])
+    H2 -->|是| I
+    H1 -->|是| I
+
+    I{主人私聊?} -->|是| I1[自然语言指令处理]:::cmd
+    I -->|否| J{静音中?}
+    J -->|是| J1([忽略])
+    J -->|否| K{选择性沉默?<br/>1-6点+极短+非问句}
+    K -->|是| K1[存入待回队列<br/>早上统一补]:::warn
+    K -->|否| L[继续]
+
+    classDef warn fill:#3d2f0f,stroke:#d29922,color:#e6edf3;
+    classDef cmd fill:#1a2f1a,stroke:#3fb950,color:#e6edf3;
+</div>
+
+<h2>二、主人指令</h2>
+<div class="mermaid">
+flowchart TD
+    A([主人私聊]) --> B{匹配指令}
+    B -->|"状态/统计/掉线/各群/错误"| B1[发送报表]
+    B -->|"闭嘴 / 恢复说话"| B2[设置 mutedUntil]
+    B -->|"停下"| B3[cancel 当前回合]
+    B -->|"用 low / high"| B4[切思考档位<br/>重建 agent]
+    B -->|"在群X说一句"| B5[代发消息]
+    B -->|"去群X @Y"| B6[定向搭话]
+    B -->|"记住 X"| B7[写入 facts.json]
+    B -->|"退群 X"| B8[set_group_leave]
+    B -->|"同意 / 拒绝"| B9[处理群邀请]
+    B -->|"提醒我 X 点 Y"| B10[写入 reminders.json]
+    B -->|"查看/取消提醒"| B11[列出 / 删除]
+    B -->|"申请加群 X"| B12[提示不支持<br/>引导邀请]
+    B -->|"别主动了"| B13[关闭全部主动行为]
+    B -->|"你都记得我什么"| B14[读取记忆]
+    B -->|"插件状态"| B15[读插件配置]
+    B -->|"帮助"| B16[功能清单]
+    B -->|都不匹配| B17([继续走正常对话])
+
+    classDef warn fill:#3d2f0f,stroke:#d29922,color:#e6edf3;
+</div>
+
+<h2>三、群聊 / 私聊分支</h2>
+<div class="mermaid">
+flowchart TD
+    A([正常对话]) --> B{群聊还是私聊}
+
+    B -->|群聊| C{被 @ 或在续聊窗口?}
+    C -->|否| C1[旁听分支]
+    C1 --> C1a[记录观察<br/>话题窗口<br/>人物画像]
+    C1a --> C1b{热群插话?<br/>6条/分+10分没参与}
+    C1b -->|是| C1c[顺着话题插一句]:::purple
+    C1b -->|否| C1d([不回复])
+    C -->|是| D[主流程]
+
+    B -->|私聊| D
+
+    D --> E{白名单通过?}
+    E -->|否| E1([拒绝])
+    E -->|是| F[记录 msgTimes<br/>lastMessageAt<br/>连发计数]
+
+    F --> G{连发≥4 且 10分钟没人接?}
+    G -->|是| G1[搭一句给台阶]:::purple
+    G -->|否| H[继续]
+
+    H --> I{有图片?}
+    I -->|是| I1[直连下载<br/>失败则 get_image 兜底]:::warn
+    I -->|否| J
+    I1 --> J
+
+    J{引用消息?} -->|是| J1[get_msg 追溯<br/>找转发 / 图片]:::warn
+    J -->|否| K
+    J1 --> K
+
+    K{被 @ 但没引用?} -->|是| K1[回看 25 条<br/>找最近的转发]:::warn
+    K -->|否| L
+    K1 --> L
+
+    L{空 @?} -->|是| L1[拉 10 条历史<br/>+最近2张图<br/>+展开合集]:::warn
+    L -->|否| M
+    L1 --> M
+
+    M[组装 prompt] --> M1[时间/作息<br/>情绪<br/>自我观点<br/>记忆/画像<br/>群话题<br/>长度档位]
+    M1 --> N
+
+    classDef warn fill:#3d2f0f,stroke:#d29922,color:#e6edf3;
+    classDef purple fill:#241a3d,stroke:#bc8cff,color:#e6edf3;
+</div>
+
+<h2>四、Agent 与回复</h2>
+<div class="mermaid">
+flowchart TD
+    A([prompt 就绪]) --> B{私聊?}
+    B -->|是| B1[进入合并窗口 2.5s]
+    B -->|否| C[立即处理]
+    B1 --> B2[窗口到期合并]
+    B2 --> C
+    C --> D[deliver]
+
+    D --> E{有 agent?}
+    E -->|否| E1[sessions.ensure<br/>内部重试 12×5s]
+    E1 --> E2{成功?}
+    E2 -->|否| E3[超时 90s<br/>报错]:::red
+    E2 -->|是| F
+    E -->|是| F
+
+    F[agent.run<br/>注入图片] --> G{模型输出}
+    G -->|纯表情包| G1[只发图<br/>不补文字]:::purple
+    G -->|有文本| G2[截断到 3500 字]
+    G2 --> H[sendHuman]
+
+    H --> H1{按长度定延迟}
+    H1 --> H2{>90字?}
+    H2 -->|是| H3[分条发送]:::purple
+    H2 -->|否| H4[一次发完]
+    H3 --> I
+    H4 --> I
+
+    I{引用?} -->|被@或引用| I1[带引用回复]
+    I -->|普通| I2[不引用]
+
+    I1 --> J[记录 lastReplyAt<br/>markSeen]
+    I2 --> J
+
+    J --> K{有情绪词?}
+    K -->|是 30%| K1[顺手补一张表情包]:::purple
+    K -->|否| L
+
+    K1 --> L{打开续聊窗口<br/>5轮/60秒}
+    L --> M([完成])
+
+    J --> N{发送失败?}
+    N -->|网络异常| N1[不重试<br/>等重连补]:::red
+    N -->|其他错误| N2[重建 agent<br/>重试一次]:::warn
+
+    classDef warn fill:#3d2f0f,stroke:#d29922,color:#e6edf3;
+    classDef red fill:#3d1414,stroke:#f85149,color:#e6edf3;
+    classDef purple fill:#241a3d,stroke:#bc8cff,color:#e6edf3;
+</div>
+
+<h2>五、定时任务</h2>
+<div class="mermaid">
+flowchart LR
+    subgraph 高频["高频"]
+        P1["轮询 30s<br/>找漏掉的 @"]:::purple
+        P2["连发检查 60s<br/>搭话"]:::purple
+        P3["提醒检查 30s<br/>到点发送"]:::purple
+    end
+    subgraph 中频["中频"]
+        P4["压缩检查 30min<br/>超50MB才压"]:::purple
+        P5["冷群检查 10min<br/>2小时没人说话"]:::purple
+        P6["token 告警 10min"]:::purple
+    end
+    subgraph 低频["每日"]
+        P7["简讯 09:00"]:::purple
+        P8["早上补回 07:30"]:::purple
+        P9["反思 22:00"]:::purple
+        P10["日记 23:00"]:::purple
+        P11["说说 0-3次随机"]:::purple
+        P12["热点分享 1-2h随机"]:::purple
+    end
+    classDef purple fill:#241a3d,stroke:#bc8cff,color:#e6edf3;
+</div>
+
+<h2>六、健康检测与自愈</h2>
+<div class="mermaid">
+flowchart TD
+    A["看门狗每 2 分钟"] --> B{3001 端口在?}
+    B -->|否| C[掉线流程]
+    B -->|是| D{读 health.json}
+    D -->|lastPollAt > 10分| E1["轮询停摆"]:::red
+    D -->|apiFailStreak ≥ 3| E2["API 连续失败"]:::red
+    D -->|eventMissSince > 120s| E3["事件通道漏消息"]:::red
+    D -->|都正常| F[健康]
+
+    E1 --> C
+    E2 --> C
+    E3 --> C
+
+    C --> G["自动重启 napcat<br/>每小时最多 2 次"]:::warn
+    G --> H{恢复?}
+    H -->|是| I[记录恢复]:::ok
+    H -->|否| J["票据失效<br/>需要扫码"]:::red
+    J --> K[保留二维码<br/>等人工]
+
+    classDef red fill:#3d1414,stroke:#f85149,color:#e6edf3;
+    classDef warn fill:#3d2f0f,stroke:#d29922,color:#e6edf3;
+    classDef ok fill:#1a2f1a,stroke:#3fb950,color:#e6edf3;
+</div>
+
+<h2>七、记忆数据流</h2>
+<div class="mermaid">
+flowchart LR
+    A["每轮对话"] --> B["users.json<br/>人物档案"]
+    A --> C["facts.json<br/>全局事实"]
+    A --> D["self.json<br/>自我观点/反思"]
+    A --> E["seen.json<br/>已回复 id"]
+    A --> F["runtime.json<br/>活跃状态"]
+    A --> G["reminders.json<br/>定时提醒"]
+    A --> H["session.jsonl<br/>逐字原文"]
+
+    B --> I["prompt 注入"]
+    C --> I
+    D --> I
+    E --> J["补回复判断"]
+    F --> K["热群/连发判断"]
+    G --> L["定时触发"]
+    H --> M["recall 归档检索"]
+
+    I --> N["agent 生成回复"]
+    M --> N
+    L --> O["主动发出"]
+
+    classDef d fill:#14243d,stroke:#4a9fd8,color:#e6edf3;
+    class B,C,D,E,F,G,H d;
+</div>
+
+<h2>八、工具调用链</h2>
+<div class="mermaid">
+flowchart TD
+    A["agent 想调工具"] --> B["tools/pre-execute 钩子"]
+    B --> C{在白名单?}
+    C -->|否| C1["deny<br/>只能聊天"]:::red
+    C -->|是| D{哪个工具}
+    D -->|send_sticker| D1["读 labels.json<br/>按情绪挑图"]
+    D -->|draw_svg| D2["sharp 渲染<br/>SVG→PNG"]
+    D -->|draw_image| D3["pollinations<br/>AI 生图<br/>每小时≤2"]
+    D -->|hot_news| D4["百度热搜<br/>30分钟缓存"]
+    D -->|at_person| D5["群里 @人<br/>每小时≤3"]
+    D -->|recall| D6["归档检索"]
+    D -->|remember_*| D7["写记忆文件"]
+    D1 --> E["发到当前会话"]
+    D2 --> E
+    D3 --> E
+    D4 --> F["返回给模型"]
+    D5 --> E
+    D6 --> F
+    D7 --> F
+
+    classDef red fill:#3d1414,stroke:#f85149,color:#e6edf3;
+</div>
+
+<div class="note warn" style="margin-top:40px">
+  <b>已知薄弱点</b><br/>
+  1. <b>账号风控</b>：10-25 当天被踢 6 次，存活时间从 2.5 小时缩到 20 分钟，代码层无解<br/>
+  2. <b>agent 启动窗口</b>：每次重启有 20–60 秒不能处理消息，消息暂存后靠兜底放行<br/>
+  3. <b>NapCat 视频解析</b>：已打补丁绕过，但升级会还原<br/>
+  4. <b>FFmpeg 不可用</b>：glibc 2.28，缺 2.29，导致语音消息发不了<br/>
+  5. <b>76 处空 catch</b>：关键路径已加日志，其余仍静默
+</div>
+
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'dark',
+    themeVariables: {
+      darkMode: true,
+      background: '#1a2332',
+      primaryColor: '#1f3a5f',
+      primaryTextColor: '#e6edf3',
+      primaryBorderColor: '#4a9fd8',
+      lineColor: '#5a7290',
+      fontSize: '14px'
+    },
+    flowchart: { curve: 'basis', nodeSpacing: 40, rankSpacing: 55 }
+  });
+</script>
+
+</div>
+</body>
+</html>

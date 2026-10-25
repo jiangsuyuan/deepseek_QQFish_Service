@@ -8,6 +8,9 @@
 > 本项目是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的一个 Cordis 插件，
 > 不是独立程序。你需要先有 DSH 和 NapCat。
 
+> 📊 **完整流程图**：[`docs/flow.html`](docs/flow.html)
+> 8 张图覆盖消息链路、指令分发、群聊私聊分支、Agent 与回复、定时任务、健康自愈、记忆数据流、工具调用链。
+
 > 🤖 **让 AI 帮你部署**：把你的 AI agent 指向 [`DEPLOY.md`](DEPLOY.md)——
 > 那是可执行的步骤清单，每步带验证命令和失败排查，专门写给 agent 看的。
 
