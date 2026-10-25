@@ -77,10 +77,12 @@ const DEFAULTS = {
   qzonePerDayMax: 3,
   qzoneStartHour: 9,
   qzoneEndHour: 23,
+  /** 说说可见范围：1=所有人 4=好友 16=部分好友 64=仅自己 128=部分好友不可见 */
+  qzoneVisibility: 1,
   /** 活跃群主动参与：久没被 @ + 群聊很热时插一句 */
   activeJoinEnabled: true,
   activeJoinIdleMinutes: 20,
-  activeJoinPerMinute: 10,
+  activeJoinPerMinute: 6,
   activeJoinCooldownMinutes: 30,
   /** 冷群找话题：超过 N 小时没人说话，主动开一次 */
   quietTopicEnabled: true,
@@ -110,6 +112,8 @@ const DEFAULTS = {
   morningCatchup: true,
   morningCatchupHour: 7,
   morningCatchupMinute: 30,
+  /** 新会话出现时，自动把配套插件配置好（记忆/主动搭话/心情） */
+  autoConfigurePlugins: true,
   /** 审计日志 */
   auditLog: true,
   /** 主动分享新鲜事 */
@@ -165,6 +169,9 @@ function parseMessage(ev, selfId) {
   let text = "";
   let hasAt = false;
   const images = [];
+  const forwards = [];
+  const files = [];
+  const replyIds = [];
   for (const seg of segs) {
     if (!seg || typeof seg !== "object") continue;
     const type = seg.type;
@@ -176,14 +183,25 @@ function parseMessage(ev, selfId) {
     } else if (type === "image") {
       images.push({ url: String(data.url || data.file || ""), summary: String(data.summary || "") });
     } else if (type === "reply") {
-      // 引用消息：忽略引用内容，只处理正文
+      const rid = String(data.id ?? data.message_id ?? "");
+      if (rid) replyIds.push(rid);
     } else if (type === "face") {
       text += "";
+    } else if (type === "forward") {
+      const id = String(data.id ?? data.message_id ?? data.resid ?? "");
+      forwards.push({ id, rawKeys: Object.keys(data), raw: data });
+    } else if (type === "file") {
+      files.push({
+        id: String(data.file_id ?? data.id ?? data.file ?? ""),
+        busid: data.busid,
+        name: String(data.name ?? data.file_name ?? data.file ?? "文件"),
+        size: Number(data.file_size ?? data.size ?? 0),
+      });
     }
   }
   text = text.trim();
   if (images.length > 0 && !text) text = "[图片]";
-  return { text, hasAt, images };
+  return { text, hasAt, images, forwards, files, replyIds };
 }
 
 // ── OneBot WS 客户端 ─────────────────────────────────────────────────
@@ -235,12 +253,11 @@ class OneBotClient {
       this.retry = 0;
       this.everConnected = true;
       this.logger?.info?.(`[onebot] 已连接 ${this.cfg.wsUrl}`);
-      if (wasReconnect) {
-        try {
-          this.onReconnected?.();
-        } catch {
-          // 补回复失败不影响连接
-        }
+      // 每次连接成功都补一次离线消息（内部用 seen 进度去重，不会重复回）
+      try {
+        this.onReconnected?.();
+      } catch {
+        // 补回复失败不影响连接
       }
     });
 
@@ -544,13 +561,16 @@ const seenState = (() => {
 })();
 let seenDirty = false;
 
-function markSeen(key, tsMs) {
-  if (!tsMs) return;
-  const cur = seenState[key]?.lastTime ?? 0;
-  if (tsMs > cur) {
-    seenState[key] = { lastTime: tsMs };
-    seenDirty = true;
+function markSeen(key, tsMs, messageId) {
+  const rec = seenState[key] ?? (seenState[key] = { lastTime: 0, ids: [] });
+  if (tsMs && tsMs > (rec.lastTime ?? 0)) rec.lastTime = tsMs;
+  if (messageId) {
+    rec.ids = Array.isArray(rec.ids) ? rec.ids : [];
+    const id = String(messageId);
+    if (!rec.ids.includes(id)) rec.ids.push(id);
+    if (rec.ids.length > 300) rec.ids = rec.ids.slice(-300);
   }
+  seenDirty = true;
 }
 
 function flushSeen() {
@@ -868,7 +888,7 @@ const people = {
     if (Array.isArray(rec.groups) && rec.groups.length > 1) {
       bits.push(`你们在 ${rec.groups.length} 个群里都聊过`);
     }
-    return bits.length ? "｜你对 TA 的印象：" + bits.join("；") : "";
+    return bits.length ? "\n[你对 TA 的印象] " + bits.join("；") : "";
   },
 };
 
@@ -919,6 +939,8 @@ class SessionManager {
     this.entries = new Map(); // key -> { agentHandle, queue, sessionId }
     this.maxSessions = 24;
     this.runs = 0;
+    /** 由 apply 注入：新会话出现时的回调 */
+    this.autoConfigure = undefined;
   }
 
   svc(n) {
@@ -953,6 +975,12 @@ class SessionManager {
 
     const entry = { sessionId, queue: Promise.resolve(), lastUsed: Date.now() };
     this.entries.set(key, entry);
+    // 新会话出现：顺手把配套插件配好（只做一次）
+    try {
+      this.autoConfigure?.(sessionId);
+    } catch {
+      // 忽略
+    }
     this.logger?.info?.(`[onebot] 会话绑定 ${key} -> ${sessionId}`);
     this.evictIfNeeded();
     return entry;
@@ -1341,6 +1369,7 @@ export function apply(ctx, _pluginConfig) {
   };
   const cfg = loadConfig(logger);
   const sessions = new SessionManager(ctx, cfg, logger);
+  sessions.autoConfigure = (sid) => autoConfigurePlugins(sid);
   const client = new OneBotClient(cfg, logger);
   const recentIds = new Set();
   const recentOrder = [];
@@ -1439,6 +1468,155 @@ export function apply(ctx, _pluginConfig) {
     rateUser.set(String(userId), u);
     return { ok: true };
   }
+
+  // 群里 @ 第三方：必要时才用，频率受限
+  let atPersonTimes = [];
+  void (async () => {
+    try {
+      const { defineTool } = await import("@deepseek-ai/dsh-tools");
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "at_person",
+          description:
+            "在群里 @ 某个人并说一句话。只在确实必要时用：对话直接涉及他、他说的话被晾着需要回应、" +
+            "或者你确实需要他回答。不要为了引人注意而 @，不要 @ 不熟的人，也不要连着 @ 好几次。" +
+            "普通聊天直接说话就行，不需要 @。",
+          parameters: {
+            qq: { type: "string", description: "要 @ 的 QQ 号（从群消息里看到的发言人号码）" },
+            text: { type: "string", description: "要说的话，30 字以内，自然一点" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args, exec) => {
+            const sid = String(exec?.agent?.session?.id ?? "");
+            const entry = sid ? sessions.bySessionId(sid) : null;
+            const target = entry?.lastTarget;
+            if (!target || target.message_type !== "group") {
+              return { ok: false, reason: "只能在群聊里 @ 人" };
+            }
+            const qq = String(args?.qq ?? "").trim();
+            const text = String(args?.text ?? "").trim().slice(0, 60);
+            if (!/^\d{5,12}$/.test(qq) || !text) {
+              return { ok: false, reason: "qq 或 text 不合法" };
+            }
+            const now = Date.now();
+            atPersonTimes = atPersonTimes.filter((t) => now - t < 3600_000);
+            const limit = Number(cfg.atPersonPerHour) || 3;
+            if (atPersonTimes.length >= limit) {
+              return { ok: false, reason: `本小时 @ 的次数已用完（上限 ${limit} 次）` };
+            }
+            try {
+              await client.sendGroupAt(String(target.group_id), qq, text);
+              atPersonTimes.push(now);
+              audit({ kind: "at_person", groupId: String(target.group_id), qq, text });
+              logger.info?.(`[onebot] @ 了 ${qq}：${text.slice(0, 40)}`);
+              return { ok: true, sent: text, remaining: limit - atPersonTimes.length };
+            } catch (err) {
+              return { ok: false, reason: String(err?.message ?? err).slice(0, 120) };
+            }
+          },
+        }),
+      );
+      logger.info?.("[onebot] @ 人工具已注册");
+    } catch (err) {
+      logger.warn?.(`[onebot] @ 人工具注册失败：${err?.message ?? err}`);
+    }
+  })();
+
+  // 新闻工具：对话中按需查热点
+  void (async () => {
+    try {
+      const { defineTool } = await import("@deepseek-ai/dsh-tools");
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "hot_news",
+          description:
+            "查看当前网络热点（百度热搜）。当对方问「最近有什么新鲜事」「今天有什么热点」「最近发生啥了」" +
+            "之类的问题时调用，拿到标题后用自己的话聊，不要逐条念。",
+          parameters: {
+            count: { type: "number", description: "返回几条，默认 8，最多 15" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            const items = await fetchHotNews(cfg, logger);
+            const n = Math.min(15, Math.max(1, Number(args?.count) || 8));
+            return { ok: true, count: n, items: (items ?? []).slice(0, n) };
+          },
+        }),
+      );
+      logger.info?.("[onebot] 新闻工具已注册");
+    } catch (err) {
+      logger.warn?.(`[onebot] 新闻工具注册失败：${err?.message ?? err}`);
+    }
+  })();
+
+  // 继续展开转发：她感兴趣时可以多看几条
+  void (async () => {
+    try {
+      const { defineTool } = await import("@deepseek-ai/dsh-tools");
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "read_forward_more",
+          description:
+            "展开刚才那条合并转发聊天记录的更多内容（第 6 条起）。" +
+            "当这个合集让你感兴趣、想看看后面大家还聊了什么时调用。",
+          parameters: {
+            count: { type: "number", description: "想看多少条，默认 10，最多 20" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args, exec) => {
+            const sid = String(exec?.agent?.session?.id ?? "");
+            const entry = sid ? sessions.bySessionId(sid) : null;
+            const fw = entry?.lastForward;
+            if (!fw?.id) return { ok: false, reason: "当前没有可继续展开的转发" };
+            try {
+              const res = await client.call("get_forward_msg", { id: fw.id }, 8000);
+              const msgs = Array.isArray(res?.messages) ? res.messages : Array.isArray(res) ? res : [];
+              const start = 5;
+              const count = Math.min(20, Math.max(1, Number(args?.count) || 10));
+              const lines = msgs.slice(start, start + count).map((m) => {
+                const name = m?.sender?.card || m?.sender?.nickname || m?.sender?.user_id || "某人";
+                const segs2 = Array.isArray(m?.content)
+                  ? m.content
+                  : Array.isArray(m?.message)
+                    ? m.message
+                    : [];
+                const t = segs2
+                  .filter((x) => x?.type === "text")
+                  .map((x) => x?.data?.text ?? "")
+                  .join("")
+                  .trim();
+                const hasImg = segs2.some((x) => x?.type === "image");
+                if (!t && !hasImg) return "";
+                return `${name}：${t.slice(0, 120)}${hasImg ? "［附图］" : ""}`;
+              }).filter(Boolean);
+              return {
+                ok: true,
+                total: msgs.length,
+                from: start + 1,
+                shown: lines.length,
+                lines,
+                hasMore: start + lines.length < msgs.length,
+              };
+            } catch (err) {
+              return { ok: false, reason: String(err?.message ?? err).slice(0, 120) };
+            }
+          },
+        }),
+      );
+      logger.info?.("[onebot] 转发展开工具已注册");
+    } catch (err) {
+      logger.warn?.(`[onebot] 转发展开工具注册失败：${err?.message ?? err}`);
+    }
+  })();
 
   // 回忆工具：从归档里检索很久以前的内容
   void (async () => {
@@ -1872,6 +2050,105 @@ export function apply(ctx, _pluginConfig) {
       return true;
     }
 
+    // ── 申请加群 ──
+    const joinReq = t.match(/申请加群\s*(\d{6,12})/);
+    if (joinReq) {
+      const gid = Number(joinReq[1]);
+      try {
+        const list = await client.call("get_group_list", {}, 8000);
+        const groups = Array.isArray(list) ? list : (list?.data ?? []);
+        const hit = groups.find((g) => Number(g.group_id) === gid);
+        if (hit) {
+          await client.sendPrivate(
+            cfg.ownerId,
+            `我已经在「${hit.group_name || gid}」（${gid}）里了，不用再加。`,
+          );
+        } else {
+          await client.sendPrivate(
+            cfg.ownerId,
+            `群 ${gid} 我加不了——NapCat 没提供"主动申请加群"的接口，只能接受邀请。\n\n` +
+              `要让我进去，两个办法：\n` +
+              `1. 你在群里邀请我，我会私聊问你，你回「同意」就行\n` +
+              `2. 或者把我拉进去（群成员直接拉，无需我确认）`,
+          );
+        }
+      } catch (err) {
+        await client.sendPrivate(
+          cfg.ownerId,
+          `查群列表失败：${String(err?.message ?? err).slice(0, 120)}`,
+        );
+      }
+      return true;
+    }
+
+    // ── 发说说（手动） ──
+    const qz = t.match(/^(?:现在|马上)?(?:发|写)(?:一)?条?说说(?::|：)?\s*([\s\S]*)$/);
+    if (qz) {
+      let content = String(qz[1] || "").trim();
+      try {
+        if (!content) {
+          // 没指定内容：让她自己写一条
+          const picked = pickTarget();
+          if (picked) {
+            const news = await fetchHotNews(cfg, logger);
+            const topic = news.length ? news[Math.floor(Math.random() * news.length)] : "";
+            content = await sessions.generate(
+              picked[0],
+              "（内部：写一条要发到 QQ 空间的说说，一句话、40 字以内，符合你的人设和当前心情。" +
+                (topic ? `可以借今天看到的「${topic}」发挥。` : "写点日常感受也行。") +
+                "只输出正文，不要引号、不要话题标签。）",
+            );
+          }
+        }
+        content = String(content || "").trim().replace(/^["'「」]+|["'「」]+$/g, "");
+        if (!content) {
+          await client.sendPrivate(cfg.ownerId, "没写出内容，给我一句话我再发。");
+          return true;
+        }
+        const res = await client.call("send_qzone_msg", {
+          content,
+          ugc_right: Number(cfg.qzoneVisibility ?? 1),
+        });
+        await client.sendPrivate(
+          cfg.ownerId,
+          `已经发到空间了：${content}\n（可见范围：${cfg.qzoneVisibility ?? 1}，返回 ${JSON.stringify(res ?? {}).slice(0, 80)}）`,
+        );
+        logger.info?.(`[onebot] 手动发说说：${content.slice(0, 40)}`);
+        audit({ kind: "qzone_manual", text: content.slice(0, 200) });
+      } catch (err) {
+        logger.warn?.(`[onebot] 发说说失败：${err?.message ?? err}`);
+        await client.sendPrivate(cfg.ownerId, `发说说失败：${String(err?.message ?? err).slice(0, 150)}`);
+      }
+      return true;
+    }
+
+    // ── 插件状态 ──
+    if (/(插件|配套|记忆装|设置好没|配置好没)/.test(t) && /(状态|情况|好没好|怎么样|看看)/.test(t)) {
+      const base = join(HOME, ".dsh");
+      const read = (p) => {
+        try {
+          return JSON.parse(readFileSync(p, "utf8"));
+        } catch {
+          return null;
+        }
+      };
+      const fm = read(join(base, "fish-memory-config.json"));
+      const su = read(join(base, "speak-up-config.json"));
+      const md = read(join(base, "feiyu-mood/config.json"));
+      const fmOn = fm?.sessions ? Object.values(fm.sessions).filter(Boolean).length : 0;
+      const suList = Array.isArray(su?.["目标会话"]) ? su["目标会话"].length : 0;
+      const lines = [
+        "配套插件状态：",
+        `· 鱼的记忆：${fm ? `${fmOn} 个会话已开启` : "未安装"}`,
+        `· 主动搭话：${su ? `${suList} 个目标会话，间隔 ${su["间隔分钟"] ?? "?"} 分钟` : "未安装"}`,
+        `· 心情：${md?.targetSession ? "已绑定会话" : "未安装或未设置"}`,
+        "",
+        `自动配置：${cfg.autoConfigurePlugins === false ? "已关闭" : "开启（新会话自动接入）"}`,
+      ];
+      await client.sendPrivate(cfg.ownerId, lines.join("\n"));
+      return true;
+    }
+
     // ── 记忆查询 ──
     if (/(你记得我什么|记得我什么|你都记得|记住了什么|我的档案)/.test(t)) {
       people.load();
@@ -2025,11 +2302,41 @@ export function apply(ctx, _pluginConfig) {
     if (!cfg.ownerId || String(ev.user_id) !== String(cfg.ownerId)) return false;
     if (ev.message_type === "group") return false;
     const t = String(text || "").trim();
-    const m = t.match(/^(?:去|到|让(?:你|她)?去)\s*(\d{6,12})\s*(?:群|群聊)?\s*(?:@|找|艾特)\s*(\d{5,12})\s*(.*)$/);
-    if (!m) return false;
-    const groupId = m[1];
-    const targetQq = m[2];
-    let rest = (m[3] || "").trim().replace(/^[:：,，\s]+/, "");
+    // 识别「在群 X 和 Y 说句话」「去 X 群找 Y 聊两句」这类说法
+    const looksLikeRelay = /(群|群聊)/.test(t) && /(说|聊|讲|问|找|@|艾特|和|跟)/.test(t);
+    if (!looksLikeRelay) return false;
+
+    let groupId = "";
+    let targetQq = "";
+    const g1 = t.match(/(?:群|群聊)\s*(\d{6,12})/);
+    const g2 = t.match(/(\d{6,12})\s*(?:群|群聊)/);
+    const g3 = t.match(/(?:在|去|到|进)\s*(\d{6,12})/);
+    const gm = g1 ?? g2 ?? g3;
+    if (gm) groupId = gm[1];
+
+    const q1 = t.match(/(?:@|找|艾特|和|跟|对|与)\s*(\d{5,12})/);
+    const q2 = t.match(/(\d{5,12})\s*(?:说|聊|讲|问)/);
+    const qm = q1 ?? q2;
+    if (qm) targetQq = qm[1];
+
+    // 兜底：抓到两个数字就用（先群后人的常见顺序）
+    if (!groupId || !targetQq) {
+      const nums = [...t.matchAll(/\d{6,12}/g)].map((m) => m[1]);
+      const uniq = [...new Set(nums)];
+      if (uniq.length >= 2) {
+        groupId = groupId || uniq[0];
+        targetQq = targetQq || uniq[1];
+      }
+    }
+    if (!groupId || !targetQq) return false;
+
+    let rest = t
+      .replace(groupId, " ")
+      .replace(targetQq, " ")
+      .replace(/^(?:在|去|到|进|让|你|她|请|帮我)\s*/, "")
+      .replace(/(?:群聊?|里|中|的|找|艾特|@|和|跟|对|与)/g, " ")
+      .replace(/^[:：,，\s]+/, "")
+      .trim();
     const sayMatch = rest.match(/^说[:：]?\s*(.+)$/);
     const explicit = sayMatch ? sayMatch[1].trim() : "";
 
@@ -2237,35 +2544,6 @@ export function apply(ctx, _pluginConfig) {
 
     // 群里没 @ 她、也不是在续聊：只旁观、记录，不回复
     if (ev.message_type === "group" && !parsed.hasAt && !continuing && cfg.groupObserve) {
-      // 活跃群插一句：久没被 @ + 最近一分钟聊得很密
-      try {
-        const ent = sessions.entries.get(key);
-        if (ent && cfg.activeJoinEnabled && cfg.autoActionsEnabled !== false) {
-          const nowTs = Date.now();
-          const recent = (ent.msgTimes ?? []).filter((t) => nowTs - t < 60000);
-          const idleFromMention = nowTs - (ent.lastMentionAt ?? 0);
-          const cooldownOk =
-            nowTs - (ent.lastActiveJoinAt ?? 0) > (Number(cfg.activeJoinCooldownMinutes) || 30) * 60000;
-          if (
-            recent.length >= (Number(cfg.activeJoinPerMinute) || 10) &&
-            idleFromMention > (Number(cfg.activeJoinIdleMinutes) || 20) * 60000 &&
-            cooldownOk
-          ) {
-            ent.lastActiveJoinAt = nowTs;
-            logger.info?.(`[onebot] 群很热闹且很久没被 @，插一句：${key}`);
-            audit({ kind: "active_join", key });
-            void sessions
-              .runProactive(
-                key,
-                "（这个群现在聊得很热闹，但没人叫你。如果你想加入，就顺着最近的话题插一句自然的、短的、" +
-                  "不抢戏的话；如果你觉得插不上或者话题不适合你，就什么都不说（只输出一个句号）。）",
-              )
-              .catch(() => {});
-          }
-        }
-      } catch {
-        // 忽略
-      }
       const segTypes = (Array.isArray(ev.message) ? ev.message : [])
         .map((x) =>
           x?.type === "at"
@@ -2321,6 +2599,32 @@ export function apply(ctx, _pluginConfig) {
         ent.msgTimes = (ent.msgTimes ?? []).filter((t) => nowTs - t < 60000);
         ent.msgTimes.push(nowTs);
         if (parsed.hasAt) ent.lastMentionAt = nowTs;
+
+        // 记录完之后再判断要不要"热群插一句"
+        if (cfg.activeJoinEnabled && cfg.autoActionsEnabled !== false) {
+          const idleFromMention = nowTs - (ent.lastMentionAt ?? 0);
+          const cooldownOk =
+            nowTs - (ent.lastActiveJoinAt ?? 0) >
+            (Number(cfg.activeJoinCooldownMinutes) || 30) * 60000;
+          if (
+            ent.msgTimes.length >= (Number(cfg.activeJoinPerMinute) || 6) &&
+            idleFromMention > (Number(cfg.activeJoinIdleMinutes) || 20) * 60000 &&
+            cooldownOk
+          ) {
+            ent.lastActiveJoinAt = nowTs;
+            logger.info?.(
+              `[onebot] 群很热闹（${ent.msgTimes.length} 条/分钟）且 ${Math.round(idleFromMention / 60000)} 分钟没被 @，插一句：${key}`,
+            );
+            audit({ kind: "active_join", key, perMinute: ent.msgTimes.length });
+            void sessions
+              .runProactive(
+                key,
+                "（这个群现在聊得很热闹，但没人叫你。如果你想加入，就顺着最近的话题插一句自然的、短的、" +
+                  "不抢戏的话；如果你觉得插不上或者话题不适合你，就什么都不说（只输出一个句号）。）",
+              )
+              .catch(() => {});
+          }
+        }
         // 有人说话了 → 冷群话题的「已开过口」标记解除
         ent.topicPending = false;
       } catch {
@@ -2357,8 +2661,16 @@ export function apply(ctx, _pluginConfig) {
         logger.info?.(`[onebot] 已取到 ${imagePayloads.length} 张图（${imagePayloads.map((x) => x.mediaType).join(",")}）`);
       }
     }
-    if (!parsed.text && !imagePayloads.length) return;
+    if (!parsed.text && !imagePayloads.length && !parsed.forwards?.length && !parsed.files?.length && !parsed.hasAt) return;
 
+    if (parsed.hasAt) {
+      try {
+        const ent0 = await sessions.ensure(key);
+        ent0.lastMentionAt = Date.now();
+      } catch {
+        // 忽略
+      }
+    }
     logger.info?.(`[onebot] ← ${key} [${ev.sender?.nickname ?? ev.user_id}] ${parsed.text.slice(0, 60)}`);
     audit({
       kind: "inbound",
@@ -2382,10 +2694,46 @@ export function apply(ctx, _pluginConfig) {
     }
 
     const who = people.describe(ev.user_id);
+    // 只 @ 没说话：把前面几条聊天记录带上，别空着回
+    let emptyAtNote = "";
+    if (!String(parsed.text || "").trim() && parsed.hasAt) {
+      emptyAtNote = "[对方只 @ 了你，没打字。]\n";
+      if (ev.message_type === "group") {
+        try {
+          const hist = await client.call(
+            "get_group_msg_history",
+            { group_id: ev.group_id, count: 10 },
+            6000,
+          );
+          const list = Array.isArray(hist?.messages) ? hist.messages : [];
+          const lines = list
+            .map((m) => {
+              const nm = m?.sender?.card || m?.sender?.nickname || "某人";
+              const segs = Array.isArray(m?.message) ? m.message : [];
+              const tx = segs
+                .filter((x) => x?.type === "text")
+                .map((x) => x?.data?.text ?? "")
+                .join("")
+                .trim();
+              return tx ? `${nm}：${tx.slice(0, 60)}` : "";
+            })
+            .filter(Boolean)
+            .reverse();
+          if (lines.length) {
+            emptyAtNote += `[你被 @ 之前的聊天记录]\n${lines.join("\n")}\n`;
+          }
+        } catch (err) {
+          logger.debug?.(`[onebot] 空 @ 拉历史失败：${err?.message ?? err}`);
+        }
+      }
+      emptyAtNote += "（结合上面聊的内容回应一句，别问「怎么了」。）\n\n";
+    }
+
+    const msgText = parsed.text || "（只有 @，没说话）";
     const bodyBase =
       ev.message_type === "group"
-        ? `[QQ群消息] 群号 ${ev.group_id}，发言人 ${nickname}（${ev.user_id}）${who}：${parsed.text}`
-        : `[QQ私聊] ${nickname}（${ev.user_id}）${who}：${parsed.text}`;
+        ? `[QQ群消息] 群号 ${ev.group_id}，发言人 ${nickname}（${ev.user_id}）${who}\n[消息内容] ${msgText}`
+        : `[QQ私聊] ${nickname}（${ev.user_id}）${who}\n[消息内容] ${msgText}`;
     let observed = "";
     if (ev.message_type === "group" && cfg.groupObserve) {
       try {
@@ -2417,6 +2765,231 @@ export function apply(ctx, _pluginConfig) {
 
     const vibe = [timeContext(), moodContext()].filter(Boolean).join("\n");
     const vibeNote = vibe ? `${vibe}\n\n` : "";
+
+    // 合并转发：展开前几条
+    // 如果只是"回复了一条转发"，转发内容在被引用的消息里，先追溯回来
+    if (
+      cfg.forwardPreview !== false &&
+      !parsed.forwards?.length &&
+      parsed.replyIds?.length
+    ) {
+      try {
+        const quoted = await client.call("get_msg", { message_id: parsed.replyIds[0] }, 6000);
+        const qsegs = Array.isArray(quoted?.message) ? quoted.message : [];
+        logger.info?.(
+          `[onebot] 引用消息结构：types=${JSON.stringify(qsegs.map((x) => x?.type))} raw=${JSON.stringify(quoted).slice(0, 400)}`,
+        );
+        const fwSeg = qsegs.find((x) => x?.type === "forward");
+        if (fwSeg) {
+          parsed.forwards.push({
+            id: String(fwSeg.data?.id ?? fwSeg.data?.message_id ?? fwSeg.data?.resid ?? ""),
+            rawKeys: Object.keys(fwSeg.data ?? {}),
+            raw: fwSeg.data ?? {},
+          });
+          logger.info?.("[onebot] 从引用消息里找到了转发");
+        }
+      } catch (err) {
+        logger.debug?.(`[onebot] 追溯引用消息失败：${err?.message ?? err}`);
+      }
+    }
+
+    // 被 @ 但本条既没转发也没引用：回看最近几条，找上面刚发的转发
+    if (
+      cfg.forwardPreview !== false &&
+      !parsed.forwards?.length &&
+      !parsed.replyIds?.length &&
+      parsed.hasAt &&
+      ev.message_type === "group"
+    ) {
+      try {
+        const hist = await client.call(
+          "get_group_msg_history",
+          { group_id: ev.group_id, count: Number(cfg.forwardLookback) || 25 },
+          8000,
+        );
+        const list = Array.isArray(hist?.messages) ? hist.messages : [];
+        for (const m of [...list].reverse()) {
+          const segs2 = Array.isArray(m?.message) ? m.message : Array.isArray(m?.content) ? m.content : [];
+          const fw = segs2.find((x) => x?.type === "forward");
+          if (fw) {
+            parsed.forwards.push({
+              id: String(fw.data?.id ?? fw.data?.message_id ?? fw.data?.resid ?? ""),
+              rawKeys: Object.keys(fw.data ?? {}),
+              raw: fw.data ?? {},
+            });
+            logger.info?.(
+              `[onebot] 从最近历史里找到了转发：id=${parsed.forwards[parsed.forwards.length - 1].id}`,
+            );
+            break;
+          }
+        }
+      } catch (err) {
+        logger.debug?.(`[onebot] 回看历史失败：${err?.message ?? err}`);
+      }
+    }
+
+    let forwardNote = "";
+    if (cfg.forwardPreview !== false && parsed.forwards?.length) {
+      try {
+        const fw = parsed.forwards[0];
+        logger.info?.(
+          `[onebot] 收到转发段：id=${fw.id || "(空)"} keys=${JSON.stringify(fw.rawKeys)} raw=${JSON.stringify(fw.raw).slice(0, 200)}`,
+        );
+        let res;
+        try {
+          res = await client.call("get_forward_msg", { id: fw.id }, 8000);
+        } catch (e1) {
+          logger.warn?.(`[onebot] get_forward_msg(id) 失败：${e1?.message ?? e1}，改用 message_id`);
+          res = await client.call("get_forward_msg", { message_id: fw.id }, 8000);
+        }
+        if (!res || (Array.isArray(res?.messages) && res.messages.length === 0)) {
+          logger.warn?.(`[onebot] 转发展开为空，返回：${JSON.stringify(res).slice(0, 300)}`);
+        }
+        const msgs = Array.isArray(res?.messages) ? res.messages : Array.isArray(res) ? res : [];
+        const forwardImages = [];
+        const lines = [];
+        let nestedDone = false;
+        for (const m of msgs.slice(0, Number(cfg.forwardMaxItems) || 5)) {
+          const name = m?.sender?.card || m?.sender?.nickname || m?.sender?.user_id || "某人";
+          const segs2 = Array.isArray(m?.content)
+            ? m.content
+            : Array.isArray(m?.message)
+              ? m.message
+              : [];
+          for (const x of segs2) {
+            if (x?.type === "image") {
+              const u = String(x?.data?.url || x?.data?.file || "");
+              if (u) forwardImages.push(u);
+            }
+          }
+          let t = segs2
+            .filter((x) => x?.type === "text")
+            .map((x) => x?.data?.text ?? "")
+            .join("")
+            .trim();
+
+          // 内层转发：递归展开一个，最多 3 条
+          const subFw = segs2.find((x) => x?.type === "forward");
+          if (subFw && !nestedDone) {
+            nestedDone = true;
+            try {
+              const subId = String(subFw.data?.id ?? subFw.data?.message_id ?? subFw.data?.resid ?? "");
+              if (subId) {
+                const subRes = await client.call("get_forward_msg", { id: subId }, 6000);
+                const subMsgs = Array.isArray(subRes?.messages)
+                  ? subRes.messages
+                  : Array.isArray(subRes)
+                    ? subRes
+                    : [];
+                const subLines = subMsgs
+                  .slice(0, 3)
+                  .map((sm) => {
+                    const sn =
+                      sm?.sender?.card || sm?.sender?.nickname || sm?.sender?.user_id || "某人";
+                    const ssegs = Array.isArray(sm?.content)
+                      ? sm.content
+                      : Array.isArray(sm?.message)
+                        ? sm.message
+                        : [];
+                    const st = ssegs
+                      .filter((x) => x?.type === "text")
+                      .map((x) => x?.data?.text ?? "")
+                      .join("")
+                      .trim();
+                    return st ? `${sn}：${st.slice(0, 50)}` : "";
+                  })
+                  .filter(Boolean);
+                if (subLines.length) {
+                  t += `\n  ↳[内层转发，共 ${subMsgs.length} 条，看前 ${subLines.length} 条] ${subLines.join("；")}`;
+                }
+              }
+            } catch (e2) {
+              logger.debug?.(`[onebot] 内层转发展开失败：${e2?.message ?? e2}`);
+            }
+          }
+
+          if (t) lines.push(`${name}：${t.slice(0, 220)}`);
+        }
+        // 转发里的第一张图也拿给模型看
+        if (forwardImages.length && cfg.enableImages !== false) {
+          const limit = Math.max(1, (cfg.maxImagesPerMessage || 2) - imagePayloads.length);
+          let gotCount = 0;
+          for (const u of forwardImages.slice(0, Math.min(2, limit))) {
+            const got = await downloadImage(u, cfg.maxImageBytes || 6000000);
+            if (got) {
+              imagePayloads.push(got);
+              gotCount += 1;
+            }
+          }
+          if (gotCount) logger.info?.(`[onebot] 已取到转发展开里的 ${gotCount} 张图`);
+        }
+        // 记下转发 id，供 read_forward_more 工具继续展开
+        try {
+          const ent = await sessions.ensure(key);
+          ent.lastForward = { id: fw.id, total: msgs.length, at: Date.now() };
+        } catch {
+          // 忽略
+        }
+        if (lines.length) {
+          forwardNote =
+            `[转发聊天记录（前 ${lines.length} 条，共 ${msgs.length} 条）]\n` +
+            lines.join("\n") +
+            (msgs.length > lines.length
+              ? "\n（如果这个话题你感兴趣，可以调 read_forward_more 看后面几条）\n"
+              : "") +
+            "\n";
+        }
+      } catch (err) {
+        logger.warn?.(`[onebot] 转发展开失败：${err?.message ?? err}`);
+      }
+    }
+
+    // 文本文件：读前 1000 字
+    let fileNote = "";
+    if (cfg.filePreview !== false && parsed.files?.length) {
+      const f = parsed.files[0];
+      try {
+        const okExt = /\.(txt|md|log|json|csv|yml|yaml|ini|conf)$/i.test(f.name);
+        if (!okExt) {
+          fileNote = `[收到文件：${f.name}（不是文本格式，未展开）]\n\n`;
+        } else {
+          let url = "";
+          if (ev.message_type === "group") {
+            const r = await client.call(
+              "get_group_file_url",
+              { group_id: ev.group_id, file_id: f.id, busid: f.busid ?? 0 },
+              8000,
+            );
+            url = String(r?.url ?? r?.file ?? "");
+          } else {
+            const r = await client.call(
+              "get_private_file_url",
+              { user_id: ev.user_id, file_id: f.id },
+              8000,
+            );
+            url = String(r?.url ?? r?.file ?? "");
+          }
+          if (!url) throw new Error("拿不到下载地址");
+          const resp = await fetch(url, {
+            signal: AbortSignal.timeout(12000),
+            headers: { "User-Agent": "Mozilla/5.0" },
+          });
+          if (!resp.ok) throw new Error(`下载失败 ${resp.status}`);
+          const buf = Buffer.from(await resp.arrayBuffer());
+          const maxBytes = Number(cfg.fileMaxBytes) || 1048576;
+          const body2 = buf.subarray(0, maxBytes).toString("utf8");
+          const limit = Number(cfg.filePreviewChars) || 1000;
+          const snippet = body2.slice(0, limit);
+          fileNote =
+            `[文件 ${f.name}${buf.length > maxBytes ? "（超大，只读头部）" : ""}，前 ${snippet.length} 字]\n` +
+            snippet +
+            "\n\n";
+        }
+      } catch (err) {
+        logger.warn?.(`[onebot] 文件预览失败：${err?.message ?? err}`);
+        fileNote = `[收到文件：${f.name}（读取失败）]\n\n`;
+      }
+    }
 
     let crossNote = "";
     if (cfg.crossGroupMemory && ev.message_type === "group") {
@@ -2456,85 +3029,117 @@ export function apply(ctx, _pluginConfig) {
       const rendered = facts.render(6);
       if (rendered) factLine = `[你记得的事] ${rendered}\n`;
     }
-    const body = vibeNote + slangNote + selfLine + catchupNote + recallNote + linkNote + crossNote + factLine + bodyBase + observed;
+    const body = vibeNote + slangNote + selfLine + emptyAtNote + forwardNote + fileNote + catchupNote + recallNote + linkNote + crossNote + factLine + bodyBase + observed;
     const ownerNote =
       cfg.ownerId && String(ev.user_id) === String(cfg.ownerId) && ev.message_type !== "group"
         ? "（这是你的主人。）\n"
         : "";
     const prompt = (cfg.styleHint ? `${cfg.styleHint}\n${ownerNote}\n${body}` : `${ownerNote}${body}`).trim();
 
-    sessions
-      .run(key, prompt, ev, imagePayloads)
-      .then(async (reply) => {
-        const cur = sessions.entries.get(key);
-        if (cur?.usedStickerOnly && !String(reply || "").trim()) {
-          logger.info?.("[onebot] 本轮只发了表情包，不再补文字");
-          markSeen(key, Number(ev.time) * 1000 || Date.now());
-          flushSeen();
-          if (cfg.followUpEnabled) {
-            if (hitWindow(key, ev.user_id)) bumpWindow(key, ev.user_id);
-            else openWindow(key, ev.user_id);
-          }
-          return;
-        }
-        const out = (reply || "").trim() || "（这轮没有产生文本回复）";
-        const clipped =
-          out.length > cfg.maxReplyChars ? out.slice(0, cfg.maxReplyChars) + "\n…（已截断）" : out;
-        const hasQuoteSeg =
-          Array.isArray(ev.message) && ev.message.some((x) => x?.type === "reply");
-        await client.sendHuman(ev, clipped, {
-          quote: !!(ev.__hasAt || hasQuoteSeg),
-        });
-        logger.info?.(`[onebot] → ${key} ${clipped.slice(0, 60).replace(/\n/g, " ")}`);
-        audit({ kind: "reply", key, text: clipped.slice(0, 200) });
-        markSeen(key, Number(ev.time) * 1000 || Date.now());
-        flushSeen();
-        // 打开连续对话窗口：这个人接着说不 @ 也能触发
-        if (cfg.followUpEnabled) {
-          if (hitWindow(key, ev.user_id)) {
-            bumpWindow(key, ev.user_id);
-          } else {
-            openWindow(key, ev.user_id);
-            logger.info?.(`[onebot] 续聊窗口打开 ${key} 用户 ${ev.user_id}（上限 ${followMax()} 轮）`);
-          }
-        }
-      })
-      .catch(async (err) => {
-        logger.warn?.(`[onebot] 处理失败 ${key}：${err?.message ?? err}`);
-        audit({ kind: "error", key, error: String(err?.message ?? err).slice(0, 300) });
-        // 自动重试一次：重建 agent 再跑
-        try {
-          const ent = sessions.entries.get(key);
-          if (ent) {
-            logger.info?.(`[onebot] 自动重试 ${key}`);
-            await sleep(1500);
-            try {
-              await ent.handle?.dispose?.();
-            } catch {
-              // 忽略
-            }
-            ent.handle = null;
-            const reply2 = await sessions.run(key, prompt, ev, imagePayloads);
-            const out2 = String(reply2 || "").trim();
-            if (out2) {
-              await client.sendHuman(ev, out2);
-              audit({ kind: "retry_ok", key, text: out2.slice(0, 120) });
-              markSeen(key, Number(ev.time) * 1000 || Date.now());
-              flushSeen();
-            }
-          }
-        } catch (err2) {
-          logger.warn?.(`[onebot] 重试仍失败 ${key}：${err2?.message ?? err2}`);
-        }
-        if (cfg.replyOnError) {
-          try {
-            await client.sendText(ev, `处理出错：${String(err?.message ?? err).slice(0, 300)}`);
-          } catch {
-            // 回复失败忽略
-          }
-        }
-      });
+    // 私聊偶尔多说两句（大部分还是一句）
+    const privateExtra =
+      ev.message_type !== "group" &&
+      Math.random() < (Number(cfg.privateMultiSentenceChance) || 0.2)
+        ? "（这次可以多说两句，2-3 句，聊开一点。）\n"
+        : "";
+    enqueue(key, ev, privateExtra + prompt, imagePayloads);
   };
+
+  /** 合并窗口：对方连续快速发消息时，攒一会儿一起回 */
+  const mergeBuf = new Map();
+  function enqueue(key, ev, prompt, images) {
+    // 合并只对私聊生效；群聊立即处理，避免多人对话被攒在一起
+    if (cfg.mergeMessages === false || ev.message_type === "group") {
+      void deliver(key, ev, prompt, images);
+      return;
+    }
+    const buf = mergeBuf.get(key) ?? { prompts: [], images: [], ev, timer: null };
+    buf.prompts.push(prompt);
+    buf.ev = ev;
+    if (Array.isArray(images) && images.length) {
+      buf.images = [...buf.images, ...images].slice(0, 3);
+    }
+    if (buf.timer) clearTimeout(buf.timer);
+    buf.timer = setTimeout(() => {
+      mergeBuf.delete(key);
+      const merged =
+        buf.prompts.length > 1
+          ? `（对方连着发了 ${buf.prompts.length} 条，合起来一起回）\n` + buf.prompts.join("\n")
+          : buf.prompts[0];
+      void deliver(key, buf.ev, merged, buf.images);
+    }, Number(cfg.mergeWindowMs) || 2500);
+    buf.timer.unref?.();
+    mergeBuf.set(key, buf);
+  }
+
+  /** 执行一轮并发送回复 */
+  async function deliver(key, ev, prompt, images) {
+    try {
+      const reply = await sessions.run(key, prompt, ev, images);
+      const cur = sessions.entries.get(key);
+      if (cur?.usedStickerOnly && !String(reply || "").trim()) {
+        logger.info?.("[onebot] 本轮只发了表情包，不再补文字");
+        markSeen(key, Number(ev.time) * 1000 || Date.now(), ev.message_id);
+        flushSeen();
+        if (cfg.followUpEnabled) {
+          if (hitWindow(key, ev.user_id)) bumpWindow(key, ev.user_id);
+          else openWindow(key, ev.user_id);
+        }
+        return;
+      }
+      const out = (reply || "").trim() || "（这轮没有产生文本回复）";
+      const clipped =
+        out.length > cfg.maxReplyChars ? out.slice(0, cfg.maxReplyChars) + "\n…（已截断）" : out;
+      const hasQuoteSeg =
+        Array.isArray(ev.message) && ev.message.some((x) => x?.type === "reply");
+      await client.sendHuman(ev, clipped, { quote: !!(ev.__hasAt || hasQuoteSeg) });
+      logger.info?.(`[onebot] → ${key} ${clipped.slice(0, 60).replace(/\n/g, " ")}`);
+      audit({ kind: "reply", key, text: clipped.slice(0, 200) });
+      markSeen(key, Number(ev.time) * 1000 || Date.now(), ev.message_id);
+      flushSeen();
+      if (cfg.followUpEnabled) {
+        if (hitWindow(key, ev.user_id)) {
+          bumpWindow(key, ev.user_id);
+        } else {
+          openWindow(key, ev.user_id);
+          logger.info?.(`[onebot] 续聊窗口打开 ${key} 用户 ${ev.user_id}（上限 ${followMax()} 轮）`);
+        }
+      }
+    } catch (err) {
+      logger.warn?.(`[onebot] 处理失败 ${key}：${err?.message ?? err}`);
+      audit({ kind: "error", key, error: String(err?.message ?? err).slice(0, 300) });
+      try {
+        const ent = sessions.entries.get(key);
+        if (ent) {
+          logger.info?.(`[onebot] 自动重试 ${key}`);
+          await sleep(1500);
+          try {
+            await ent.handle?.dispose?.();
+          } catch {
+            // 忽略
+          }
+          ent.handle = null;
+          const reply2 = await sessions.run(key, prompt, ev, images);
+          const out2 = String(reply2 || "").trim();
+          if (out2) {
+            await client.sendHuman(ev, out2);
+            audit({ kind: "retry_ok", key, text: out2.slice(0, 120) });
+            markSeen(key, Number(ev.time) * 1000 || Date.now(), ev.message_id);
+            flushSeen();
+          }
+        }
+      } catch (err2) {
+        logger.warn?.(`[onebot] 重试仍失败 ${key}：${err2?.message ?? err2}`);
+      }
+      if (cfg.replyOnError) {
+        try {
+          await client.sendText(ev, `处理出错：${String(err?.message ?? err).slice(0, 300)}`);
+        } catch {
+          // 回复失败忽略
+        }
+      }
+    }
+  }
 
   /** 其他群最近在聊什么（脱敏、截断、只取话题） */
   function otherGroupDigest(currentKey, maxItems) {
@@ -2551,6 +3156,61 @@ export function apply(ctx, _pluginConfig) {
       }
     }
     return bits.slice(-(maxItems || 4)).join("；");
+  }
+
+  /** 把某个会话 id 自动写进配套插件配置（幂等） */
+  function autoConfigurePlugins(sid) {
+    if (cfg.autoConfigurePlugins === false) return;
+    const base = join(HOME, ".dsh");
+    let changed = [];
+
+    // fish-memory：开启该会话的记忆
+    try {
+      const fp = join(base, "fish-memory-config.json");
+      const d = existsSync(fp) ? JSON.parse(readFileSync(fp, "utf8")) : {};
+      d.sessions = d.sessions && typeof d.sessions === "object" ? d.sessions : {};
+      if (!d.sessions[sid]) {
+        d.sessions[sid] = true;
+        writeFileSync(fp, JSON.stringify(d, null, 2), "utf8");
+        changed.push("fish-memory");
+      }
+    } catch {
+      // 插件没装就算了
+    }
+
+    // speak-up：把会话加进目标列表
+    try {
+      const sp = join(base, "speak-up-config.json");
+      const d = existsSync(sp) ? JSON.parse(readFileSync(sp, "utf8")) : {};
+      const list = Array.isArray(d["目标会话"]) ? d["目标会话"] : [];
+      if (!list.includes(sid)) {
+        list.push(sid);
+        d["目标会话"] = list;
+        writeFileSync(sp, JSON.stringify(d, null, 2), "utf8");
+        changed.push("speak-up");
+      }
+    } catch {
+      // 忽略
+    }
+
+    // feiyu-mood：只在还没设目标时设一次
+    try {
+      const mp = join(base, "feiyu-mood/config.json");
+      const d = existsSync(mp) ? JSON.parse(readFileSync(mp, "utf8")) : {};
+      if (!d.targetSession) {
+        d.targetSession = sid;
+        mkdirSync(join(base, "feiyu-mood"), { recursive: true });
+        writeFileSync(mp, JSON.stringify(d, null, 2), "utf8");
+        changed.push("feiyu-mood");
+      }
+    } catch {
+      // 忽略
+    }
+
+    if (changed.length) {
+      logger.info?.(`[onebot] 自动配置插件：${changed.join(",")} <- ${sid}`);
+      audit({ kind: "plugin_autoconfig", sid, plugins: changed });
+    }
   }
 
   /** 把运行时配置写回 config.json */
@@ -2586,12 +3246,17 @@ export function apply(ctx, _pluginConfig) {
             count: 30,
           });
           const list = Array.isArray(res) ? res : res?.messages ?? [];
-          const since = seenState[`group:${gid}`]?.lastTime ?? 0;
+          const rec = seenState[`group:${gid}`] ?? {};
+          const done = new Set(Array.isArray(rec.ids) ? rec.ids.map(String) : []);
+          const since = rec.lastTime ?? 0;
+          const hasIds = Array.isArray(rec.ids) && rec.ids.length > 0;
+          let caught = 0;
           for (const m of [...list].reverse()) {
             const mid = String(m.message_id ?? m.id ?? "");
-            if (!mid || recentIds.has(mid)) continue;
+            if (!mid || recentIds.has(mid) || done.has(mid)) continue;
             const msgTs = Number(m.time) * 1000 || 0;
-            if (msgTs && msgTs <= since) continue; // 已经处理过的跳过
+            // 有 id 记录时只看 id；旧数据没有 ids 时用时间兜底
+            if (!hasIds && msgTs && msgTs <= since) continue;
             const segs = Array.isArray(m.message) ? m.message : [];
             const atMe = segs.some(
               (x) => x?.type === "at" && String(x?.data?.qq) === String(cfg.selfId),
@@ -2609,9 +3274,11 @@ export function apply(ctx, _pluginConfig) {
             };
             logger.info?.(`[onebot] 补回复离线期间的 @：群 ${gid} 消息 ${mid}`);
             audit({ kind: "catchup", key: `group:${gid}`, messageId: mid });
-            markSeen(`group:${gid}`, msgTs);
+            markSeen(`group:${gid}`, msgTs, mid);
             await client.onEvent(ev);
-            break; // 每个群只补最近一条
+            // 每个群最多补 2 条
+            caught += 1;
+            if (caught >= 2) break;
           }
         } catch (err) {
           logger.debug?.(`[onebot] 拉取群 ${gid} 历史失败：${err?.message ?? err}`);
@@ -2834,7 +3501,10 @@ export function apply(ctx, _pluginConfig) {
       );
       const content = String(text || "").trim().replace(/^["'「」]+|["'「」]+$/g, "");
       if (!content) return;
-      await client.call("send_qzone_msg", { content });
+      await client.call("send_qzone_msg", {
+        content,
+        ugc_right: Number(cfg.qzoneVisibility ?? 1),
+      });
       logger.info?.(`[onebot] 发了条说说：${content.slice(0, 40)}`);
       audit({ kind: "qzone", key: picked[0], text: content.slice(0, 200) });
     } catch (err) {
@@ -2896,6 +3566,77 @@ export function apply(ctx, _pluginConfig) {
     }
   }
 
+  // ── 轮询兜底：NapCat 不推送"纯 @ 无文字"的消息，只能主动拉 ──
+  let groupListCache = { at: 0, ids: [] };
+  async function allGroupIds() {
+    if (Date.now() - groupListCache.at > 10 * 60000 && groupListCache.ids.length === 0) {
+      try {
+        const list = await client.call("get_group_list", {}, 8000);
+        const arr = Array.isArray(list) ? list : (list?.data ?? []);
+        groupListCache = {
+          at: Date.now(),
+          ids: arr.map((g) => Number(g.group_id)).filter((n) => Number.isFinite(n) && n > 0),
+        };
+      } catch {
+        // 拿不到就用已加载的
+      }
+    }
+    if (groupListCache.ids.length) {
+      if (Date.now() - groupListCache.at > 10 * 60000) groupListCache.at = Date.now();
+      return groupListCache.ids;
+    }
+    return [...sessions.entries.keys()]
+      .filter((k) => k.startsWith("group:"))
+      .map((k) => Number(k.slice(6)))
+      .filter(Boolean);
+  }
+
+  async function pollMissedMentions() {
+    if (cfg.pollMentions === false) return;
+    const count = Math.max(1, Number(cfg.pollMentionsCount) || 3);
+    const targets = await allGroupIds();
+    for (const gid of targets) {
+      const key = `group:${gid}`;
+      try {
+        const hist = await client.call(
+          "get_group_msg_history",
+          { group_id: gid, count },
+          6000,
+        );
+        const list = Array.isArray(hist?.messages) ? hist.messages : [];
+        const rec = seenState[key] ?? {};
+        const replied = new Set(Array.isArray(rec.ids) ? rec.ids.map(String) : []);
+        for (const m of [...list].reverse()) {
+          const segs = Array.isArray(m?.message) ? m.message : [];
+          const mentionsMe = segs.some(
+            (x) => x?.type === "at" && String(x?.data?.qq) === String(cfg.selfId),
+          );
+          if (!mentionsMe) continue;
+          const mid = String(m?.message_id ?? "");
+          // 只处理「没回复过」的；回复过的一律跳过
+          if (!mid || replied.has(mid)) continue;
+          // 只补最近 10 分钟内的
+          const ts = Number(m?.time) * 1000 || 0;
+          if (ts && Date.now() - ts > 10 * 60 * 1000) continue;
+          const ev = {
+            ...m,
+            post_type: "message",
+            message_type: "group",
+            group_id: gid,
+            user_id: m?.sender?.user_id,
+            time: m?.time,
+          };
+          logger.info?.(`[onebot] 轮询发现未回复的 @：群 ${gid} 消息 ${mid}`);
+          audit({ kind: "poll_mention", key, messageId: mid });
+          recentIds.delete(mid); // 允许重试（上次可能失败了）
+          await client.onEvent(ev);
+        }
+      } catch {
+        // 单个群失败忽略
+      }
+    }
+  }
+
   // ── 早上统一补回昨晚错过的消息 ─────────────────────────────
   async function morningCatchup() {
     if (!cfg.morningCatchup) return;
@@ -2922,7 +3663,7 @@ export function apply(ctx, _pluginConfig) {
           await client.sendHuman(ev, content);
           logger.info?.(`[onebot] 早上补回 ${key}（${pend.length} 条）：${content.slice(0, 40)}`);
           audit({ kind: "morning_catchup", key, count: pend.length, text: content.slice(0, 200) });
-          markSeen(key, Number(ev.time) * 1000 || Date.now());
+          markSeen(key, Number(ev.time) * 1000 || Date.now(), ev.message_id);
           flushSeen();
         }
       } catch (err) {
@@ -3099,6 +3840,10 @@ export function apply(ctx, _pluginConfig) {
   setInterval(() => {
     void maybeCompactAll();
   }, Math.max(5, Number(cfg.compactCheckMinutes) || 30) * 60 * 1000).unref?.();
+
+  setInterval(() => {
+    void pollMissedMentions();
+  }, Math.max(60, Number(cfg.pollMentionsSeconds) || 120) * 1000).unref?.();
 
   setInterval(() => {
     try {

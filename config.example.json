@@ -1,6 +1,6 @@
 {
   "wsUrl": "ws://127.0.0.1:3001",
-  "token": "把这里的值改成和 NapCat onebot11 配置里一致",
+  "token": "换成和 NapCat onebot11 配置一致的随机串",
   "selfId": 0,
   "ownerId": 0,
   "workspace": "",
@@ -42,14 +42,16 @@
 
   "dailyBriefEnabled": true,
   "dailyBriefHour": 9,
+
   "qzoneEnabled": true,
   "qzonePerDayMax": 3,
   "qzoneStartHour": 9,
   "qzoneEndHour": 23,
+  "qzoneVisibility": 1,
 
   "activeJoinEnabled": true,
   "activeJoinIdleMinutes": 20,
-  "activeJoinPerMinute": 10,
+  "activeJoinPerMinute": 6,
   "activeJoinCooldownMinutes": 30,
   "quietTopicEnabled": true,
   "quietTopicHours": 6,
@@ -71,10 +73,25 @@
   "recallMaxHits": 5,
   "recallCrossSession": true,
 
-  "auditLog": true,
-  "compactThresholdMB": 50,
-  "compactCheckMinutes": 30,
-  "tokenDailyAlert": 5000000,
+  "mergeMessages": true,
+  "mergeWindowMs": 2500,
+  "privateMultiSentenceChance": 0.2,
+
+  "forwardPreview": true,
+  "forwardMaxItems": 5,
+  "forwardLookback": 25,
+  "filePreview": true,
+  "filePreviewChars": 1000,
+  "fileMaxBytes": 1048576,
+
+  "atPersonPerHour": 3,
+
+  "pollMentions": true,
+  "pollMentionsSeconds": 30,
+  "pollMentionsCount": 10,
+  "pollMentionsActiveMinutes": 10,
+
+  "autoConfigurePlugins": true,
 
   "splitReplies": true,
   "maxParts": 3,
@@ -82,8 +99,15 @@
   "replyDelayMs": [400, 1600],
   "maxReplyChars": 3500,
   "replyOnError": true,
+
+  "auditLog": true,
+  "compactThresholdMB": 50,
+  "compactCheckMinutes": 30,
+  "tokenDailyAlert": 5000000,
+
   "newsUrl": "https://top.baidu.com/board?tab=realtime",
   "newsCacheMinutes": 30,
   "newsMaxItems": 8,
-  "styleHint": "（QQ 聊天：默认一条，50 字以内说完，偶尔可以到 100 字。像真人发消息，偶尔用一个 emoji。不要 markdown、不要列表、不要总结、不要复述。）"
+
+  "styleHint": "（QQ 聊天：默认一条，50 字以内说完。像真人发消息，偶尔用一个 emoji。情绪到位时可以发表情包，有时候一张图就够了，不用再配文字。如果对方明确要求详细解释、问技术/教程类问题、或者需要分析长内容（文件、转发、链接），可以写到 200-300 字，用短句分段，但不要写成文档、不要用列表。偶尔可以不完美：说一半改口、反问一句、或直说记不清了。要查实时信息最多调一次工具。不要 markdown、不要总结、不要复述。）"
 }
