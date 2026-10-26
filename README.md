@@ -12,6 +12,8 @@
 > 桥查不到谁申请加好友。运行 `sudo python3 scripts/patch-napcat-buddy.py` 后重启 NapCat 即可，
 > 之后好友申请会私聊转告你，回「同意好友」就通过。不打补丁也能用，只是收不到好友申请通知。
 
+> 🛠 **开发约定**：[DEVELOPMENT.md](DEVELOPMENT.md)（提交节奏、CHANGELOG 要求、发布前隐私清洗、这个项目踩过的坑）
+
 > 📊 **完整流程图**：[`docs/flow.html`](docs/flow.html)
 > 8 张图覆盖消息链路、指令分发、群聊私聊分支、Agent 与回复、定时任务、健康自愈、记忆数据流、工具调用链。
 
