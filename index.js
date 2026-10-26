@@ -31,6 +31,29 @@ function noteSent() {
   SEND_STATE.recent.push(now);
   if (SEND_STATE.recent.length > 400) SEND_STATE.recent.splice(0, SEND_STATE.recent.length - 400);
 }
+/** 按「最近 1 分钟 + 最近 10 分钟」的自身发送量，决定这一条要等多久 */
+function pickBaseDelay(cfg) {
+  const now = Date.now();
+  const recent = SEND_STATE.recent;
+  let r60 = 0;
+  let r600 = 0;
+  for (let i = recent.length - 1; i >= 0; i--) {
+    const dt = now - recent[i];
+    if (dt < 60_000) r60 += 1;
+    if (dt < 600_000) r600 += 1;
+    else break;
+  }
+  const idleMs = Number(cfg.replyBaseIdleMs ?? 350) || 350;
+  if (r60 >= 15) return 4000;
+  if (r60 >= 10) return 3000;
+  if (r60 >= 6) return 2000;
+  if (r60 >= 3) return r600 > 10 ? 1600 : 1400;
+  if (r60 >= 1) return r600 > 10 ? 1100 : 900;
+  if (r600 <= 2) return idleMs;
+  if (r600 <= 10) return 600;
+  return 900;
+}
+
 /** 同时说话的群多、或最近发得太密 → 额外多等一会儿，把发送曲线拉平 */
 function backlogDelay(cfg) {
   const now = Date.now();
@@ -415,7 +438,7 @@ class OneBotClient {
         const k = conversationKey(ev);
         const ent = sessions.entries.get(k);
         if (ent && ent.lastSpeaker === "me") {
-          logger.info?.(`[onebot] 私聊里她刚说完、对方还没回，跳过追加：${k}`);
+          this.logger?.info?.(`[onebot] 私聊里她刚说完、对方还没回，跳过追加：${k}`);
           audit({ kind: "dm_no_piggyback", key: k, text: String(text).slice(0, 80) });
           return;
         }
@@ -432,9 +455,11 @@ class OneBotClient {
       else if (len <= 120) delay = 1100 + Math.random() * 1300;
       else delay = 1800 + Math.random() * 2000;
     } else {
-      const base = Number(this.cfg.replyBaseMs ?? 2000) || 2000;
+      // 双窗口自适应：空闲 350ms，高峰可到 4000ms + 拥堵加成
+      const base = pickBaseDelay(this.cfg);
       const back = backlogDelay(this.cfg);
       delay = base * (0.85 + Math.random() * 0.3) + Math.min(3000, len * 10) + back.extra + back.wait;
+      if (base <= 400) this.logger?.debug?.(`[onebot] 空闲期快速回（${Math.round(delay)}ms）`);
     }
     if (delay > 0) await sleep(delay);
     const parts = splitMessage(text, this.cfg).map((p) => humanizePunct(p));
@@ -1758,6 +1783,10 @@ export function apply(ctx, _pluginConfig) {
     followUpSeconds: 20,
     maxParts: 2,
     replyBaseMs: 2000,
+  replyBaseIdleMs: 350,
+  /** 她可以申请新功能，每天最多一次 */
+  featureRequestEnabled: true,
+  featureRequestCooldownHours: 24,
     minSendGapMs: 1200,
     quietTopicHours: 6,
     quietTopicPerDay: 1,
@@ -1947,6 +1976,7 @@ export function apply(ctx, _pluginConfig) {
     "remember_fact",
     "remember_person",
     "remember_self",
+    "request_feature",
     "revise_self",
     "forget_self",
     // 只读网络：查天气/新闻这类需求要靠它，安全但限频
@@ -2675,6 +2705,59 @@ export function apply(ctx, _pluginConfig) {
         }),
       );
       logger.info?.("[onebot] 存表情工具已注册");
+
+      // 功能申请：她可以提一次，由主人决定加不加
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "request_feature",
+          description:
+            "如果你发现自己缺某个能力（想存图但没工具、想查某个信息但没接口、想做某件事但做不到），" +
+            "可以提一次功能申请给主人。**不要频繁**：一天最多一次，只有真的影响你做事的时候才提。" +
+            "提之前先想想有没有现有工具能绕过去。",
+          parameters: {
+            idea: { type: "string", description: "你想要的新功能，一句话说清" },
+            why: { type: "string", description: "为什么需要它（今天遇到了什么具体情况）" },
+            how: { type: "string", description: "你猜大概怎么做（可选，不懂就写不知道）" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            if (cfg.featureRequestEnabled === false) {
+              return { ok: false, reason: "主人关掉了这个通道" };
+            }
+            const coolHours = Number(cfg.featureRequestCooldownHours) || 24;
+            const last = Number(rt.lastFeatureRequestAt) || 0;
+            const since = Date.now() - last;
+            if (since < coolHours * 3600_000) {
+              const left = Math.ceil((coolHours * 3600_000 - since) / 3600_000);
+              return { ok: false, reason: `上次申请还在冷却，${left} 小时后再说` };
+            }
+            const idea = String(args?.idea ?? "").trim().slice(0, 150);
+            const why = String(args?.why ?? "").trim().slice(0, 300);
+            const how = String(args?.how ?? "").trim().slice(0, 300);
+            if (!idea) return { ok: false, reason: "得先说想要什么" };
+            rt.lastFeatureRequestAt = Date.now();
+            markRuntimeDirty();
+            const msg =
+              `【她提了个功能申请】\n` +
+              `想要：${idea}\n` +
+              (why ? `原因：${why}\n` : "") +
+              (how ? `她猜的做法：${how}\n` : "") +
+              `\n---\n同意就回「批准这个功能」，不加就回「算了」。\n（真正加功能还得改代码：要么你自己来，要么找开发者）`;
+            try {
+              await client.sendPrivate(cfg.ownerId, msg);
+            } catch (err) {
+              return { ok: false, reason: String(err?.message ?? err).slice(0, 100) };
+            }
+            logger.info?.(`[onebot] 收到功能申请：${idea}`);
+            audit({ kind: "feature_request", idea, why, how });
+            return { ok: true, note: "已经发给主人了，等他判断" };
+          },
+        }),
+      );
+      logger.info?.("[onebot] 功能申请工具已注册");
 
       // 拒聊：声明后一段时间内不再回这个人，并结束当前的续聊
       ctx.get?.("tools")?.register?.(
