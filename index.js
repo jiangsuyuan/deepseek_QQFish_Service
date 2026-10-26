@@ -995,7 +995,6 @@ const facts = {
     this.load();
     if (this.data.some((f) => f.text === t)) return t;
     this.data.push({ text: t, at: Date.now(), source: source || "unknown" });
-    if (this.data.length > 20) this.data = this.data.slice(-20);
     this.save();
     return t;
   },
@@ -1121,7 +1120,6 @@ const people = {
     if (text) {
       rec.notes = Array.isArray(rec.notes) ? rec.notes : [];
       if (!rec.notes.includes(text)) rec.notes.push(text);
-      if (rec.notes.length > 12) rec.notes = rec.notes.slice(-12);
       this.save();
     }
     return rec;
@@ -4872,9 +4870,9 @@ export function apply(ctx, _pluginConfig) {
     }
 
     const parsed = parseMessage(ev, cfg.selfId);
-    // 有人用纯文本打「@竹筒肥鱼」时 OneBot 不给 at 段，这里补上识别
+    // 有人用纯文本打「@昵称」时 OneBot 不给 at 段，这里补上识别
     try {
-      if (!parsed.hasAt && /@\s*(竹筒肥鱼|肥鱼|大鱼|鱼鱼)/.test(String(parsed.text || ""))) {
+      if (!parsed.hasAt && /@\s*(肥鱼|大鱼|鱼鱼)/.test(String(parsed.text || ""))) {
         parsed.hasAt = true;
         parsed.textAtMe = true;
         logger.info?.("[onebot] 识别到文本形式的 @（无 at 段）");

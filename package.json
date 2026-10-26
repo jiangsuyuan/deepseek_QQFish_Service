@@ -1,39 +1,39 @@
-{
-  "name": "dsh-onebot-bridge",
-  "version": "1.1.0",
-  "private": false,
-  "type": "module",
-  "main": "index.js",
-  "description": "OneBot 11 (NapCat) bridge for DeepSeek Harness: QQ messages drive isolated persistent DSH agents",
-  "keywords": [
-    "dsh",
-    "dsh-plugin",
-    "deepseek-harness",
-    "onebot",
-    "napcat",
-    "qq",
-    "qqbot",
-    "agent",
-    "bridge"
-  ],
-  "license": "MIT",
-  "engines": {
-    "node": ">=22"
-  },
-  "exports": {
-    ".": "./index.js",
-    "./cordis.patch.yml": "./cordis.patch.yml",
-    "./package.json": "./package.json"
-  },
-  "files": [
-    "index.js",
-    "cordis.patch.yml",
-    "config.example.json",
-    "README.md"
-  ],
-  "dsh": {
-    "bundle": {
-      "patch": "./cordis.patch.yml"
-    }
-  }
+﻿{
+    "name":  "dsh-onebot-bridge",
+    "version":  "1.1.1",
+    "private":  false,
+    "type":  "module",
+    "main":  "index.js",
+    "description":  "OneBot 11 (NapCat) bridge for DeepSeek Harness: QQ messages drive isolated persistent DSH agents",
+    "keywords":  [
+                     "dsh",
+                     "dsh-plugin",
+                     "deepseek-harness",
+                     "onebot",
+                     "napcat",
+                     "qq",
+                     "qqbot",
+                     "agent",
+                     "bridge"
+                 ],
+    "license":  "MIT",
+    "engines":  {
+                    "node":  "\u003e=22"
+                },
+    "exports":  {
+                    ".":  "./index.js",
+                    "./cordis.patch.yml":  "./cordis.patch.yml",
+                    "./package.json":  "./package.json"
+                },
+    "files":  [
+                  "index.js",
+                  "cordis.patch.yml",
+                  "config.example.json",
+                  "README.md"
+              ],
+    "dsh":  {
+                "bundle":  {
+                               "patch":  "./cordis.patch.yml"
+                           }
+            }
 }
