@@ -437,7 +437,7 @@ class OneBotClient {
       delay = base * (0.85 + Math.random() * 0.3) + Math.min(3000, len * 10) + back.extra + back.wait;
     }
     if (delay > 0) await sleep(delay);
-    const parts = splitMessage(text, this.cfg);
+    const parts = splitMessage(text, this.cfg).map((p) => humanizePunct(p));
     await this.typing(ev);
     try {
       const k0 = conversationKey(ev);
@@ -1623,6 +1623,21 @@ function sleep(ms) {
 }
 
 /** 默认一条；超过 90 字才拆，最多 maxParts 条 */
+/** 句末标点拟人化：人类 87% 的聊天消息不加句号，短句尤其明显 */
+function humanizePunct(input) {
+  let t = String(input || "").trim();
+  if (!t) return t;
+  if (!/[。.．]$/.test(t)) return t; // 本来就没句号，不动
+  const len = t.length;
+  // 短句统一不写句号（人类 87% 如此），只给长段保留——规则简单，风格才统一
+  if (len <= 40) {
+    t = t.slice(0, -1).trimEnd();
+    t = t.replace(/[，,、]$/, "").trimEnd();
+  }
+  return t;
+}
+
+
 function splitMessage(text, cfg) {
   const t = String(text || "").trim();
   if (!t) return [""];
@@ -3136,6 +3151,7 @@ export function apply(ctx, _pluginConfig) {
   }
 
   // ── 回复长度档位：按概率抽一个，避免每句都差不多长 ──
+  let lastLengthTier = "";
   function pickLengthHint(userText) {
     const t = String(userText || "");
     // 对方明确要详细内容时，不受随机控制
@@ -3150,8 +3166,15 @@ export function apply(ctx, _pluginConfig) {
     const isQuestion = /[?？]|吗|呢|什么|怎么|为什么|哪|多少|是不是|能不能/.test(t);
     const r = Math.random();
     if (isQuestion) {
-      if (r < 0.5) return "（这轮短：10-25 个字，直接回答问题。）";
-      if (r < 0.85) return "（这轮中等：30-60 个字。）";
+      if (r < 0.5) {
+        lastLengthTier = "问句短";
+        return "（这轮短：10-25 个字，直接回答问题。）";
+      }
+      if (r < 0.85) {
+        lastLengthTier = "问句中";
+        return "（这轮中等：30-60 个字。）";
+      }
+      lastLengthTier = "问句长";
       return "（这轮可以长一点：80-150 字，分 2-3 条发也行。）";
     }
     if (r < 0.4) return "（这轮极短：1-8 个字，像随口应一声。）";
@@ -6101,7 +6124,13 @@ export function apply(ctx, _pluginConfig) {
         // 忽略
       }
       logger.info?.(`[onebot] → ${key} ${clipped.slice(0, 60).replace(/\n/g, " ")}`);
-      audit({ kind: "reply", key, text: clipped.slice(0, 200) });
+      audit({
+        kind: "reply",
+        key,
+        text: clipped.slice(0, 200),
+        tier: lastLengthTier,
+        len: String(clipped).length,
+      });
       markSeen(key, Number(ev.time) * 1000 || Date.now(), ev.message_id);
       flushSeen();
       // 情绪到位时主动补一张表情包（不依赖模型主动调用）
