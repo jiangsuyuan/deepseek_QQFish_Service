@@ -140,7 +140,7 @@ const DEFAULTS = {
   recallMaxHits: 5,
   recallCrossSession: true,
   /** 压缩：文件超过多少 MB 才压 */
-  compactThresholdMB: 50,
+  compactThresholdMB: 5,
   compactCheckMinutes: 30,
   /** 当日 token 超过这个数就私聊提醒 */
   tokenDailyAlert: 50000000,
@@ -494,7 +494,8 @@ class OneBotClient {
           !!this.cfg.quoteInGroup &&
           ev.message_type === "group" &&
           i === 0 &&
-          opts.quote !== false,
+          opts.quote !== false &&
+          !ev.__noQuote,
       });
       try {
         const mid = String(sent?.message_id ?? sent?.data?.message_id ?? "");
@@ -2111,6 +2112,8 @@ export function apply(ctx, _pluginConfig) {
     "group_recap",
     "who_said",
     "view_avatar",
+    "my_changelog",
+    "my_source",
     "revise_self",
     "forget_self",
     // 只读网络：查天气/新闻这类需求要靠它，安全但限频
@@ -2441,6 +2444,7 @@ export function apply(ctx, _pluginConfig) {
           name: "recall",
           description:
             "回忆很久以前聊过的内容。对方说「你记得…吗」「上次那个」「之前提过」时调用。" +
+            "你的上下文会被定期压缩（节省开销），压缩掉的细节都还在这里，需要时尽管查。" +
             "query 填关键词（如「显卡」「书名」「那个约定」），会返回最相关的几条原文片段。",
           parameters: {
             query: { type: "string", description: "关键词，2-10 个字" },
@@ -3240,6 +3244,88 @@ export function apply(ctx, _pluginConfig) {
         }),
       );
       logger.info?.("[onebot] 看头像工具已注册");
+
+      // 看她自己的更新日志
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "my_changelog",
+          description:
+            "看你自己的更新日志（这个项目每个版本改了什么）。有人问你「你最近更新了什么」「你会什么新功能」时用它。",
+          parameters: {
+            version: { type: "string", description: "版本号，比如 1.1.5；不填返回最近的几个版本" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            const path = join(HOME, ".dsh/onebot-bridge/CHANGELOG.md");
+            let text = "";
+            try {
+              text = readFileSync(path, "utf8");
+            } catch {
+              try {
+                text = readFileSync("/root/dev/dsh-onebot-bridge/CHANGELOG.md", "utf8");
+              } catch {
+                return { ok: false, reason: "更新日志不在服务器上" };
+              }
+            }
+            const want = String(args?.version ?? "").trim();
+            const blocks = text.split(/^## /m).filter(Boolean);
+            if (want) {
+              const hit = blocks.find((b) => b.startsWith(want));
+              if (!hit) return { ok: false, reason: `没有 ${want} 这个版本` };
+              return { ok: true, version: want, content: ("## " + hit).slice(0, 2500) };
+            }
+            const latest = blocks.slice(0, 3).map((b) => {
+              const title = b.split("\n")[0].trim();
+              return { version: title, content: ("## " + b).slice(0, 1200) };
+            });
+            return { ok: true, count: blocks.length, versions: latest };
+          },
+        }),
+      );
+
+      // 看她自己的源码（按函数名搜，不给她全文——太长）
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "my_source",
+          description:
+            "看你自己的源码里某个函数/关键词是怎么实现的。有人问「你怎么做到的」「你的代码怎么写的」，或者你自己想确认某个行为时用。" +
+            "只返回匹配到的片段，不是全文。",
+          parameters: {
+            keyword: { type: "string", description: "函数名或关键词，比如 window_handoff、humanizePunct" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            const kw = String(args?.keyword ?? "").trim();
+            if (kw.length < 3) return { ok: false, reason: "关键词至少 3 个字" };
+            let src = "";
+            try {
+              src = readFileSync("/root/dev/dsh-onebot-bridge/index.js", "utf8");
+            } catch {
+              return { ok: false, reason: "读不到自己的源码" };
+            }
+            const lines = src.split("\n");
+            const idxs = [];
+            for (let i = 0; i < lines.length; i++) {
+              if (lines[i].includes(kw)) idxs.push(i);
+              if (idxs.length >= 3) break;
+            }
+            if (!idxs.length) return { ok: false, reason: `源码里没找到「${kw}」` };
+            const snippets = idxs.slice(0, 3).map((i) => ({
+              line: i + 1,
+              code: lines.slice(Math.max(0, i - 3), i + 12).join("\n").slice(0, 900),
+            }));
+            audit({ kind: "read_source", keyword: kw, hits: idxs.length });
+            return { ok: true, keyword: kw, totalHits: idxs.length, snippets };
+          },
+        }),
+      );
+      logger.info?.("[onebot] 自我查看工具已注册（changelog/source）");
 
       // 拒聊：声明后一段时间内不再回这个人，并结束当前的续聊
       ctx.get?.("tools")?.register?.(
@@ -5717,6 +5803,19 @@ export function apply(ctx, _pluginConfig) {
         entry.observations = entry.observations ?? [];
         entry.observations.push(nickname + "：" + parsed.text.slice(0, 120));
 
+        // 这个群正好有消息在合并缓冲里 → 把我也塞进去当语境，
+        // 否则她只会看到"第一个叫她的人"，后面紧跟的补充/纠正全被漏掉
+        try {
+          const pendingBuf = typeof mergeBuf !== "undefined" ? mergeBuf.get(key) : null;
+          if (pendingBuf && parsed.text) {
+            pendingBuf.prompts.push(`[同一时段，${nickname} 也在说] ${parsed.text.slice(0, 150)}`);
+            if (pendingBuf.prompts.length > 6) pendingBuf.prompts = pendingBuf.prompts.slice(-6);
+            logger.info?.(`[onebot] 旁听消息并入合并缓冲：${key}`);
+          }
+        } catch {
+          // 忽略
+        }
+
         // 有人提到「肥鱼」但没 @ 她：
         // 先用模型判断这句是「直接叫她」还是「只是提到」，
         // 直接叫就立刻回，只是提到则按概率决定
@@ -6044,7 +6143,10 @@ export function apply(ctx, _pluginConfig) {
       // 忽略
     }
 
-    const gate = allowRate(key, ev.user_id);
+    // 被明确点名（@ / 引用她 / 续聊窗口内）不参与限流——
+    // 限流是防刷屏，不是用来无视叫人的人
+    const addressedNow = !!parsed.hasAt || !!parsed.replyToMe || !!continuing;
+    const gate = addressedNow ? { ok: true } : allowRate(key, ev.user_id);
     if (!gate.ok) {
       audit({ kind: "rate_limited", key, userId: String(ev.user_id), why: gate.why });
       logger.info?.(`[onebot] 限流（${gate.why}）：${key} 来自 ${ev.user_id}`);
@@ -6603,7 +6705,20 @@ export function apply(ctx, _pluginConfig) {
             : `（对方连着发了 ${buf.prompts.length} 条，合起来一起回）\n`) +
           buf.prompts.join("\n")
         : buf.prompts[0];
-    void deliver(key, buf.ev, merged, buf.images);
+    // 这一批里不止一个人在说话 → 引用谁都不对，干脆不引用
+    const target = buf.firstEv ?? buf.ev;
+    try {
+      const multi = (buf.users?.size ?? 0) > 1;
+      if (multi) target.__noQuote = true;
+      if (buf.prompts.length > 1) {
+        logger.info?.(
+          `[onebot] 合并 ${buf.prompts.length} 条${multi ? `（${buf.users.size} 人，不引用）` : ""}：${key}`,
+        );
+      }
+    } catch {
+      // 忽略
+    }
+    void deliver(key, target, merged, buf.images);
   }
 
   function enqueue(key, ev, prompt, images) {
@@ -6613,7 +6728,16 @@ export function apply(ctx, _pluginConfig) {
       void deliver(key, ev, prompt, images);
       return;
     }
-    const buf = mergeBuf.get(key) ?? { prompts: [], images: [], ev, timer: null };
+    const buf =
+      mergeBuf.get(key) ??
+      { prompts: [], images: [], ev, firstEv: ev, users: new Set(), timer: null };
+    buf.firstEv = buf.firstEv ?? ev;
+    try {
+      buf.users = buf.users ?? new Set();
+      if (ev.user_id) buf.users.add(String(ev.user_id));
+    } catch {
+      // 忽略
+    }
     buf.prompts.push(prompt);
     // 缓冲上限：最多攒 6 条，防止爆群时无限堆积
     if (buf.prompts.length > 6) buf.prompts = buf.prompts.slice(-6);
@@ -8018,7 +8142,7 @@ export function apply(ctx, _pluginConfig) {
   }
 
   async function maybeCompactAll() {
-    const limitMB = Number(cfg.compactThresholdMB) || 50;
+    const limitMB = Number(cfg.compactThresholdMB) || 5;
     const compaction = ctx.get?.("compaction");
     if (!compaction?.compactNow) return;
     for (const [key, entry] of sessions.entries) {
