@@ -165,6 +165,9 @@ const DEFAULTS = {
   proactiveMinMinutes: 60,
   proactiveMaxMinutes: 120,
   proactiveChance: 0.45,
+  /** 主动行为的活跃时段：9-23 点之外不主动开口 */
+  activeStartHour: 9,
+  activeEndHour: 23,
   proactiveQuietStart: 1,
   proactiveQuietEnd: 8,
   /** 每天简讯 */
@@ -305,6 +308,7 @@ class OneBotClient {
       this.retry = 0;
       this.everConnected = true;
       this.logger?.info?.(`[onebot] 已连接 ${this.cfg.wsUrl}`);
+      if (wasReconnect) this.noteOutage("up");
       // 补回复要等 agent 就绪再跑（状态由外部注入，类里看不到 apply 的局部变量）
       setTimeout(() => {
         void (async () => {
@@ -354,7 +358,10 @@ class OneBotClient {
       const wasConnected = this.connected;
       this.connected = false;
       this.ws = null;
-      if (wasConnected) this.logger?.warn?.("[onebot] 连接断开");
+      if (wasConnected) {
+        this.logger?.warn?.("[onebot] 连接断开");
+        this.noteOutage("down");
+      }
       this.scheduleReconnect();
     });
 
@@ -377,6 +384,15 @@ class OneBotClient {
       }
       this.retry = 0;
       this.connect();
+    } catch {
+      // 忽略
+    }
+  }
+
+  /** 记录掉线（由外部注入持久化逻辑） */
+  noteOutage(kind) {
+    try {
+      this.onOutage?.(kind, Date.now());
     } catch {
       // 忽略
     }
@@ -473,13 +489,19 @@ class OneBotClient {
     }
     for (let i = 0; i < parts.length; i++) {
       if (i > 0) await sleep(500 + Math.random() * 900);
-      await this.sendText(ev, parts[i], {
+      const sent = await this.sendText(ev, parts[i], {
         quote:
           !!this.cfg.quoteInGroup &&
           ev.message_type === "group" &&
           i === 0 &&
           opts.quote !== false,
       });
+      try {
+        const mid = String(sent?.message_id ?? sent?.data?.message_id ?? "");
+        if (mid) this.onSentMessage?.(mid);
+      } catch {
+        // 忽略
+      }
       noteSent();
     }
   }
@@ -504,14 +526,20 @@ class OneBotClient {
   }
 
   /** 发一张本地图片（表情包） */
-  sendImage(ev, filePath) {
-    let seg;
+  sendImage(ev, filePath, opts = {}) {
+    let imgSeg;
     try {
       const b64 = readFileSync(filePath).toString("base64");
-      seg = [{ type: "image", data: { file: `base64://${b64}` } }];
+      imgSeg = { type: "image", data: { file: `base64://${b64}` } };
     } catch {
-      seg = [{ type: "image", data: { file: `file://${filePath}` } }];
+      imgSeg = { type: "image", data: { file: `file://${filePath}` } };
     }
+    const seg = [];
+    // 表情也能「引用某条消息」——想直接回应谁就带 quote
+    if (opts.quote && ev.message_id) {
+      seg.push({ type: "reply", data: { id: String(ev.message_id) } });
+    }
+    seg.push(imgSeg);
     return ev.message_type === "group"
       ? this.call("send_group_msg", { group_id: ev.group_id, message: seg })
       : this.call("send_private_msg", { user_id: ev.user_id, message: seg });
@@ -1104,7 +1132,7 @@ const people = {
     this.save();
     return rec.address;
   },
-  touch(userId, name, groupId) {
+  touch(userId, name, groupId, text) {
     this.load();
     const id = String(userId);
     const rec = this.data[id] ?? (this.data[id] = { notes: [] });
@@ -1120,8 +1148,22 @@ const people = {
       // 忽略
     }
     if (groupId) {
+      const gid = String(groupId);
       rec.groups = Array.isArray(rec.groups) ? rec.groups : [];
-      if (!rec.groups.includes(String(groupId))) rec.groups.push(String(groupId));
+      if (!rec.groups.includes(gid)) rec.groups.push(gid);
+      // 跨群发言摘要：每人每群留最近 3 条
+      const t = String(text || "").trim();
+      if (t) {
+        rec.recentByGroup =
+          rec.recentByGroup && typeof rec.recentByGroup === "object" ? rec.recentByGroup : {};
+        const arr = Array.isArray(rec.recentByGroup[gid]) ? rec.recentByGroup[gid] : [];
+        const last = arr[arr.length - 1];
+        if (!last || last.text !== t.slice(0, 80)) {
+          arr.push({ text: t.slice(0, 80), at: Date.now() });
+          if (arr.length > 3) arr.shift();
+          rec.recentByGroup[gid] = arr;
+        }
+      }
     }
     // 落盘（debounce 5 秒，避免每条消息都写）
     this.dirty = true;
@@ -1823,6 +1865,7 @@ export function apply(ctx, _pluginConfig) {
   sessions.isAgentReady = () => agentReady;
   const client = new OneBotClient(cfg, logger);
   client.readyFn = () => agentReady;
+  client.onOutage = (kind, ts) => noteOutageFromClient(kind, ts);
   const recentIds = new Set();
   const recentOrder = [];
 
@@ -1889,6 +1932,39 @@ export function apply(ctx, _pluginConfig) {
     return null;
   }
 
+  /** 两句中文的二元组重合率，用来判断「这句是不是在接上一句」 */
+  function textOverlaps(a, b) {
+    try {
+      const norm = (x) => String(x || "").replace(/[^\u4e00-\u9fa5A-Za-z0-9]/g, "");
+      const A = norm(a);
+      const B = norm(b);
+      if (A.length < 4 || B.length < 4) return false;
+      const grams = new Set();
+      for (let i = 0; i < B.length - 1; i++) grams.add(B.slice(i, i + 2));
+      let hit = 0;
+      for (let i = 0; i < A.length - 1; i++) {
+        if (grams.has(A.slice(i, i + 2))) hit += 1;
+      }
+      return hit / Math.max(1, A.length - 1) >= 0.2;
+    } catch {
+      return false;
+    }
+  }
+
+  /** 这个群有没有还没过期的续聊窗口（返回窗口目标用户，没有就 null） */
+  function activeWindowTarget(key, excludeUserId) {
+    const map = followUps.get(key);
+    if (!map) return null;
+    const now = Date.now();
+    for (const [who, rec] of map.entries()) {
+      if (who === "*") continue;
+      if (now >= rec.until) continue;
+      if (excludeUserId && who === String(excludeUserId)) continue;
+      return who;
+    }
+    return null;
+  }
+
   /** 她回复成功后推进计数；到上限就关窗 */
   function bumpWindow(key, userId) {
     const map = followUps.get(key);
@@ -1932,7 +2008,9 @@ export function apply(ctx, _pluginConfig) {
         "（内部判断，不要发给任何人。只输出两行：A=是/否，B=是/否）\n" +
         `A：上一位「${oldName}」是不是已经不再跟你说话了（他最后那句不是冲你说的，或者他转去跟别人聊了）？\n` +
         (lastReplyText ? `你上一条对他的回复是：「${lastReplyText}」\n` : "") +
-        `B：现在「${newName}」说「${newText}」，这句是不是在跟你说？\n` +
+        `B：现在「${newName}」说「${newText}」。这句是不是**在接你刚才说的话**？\n` +
+        "判断标准放宽一点：只要他这句是在回应你上一条（哪怕是接你的话题、顺着你的话往下说、"+ 
+        "回答你的问题、或者对你说的事做评价），就算「是」。只有明显是在跟别人聊、跟你无关时才算「否」。\n" +
         "只输出：\nA=是/否\nB=是/否";
       const raw = String((await sessions.runSilent(key, prompt)) ?? "");
       const a = raw.match(/A\s*[=:：]\s*(是|否|yes|no)/i);
@@ -1977,6 +2055,12 @@ export function apply(ctx, _pluginConfig) {
     "remember_person",
     "remember_self",
     "request_feature",
+    "my_outages",
+    "my_status",
+    "my_memory",
+    "person_dossier",
+    "group_recap",
+    "who_said",
     "revise_self",
     "forget_self",
     // 只读网络：查天气/新闻这类需求要靠它，安全但限频
@@ -2473,10 +2557,16 @@ export function apply(ctx, _pluginConfig) {
               "疑惑、点赞、加油、拒绝、睡觉、吃饭、工作、摸鱼、打招呼、卖萌、害羞、坏笑、冷漠、" +
               "敷衍、震惊、鼓励、安慰、嘲讽、疲惫。挑不到对应标签会随机发一张。" +
             "想指定具体某张就填 name（比如 m007，或列表里的序号 7），不填就按 mood 挑；" +
-            "不确定有哪些张可以先调 list_stickers 看看。",
+            "不确定有哪些张可以先调 list_stickers 看看。" +
+            "quote 看心情：想直接回应对方某句话就设 true（表情带引用），只是想表达心情就不设。",
             parameters: {
               mood: { type: "string", description: "情绪关键词，随机挑一张时用" },
               name: { type: "string", description: "指定某张：文件名 m007 或序号 7，填了就不随机" },
+              quote: {
+                type: "boolean",
+                description:
+                  "要不要引用对方那条消息。想直接回应某人就填 true；只是气氛到了想发一张就填 false。看你心情。",
+              },
             },
             output: {
               schema: { type: "json" },
@@ -2497,7 +2587,9 @@ export function apply(ctx, _pluginConfig) {
                 return { ok: false, reason: `库里没有「${want}」这张，换个名字或用序号` };
               }
               if (!picked) return { ok: false, reason: "表情包目录为空" };
-              await client.sendImage(target, picked.path);
+              await client.sendImage(target, picked.path, {
+                quote: args?.quote === true,
+              });
               return {
                 ok: true,
                 sent: picked.name,
@@ -2758,6 +2850,276 @@ export function apply(ctx, _pluginConfig) {
         }),
       );
       logger.info?.("[onebot] 功能申请工具已注册");
+
+      // 让她能查自己的掉线记录
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "my_outages",
+          description:
+            "查自己最近 24 小时的掉线记录。有人问「你怎么不说话」「刚才去哪了」、" +
+            "或者你自己不确定是不是断过线时，用它确认一下，别硬编理由。",
+          parameters: {},
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async () => {
+            const now = Date.now();
+            const recent = outages.filter((o) => now - o.upAt < 24 * 3600_000);
+            if (!recent.length) {
+              return { ok: true, count: 0, note: "最近 24 小时没有掉线记录" };
+            }
+            const items = recent.slice(-10).map((o) => {
+              const d = new Date(o.downAt);
+              const u = new Date(o.upAt);
+              const fmt = (x) =>
+                `${String(x.getHours()).padStart(2, "0")}:${String(x.getMinutes()).padStart(2, "0")}`;
+              return { from: fmt(d), to: fmt(u), minutes: o.minutes };
+            });
+            const totalMin = items.reduce((a, b) => a + b.minutes, 0);
+            return {
+              ok: true,
+              count: items.length,
+              totalMinutes: totalMin,
+              recentlyDown: outageDownAt > 0,
+              items,
+            };
+          },
+        }),
+      );
+      logger.info?.("[onebot] 掉线查询工具已注册");
+
+      // ── 一组「了解自己」的小工具：她想查什么就查什么 ──
+      const TOOL_OUT = {
+        schema: { type: "json" },
+        render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+      };
+
+      // 1. 我现在什么状态
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "my_status",
+          description:
+            "查你自己现在的状态：在线多久、今天掉线几次、今天回了多少条、记忆里有多少东西、和谁最熟。",
+          parameters: {},
+          output: TOOL_OUT,
+          execute: async () => {
+            people.load();
+            const now = Date.now();
+            const today = new Date().toDateString();
+            const todayReplies = (() => {
+              try {
+                const raw = readFileSync(join(HOME, ".dsh/onebot-bridge/audit.log"), "utf8");
+                let c = 0;
+                for (const line of raw.split("\n")) {
+                  if (!line.includes('"kind":"reply"')) continue;
+                  try {
+                    const e = JSON.parse(line);
+                    if (new Date(e.ts).toDateString() === today) c += 1;
+                  } catch {
+                    // 忽略
+                  }
+                }
+                return c;
+              } catch {
+                return 0;
+              }
+            })();
+            const closest = Object.entries(people.data)
+              .map(([id, r]) => ({ id, name: r.name || id, count: Number(r.count ?? 0) }))
+              .sort((a, b) => b.count - a.count)
+              .slice(0, 5);
+            return {
+              ok: true,
+              uptimeMinutes: Math.round((now - health.restartedAt) / 60000),
+              outagesToday: outages.filter((o) => new Date(o.upAt).toDateString() === today).length,
+              todayReplies,
+              memory: {
+                people: Object.keys(people.data).length,
+                facts: facts.data.length,
+                views: selfViews.data.length,
+                reflections: selfViews.reflections.length,
+                learnings: (() => {
+                  try {
+                    const d = JSON.parse(
+                      readFileSync(join(HOME, ".dsh/onebot-bridge/learnings.json"), "utf8"),
+                    );
+                    return Array.isArray(d) ? d.length : 0;
+                  } catch {
+                    return 0;
+                  }
+                })(),
+              },
+              closest,
+            };
+          },
+        }),
+      );
+
+      // 2. 我记住了什么
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "my_memory",
+          description:
+            "翻自己的记忆。type 可选 people（人物）/ facts（事实）/ views（观点）/ reflections（反思）/" +
+            "learnings（学到的）；query 可选关键词，填了就只返回相关的。",
+          parameters: {
+            type: { type: "string", description: "people / facts / views / reflections / learnings" },
+            query: { type: "string", description: "关键词，可不填" },
+          },
+          output: TOOL_OUT,
+          execute: async (args) => {
+            const type = String(args?.type ?? "facts").toLowerCase();
+            const q = String(args?.query ?? "").trim();
+            const hit = (t) => !q || String(t).includes(q);
+            if (type === "people") {
+              people.load();
+              const list = Object.entries(people.data)
+                .filter(([, r]) => hit(r.name || "") || (r.notes || []).some(hit))
+                .map(([id, r]) => ({ id, name: r.name || id, count: r.count ?? 0, notes: (r.notes || []).slice(-3) }))
+                .slice(0, 10);
+              return { ok: true, type, count: list.length, items: list };
+            }
+            if (type === "facts") {
+              const items = facts.data.filter((f) => hit(f.text)).slice(-15).map((f) => f.text);
+              return { ok: true, type, count: items.length, items };
+            }
+            if (type === "views") {
+              const items = selfViews.data.filter((v) => hit(v.text)).slice(-15).map((v) => v.text);
+              return { ok: true, type, count: items.length, items };
+            }
+            if (type === "reflections") {
+              const items = selfViews.reflections.filter((r) => hit(r.text)).slice(-10).map((r) => r.text);
+              return { ok: true, type, count: items.length, items };
+            }
+            if (type === "learnings") {
+              try {
+                const arr = JSON.parse(
+                  readFileSync(join(HOME, ".dsh/onebot-bridge/learnings.json"), "utf8"),
+                );
+                const items = (Array.isArray(arr) ? arr : [])
+                  .filter((l) => hit(l.topic || "") || hit(l.summary || ""))
+                  .slice(-10)
+                  .map((l) => ({ topic: l.topic, summary: l.summary }));
+                return { ok: true, type, count: items.length, items };
+              } catch {
+                return { ok: true, type, count: 0, items: [] };
+              }
+            }
+            return { ok: false, reason: "type 只能是 people/facts/views/reflections/learnings" };
+          },
+        }),
+      );
+
+      // 3. 这个人是谁
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "person_dossier",
+          description:
+            "查某个人：我和他聊过几次、在哪些群见过、他最近在各群说过什么、我对他有什么印象。" +
+            "有人问「我们有几个共同群」「他刚才在别的群说了啥」就用这个。",
+          parameters: { qq: { type: "string", description: "对方 QQ 号" } },
+          output: TOOL_OUT,
+          execute: async (args) => {
+            people.load();
+            const id = String(args?.qq ?? "").trim();
+            const r = people.data[id];
+            if (!r) return { ok: false, reason: `没有 ${id} 的记录` };
+            const groups = (r.groups || []).map((g) => groupLabel(g));
+            const recent = [];
+            for (const [gid, arr] of Object.entries(r.recentByGroup || {})) {
+              for (const it of arr) recent.push({ group: groupLabel(gid), text: it.text, at: it.at });
+            }
+            recent.sort((a, b) => b.at - a.at);
+            return {
+              ok: true,
+              qq: id,
+              name: r.name || id,
+              address: r.address || "",
+              count: r.count ?? 0,
+              groups,
+              groupCount: groups.length,
+              notes: (r.notes || []).slice(-5),
+              recentSaid: recent.slice(0, 8).map((x) => ({
+                where: x.group,
+                when: new Date(x.at).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }),
+                what: x.text,
+              })),
+            };
+          },
+        }),
+      );
+
+      // 4. 这个群最近在聊什么
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "group_recap",
+          description: "查某个群最近的话题和主要在聊什么。",
+          parameters: { gid: { type: "string", description: "群号" } },
+          output: TOOL_OUT,
+          execute: async (args) => {
+            const gid = String(args?.gid ?? "").trim();
+            const key = `group:${gid}`;
+            const ent = sessions.entries.get(key);
+            if (!ent) return { ok: false, reason: `没有群 ${gid} 的会话记录` };
+            const win = ent.topicWindow ?? [];
+            const cnt = new Map();
+            for (const it of win) for (const w of it.w || []) cnt.set(w, (cnt.get(w) ?? 0) + 1);
+            const topics = [...cnt.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([w]) => w);
+            const obs = (ent.observations ?? []).slice(-6);
+            return {
+              ok: true,
+              group: groupLabel(gid),
+              lastActive: ent.lastMessageAt
+                ? new Date(ent.lastMessageAt).toLocaleString("zh-CN")
+                : "未知",
+              topics,
+              recent: obs,
+            };
+          },
+        }),
+      );
+
+      // 5. 谁说过 X
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "who_said",
+          description:
+            "跨群搜：谁在哪个群说过某个词（基于最近各群的发言摘要）。" +
+            "想找「这话是谁说的」「哪个群聊过这个」时用。",
+          parameters: { word: { type: "string", description: "要搜的词" } },
+          output: TOOL_OUT,
+          execute: async (args) => {
+            const w = String(args?.word ?? "").trim();
+            if (!w) return { ok: false, reason: "要搜什么词？" };
+            people.load();
+            const hits = [];
+            for (const [id, r] of Object.entries(people.data)) {
+              for (const [gid, arr] of Object.entries(r.recentByGroup || {})) {
+                for (const it of arr) {
+                  if (String(it.text).includes(w)) {
+                    hits.push({
+                      who: r.name || id,
+                      qq: id,
+                      where: groupLabel(gid),
+                      when: new Date(it.at).toLocaleString("zh-CN", {
+                        month: "2-digit",
+                        day: "2-digit",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      }),
+                      what: it.text,
+                    });
+                  }
+                }
+              }
+            }
+            hits.sort((a, b) => (b.when > a.when ? 1 : -1));
+            return { ok: true, word: w, count: hits.length, hits: hits.slice(0, 10) };
+          },
+        }),
+      );
+      logger.info?.("[onebot] 自我认知工具已注册（status/memory/dossier/recap/who_said）");
 
       // 拒聊：声明后一段时间内不再回这个人，并结束当前的续聊
       ctx.get?.("tools")?.register?.(
@@ -4978,7 +5340,11 @@ export function apply(ctx, _pluginConfig) {
     const parsed = parseMessage(ev, cfg.selfId);
     // 有人用纯文本打「@昵称」时 OneBot 不给 at 段，这里补上识别
     try {
-      if (!parsed.hasAt && /@\s*(肥鱼|大鱼|鱼鱼)/.test(String(parsed.text || ""))) {
+      if (
+        !parsed.hasAt &&
+        (/@\s*(肥鱼|大鱼|鱼鱼)/.test(String(parsed.text || "")) ||
+          String(parsed.text || "").includes(`@${cfg.selfId}`))
+      ) {
         parsed.hasAt = true;
         parsed.textAtMe = true;
         logger.info?.("[onebot] 识别到文本形式的 @（无 at 段）");
@@ -4992,47 +5358,14 @@ export function apply(ctx, _pluginConfig) {
     if (!parsed.text && !parsed.hasAt) return;
 
     const nickname = ev.sender?.card || ev.sender?.nickname || String(ev.user_id);
-    people.touch(ev.user_id, nickname, ev.message_type === "group" ? ev.group_id : 0);
+    people.touch(
+      ev.user_id,
+      nickname,
+      ev.message_type === "group" ? ev.group_id : 0,
+      parsed.text,
+    );
 
     const key = conversationKey(ev);
-
-    // 十分严格的选择性沉默：只在深夜 + 群聊 + 极短且非问句时偶尔不回
-    if (cfg.silentMode !== false && ev.message_type === "group") {
-      try {
-        const h = new Date().getHours();
-        const isNight = h >= Number(cfg.nightStart ?? 1) && h < Number(cfg.nightEnd ?? 6);
-        const txt = String(parsed.text || "").trim();
-        const noQuestion = !/[?？吗呢吧]/.test(txt) && !/(帮|请|问|怎么|为什么|啥|什么)/.test(txt);
-        const today = new Date().toDateString();
-        if (cfg.__silentDay !== today) {
-          cfg.__silentDay = today;
-          cfg.__silentCount = 0;
-        }
-        if (
-          isNight &&
-          txt.length <= 8 &&
-          noQuestion &&
-          Number(cfg.__silentCount ?? 0) < 5
-        ) {
-          cfg.__silentCount = Number(cfg.__silentCount ?? 0) + 1;
-          try {
-            const ent = sessions.entries.get(key);
-            if (ent) {
-              ent.nightPending = ent.nightPending ?? [];
-              ent.nightPending.push({ name: nickname, text: txt, at: Date.now() });
-              if (ent.nightPending.length > 20) ent.nightPending.shift();
-            }
-          } catch {
-            // 忽略
-          }
-          logger.info?.(`[onebot] 深夜+极短消息，这次不回（已存待回）：${conversationKey(ev)}「${txt}」`);
-          audit({ kind: "silent_skip", key: conversationKey(ev), text: txt });
-          return;
-        }
-      } catch {
-        // 判断失败就正常回
-      }
-    }
 
     // 主人的自然语言控制：状态/静音/打断/档位/代发言
     if (await handleOwnerNatural(ev, parsed.text)) {
@@ -5084,6 +5417,33 @@ export function apply(ctx, _pluginConfig) {
       logger.info?.(
         `[onebot] 续聊命中 ${key} 用户 ${ev.user_id}（第 ${hit.rec.turns + 1}/${hit.rec.max} 轮，剩余 ${Math.round((hit.rec.until - nowTs) / 1000)}s）`,
       );
+    }
+
+    // B：窗口里是 A，但现在 B 说的话明显在接她的话 → 也算继续（不用等模型判断）
+    if (!continuing && ev.message_type === "group" && !parsed.hasAt && cfg.followUpEnabled) {
+      try {
+        const otherTarget = activeWindowTarget(key, ev.user_id);
+        if (otherTarget) {
+          const e1 = sessions.entries.get(key);
+          const lastText = String(e1?.lastReplyText ?? "");
+          const related =
+            !!parsed.replyToMe ||
+            /(你|您)/.test(String(parsed.text || "")) ||
+            textOverlaps(parsed.text, lastText);
+          if (related) {
+            continuing = true;
+            switchedFrom = otherTarget;
+            closeWindowFor(key, otherTarget);
+            openWindow(key, ev.user_id);
+            logger.info?.(
+              `[onebot] 窗口内换人接话 ${key}：${otherTarget} → ${ev.user_id}（${related ? "内容相关" : ""}）`,
+            );
+            audit({ kind: "window_handoff", key, from: otherTarget, to: String(ev.user_id) });
+          }
+        }
+      } catch {
+        // 忽略
+      }
     }
 
     // 换目标：她刚回完 A 的 10 秒内，B 没 @ 也开口了 → 先让模型判断两步
@@ -5203,6 +5563,7 @@ export function apply(ctx, _pluginConfig) {
             nTs - (entry.lastActiveJoinAt ?? 0) >
             (Number(cfg.activeJoinCooldownMinutes) || 30) * 60000;
           if (
+            activeHoursOk() &&
             entry.msgTimes.length >= (Number(cfg.activeJoinPerMinute) || 6) &&
             idleFromActive > (Number(cfg.activeJoinIdleMinutes) || 10) * 60000 &&
             cooldownOk &&
@@ -6048,11 +6409,13 @@ export function apply(ctx, _pluginConfig) {
         ? "（这是你的主人。）\n"
         : "";
     const lenHint = pickLengthHint(parsed.text);
+    // 她需要知道自己是不是刚断过线，否则会莫名其妙答不上对方的话
+    const outageNote = recentOutageNote();
     const prompt = stripLoneSurrogates(
       (
         cfg.styleHint
-          ? `${cfg.styleHint}\n${lenHint}\n${ownerNote}\n${body}`
-          : `${lenHint}\n${ownerNote}${body}`
+          ? `${cfg.styleHint}\n${lenHint}\n${outageNote ? outageNote + "\n" : ""}${ownerNote}\n${body}`
+          : `${lenHint}\n${outageNote ? outageNote + "\n" : ""}${ownerNote}${body}`
       ).trim(),
     );
     try {
@@ -6503,6 +6866,110 @@ export function apply(ctx, _pluginConfig) {
     groupMetaTimer.unref?.();
   }
 
+  // ── 主动行为时段：23 点到次日 9 点不主动开口 ──
+  function activeHoursOk() {
+    try {
+      const h = new Date().getHours();
+      const start = Number(cfg.activeStartHour ?? 9);
+      const end = Number(cfg.activeEndHour ?? 23);
+      if (start < end) return h >= start && h < end;
+      return h >= start || h < end; // 跨夜写法
+    } catch {
+      return true;
+    }
+  }
+
+  // ── 她发出去的消息 id：有人引用这条，等于在跟她说话 ──
+  const myMsgIds = new Set();
+  const myMsgOrder = [];
+  function noteMyMessage(mid) {
+    try {
+      const id = String(mid || "");
+      if (!id || myMsgIds.has(id)) return;
+      myMsgIds.add(id);
+      myMsgOrder.push(id);
+      if (myMsgOrder.length > 300) {
+        const old = myMsgOrder.shift();
+        myMsgIds.delete(old);
+      }
+    } catch {
+      // 忽略
+    }
+  }
+  client.onSentMessage = (mid) => noteMyMessage(mid);
+
+  /** 这条消息引用了她自己发的内容吗 */
+  function isReplyToMe(parsed) {
+    try {
+      if (!Array.isArray(parsed?.replyIds) || !parsed.replyIds.length) return false;
+      return parsed.replyIds.some((rid) => myMsgIds.has(String(rid)));
+    } catch {
+      return false;
+    }
+  }
+
+  // ── 掉线记录：让她知道自己刚才断过 ──
+  const OUTAGE_PATH = join(HOME, ".dsh/onebot-bridge/outages.json");
+  let outages = [];
+  try {
+    const raw = readFileSync(OUTAGE_PATH, "utf8");
+    outages = JSON.parse(raw);
+    if (!Array.isArray(outages)) outages = [];
+  } catch {
+    outages = [];
+  }
+  let outageDownAt = 0; // 当前这次掉线的开始时间（0 = 没在掉线）
+  let lastOutageInfo = null; // 最近一次已恢复的掉线 { downAt, upAt, minutes }
+
+  function saveOutages() {
+    try {
+      if (outages.length > 200) outages = outages.slice(-200);
+      writeFileSync(OUTAGE_PATH, JSON.stringify(outages));
+    } catch {
+      // 忽略
+    }
+  }
+
+  function noteOutageFromClient(kind, ts) {
+    try {
+      if (kind === "down") {
+        if (!outageDownAt) outageDownAt = ts;
+        logger.warn?.("[onebot] 掉线开始");
+      } else if (kind === "up") {
+        if (outageDownAt) {
+          const minutes = Math.max(1, Math.round((ts - outageDownAt) / 60000));
+          outages.push({ downAt: outageDownAt, upAt: ts, minutes });
+          lastOutageInfo = { downAt: outageDownAt, upAt: ts, minutes };
+          saveOutages();
+          logger.info?.(`[onebot] 掉线恢复，断了 ${minutes} 分钟`);
+          outageDownAt = 0;
+        }
+      }
+    } catch {
+      // 忽略
+    }
+  }
+
+  /** 给她看的掉线摘要（最近 2 小时内） */
+  function recentOutageNote() {
+    try {
+      const now = Date.now();
+      const recent = outages.filter((o) => now - o.upAt < 2 * 3600_000).slice(-3);
+      if (!recent.length) return "";
+      const list = recent
+        .map((o) => {
+          const d = new Date(o.upAt);
+          const hh = String(d.getHours()).padStart(2, "0");
+          const mm = String(d.getMinutes()).padStart(2, "0");
+          return `${hh}:${mm} 恢复（断了 ${o.minutes} 分钟）`;
+        })
+        .join("；");
+      return `（说明：你最近断线过 — ${list}。断线期间的消息可能刚补回来或者丢了，如果对方说"你怎么不说话"就是这个原因。）`;
+    } catch {
+      return "";
+    }
+  }
+
   // ── 健康状态（给看门狗读） ──
   const HEALTH_PATH = join(HOME, ".dsh/onebot-bridge/health.json");
   const health = {
@@ -6777,13 +7244,8 @@ export function apply(ctx, _pluginConfig) {
     return group ?? entries[0] ?? null;
   };
 
-  const inQuietHours = () => {
-    const h = new Date().getHours();
-    const a = Number(cfg.proactiveQuietStart ?? 1);
-    const b = Number(cfg.proactiveQuietEnd ?? 8);
-    if (a === b) return false;
-    return a < b ? h >= a && h < b : h >= a || h < b;
-  };
+  // 统一用「活跃时段」：23-9 点不做任何主动行为
+  const inQuietHours = () => !activeHoursOk();
 
   function scheduleProactive() {
     if (!cfg.proactiveEnabled || cfg.autoActionsEnabled === false) return;
@@ -6866,6 +7328,7 @@ export function apply(ctx, _pluginConfig) {
   function checkSoloStreak() {
     if (cfg.soloStreakEnabled === false || cfg.autoActionsEnabled === false) return;
     if (!client.connected) return; // 掉线时别搭话，发了也白发
+    if (!activeHoursOk()) return; // 23-9 点不主动搭话
     const nowTs = Date.now();
     const minMsgs = Number(cfg.soloStreakMin) || 3;
     const waitMs = (Number(cfg.soloStreakWaitSeconds) || 1800) * 1000;
@@ -6901,11 +7364,7 @@ export function apply(ctx, _pluginConfig) {
   async function checkQuietGroups() {
     if (!cfg.quietTopicEnabled || cfg.autoActionsEnabled === false) return;
     if (!client.connected) return; // 掉线时跳过
-    const hNow = new Date().getHours();
-    const nStart = Number(cfg.nightStart ?? 23);
-    const nEnd = Number(cfg.nightEnd ?? 7);
-    const isNight = nStart < nEnd ? hNow >= nStart && hNow < nEnd : hNow >= nStart || hNow < nEnd;
-    if (cfg.quietNightQuiet !== false && isNight) return; // 夜里不主动开话题
+    if (!activeHoursOk()) return; // 23-9 点不主动开话题
     const nowTs = Date.now();
     const limit = (Number(cfg.quietTopicHours) || 2) * 3600 * 1000;
     // 覆盖「所有见过的群」——只遍历内存里的 entries 会漏掉没建过会话的群
@@ -7512,6 +7971,103 @@ export function apply(ctx, _pluginConfig) {
   setInterval(() => {
     void hourlyIntrospect();
   }, 60 * 60 * 1000).unref?.();
+
+  // ── 自主探索：顺着链接往下读，学成一条记忆 ──
+  const LEARN_PATH = join(HOME, ".dsh/onebot-bridge/learnings.json");
+  function loadLearnings() {
+    try {
+      const d = JSON.parse(readFileSync(LEARN_PATH, "utf8"));
+      return Array.isArray(d) ? d : [];
+    } catch {
+      return [];
+    }
+  }
+  function saveLearnings(arr) {
+    try {
+      writeFileSync(LEARN_PATH, JSON.stringify(arr.slice(-200), null, 1));
+    } catch {
+      // 忽略
+    }
+  }
+
+  async function maybeExplore() {
+    if (cfg.autoExplore === false || cfg.autoActionsEnabled === false) return;
+    if (!client.connected || !activeHoursOk()) return;
+    const today = new Date().toDateString();
+    const learns = loadLearnings();
+    const todayCount = learns.filter((l) => new Date(l.at).toDateString() === today).length;
+    if (todayCount >= (Number(cfg.autoExplorePerDay) || 3)) return;
+
+    // 找最近活跃、且有话题的群
+    let bestKey = null;
+    let bestAt = 0;
+    for (const [k, e] of sessions.entries) {
+      if (!k.startsWith("group:")) continue;
+      const t = e.lastMessageAt ?? 0;
+      if (t > bestAt) {
+        bestAt = t;
+        bestKey = k;
+      }
+    }
+    if (!bestKey || Date.now() - bestAt > 6 * 3600_000) return;
+
+    const ent = sessions.entries.get(bestKey);
+    const cnt = new Map();
+    for (const it of ent?.topicWindow ?? []) for (const w of it.w || []) cnt.set(w, (cnt.get(w) ?? 0) + 1);
+    const candidates = [...cnt.entries()]
+      .filter(([w, c]) => c >= 2 && w.length >= 2 && !/^(这个|那个|什么|就是|没有|可以|不是|现在|然后)$/.test(w))
+      .sort((a, b) => b[1] - a[1])
+      .map(([w]) => w)
+      .slice(0, 5);
+    if (!candidates.length) return;
+
+    const topic = candidates[Math.floor(Math.random() * candidates.length)];
+    // 30 天内学过就不重复
+    if (learns.some((l) => l.topic === topic && Date.now() - l.at < 30 * 86400_000)) return;
+
+    logger.info?.(`[onebot] 自主探索：围绕「${topic}」往下查`);
+    audit({ kind: "explore_start", topic, key: bestKey });
+    try {
+      const raw = String(
+        (await sessions.runSilent(
+          bestKey,
+          "（内部探索，不要发到群里。你可以用 web_search 和 web_fetch。）\n" +
+            `最近群里聊到「${topic}」，你不太懂。往下查一查：\n` +
+            "1. 先 web_search 搜一次，挑一个看起来最靠谱的结果；\n" +
+            "2. web_fetch 读它，如果页面上有更想深入了解的链接/术语，再搜或再读一次（一共最多 3 跳）；\n" +
+            "3. 停下来后，用你自己的话写 100-200 字总结，再加一句「我的感想」。\n" +
+            "只输出 JSON，不要别的：\n" +
+            '{"summary":"...","learned":"...","path":["你依次看过的页面或关键词"]}',
+        )) ?? "",
+      ).trim();
+      const m = raw.match(/\{[\s\S]*\}/);
+      if (!m) {
+        logger.info?.("[onebot] 探索没产出有效内容，放弃");
+        return;
+      }
+      const obj = JSON.parse(m[0]);
+      const summary = String(obj.summary || "").trim().slice(0, 400);
+      if (summary.length < 20) return;
+      learns.push({
+        topic,
+        summary,
+        learned: String(obj.learned || "").trim().slice(0, 200),
+        path: Array.isArray(obj.path) ? obj.path.slice(0, 6).map((x) => String(x).slice(0, 120)) : [],
+        from: bestKey,
+        at: Date.now(),
+      });
+      saveLearnings(learns);
+      logger.info?.(`[onebot] 学到一条：${topic}｜${summary.slice(0, 40)}`);
+      audit({ kind: "explore_done", topic, summary: summary.slice(0, 200) });
+    } catch (err) {
+      logger.warn?.(`[onebot] 探索失败：${err?.message ?? err}`);
+    }
+  }
+
+  // 每 3 小时看一次（9-23 点之间才真跑）
+  setInterval(() => {
+    void maybeExplore();
+  }, 3 * 3600_000).unref?.();
 
   // ── 说说：不按固定时间，而是问她「现在有没有想说的」──
   const QZONE_PLAN = join(HOME, ".dsh/onebot-bridge/qzone-plan.json");
