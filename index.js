@@ -1617,6 +1617,55 @@ class SessionManager {
     return job;
   }
 
+  /** 用临时会话看一张图并描述（不占用当前对话的 agent） */
+  async describeImage(image, question) {
+    const agents = this.svc("agents");
+    if (!agents) return "";
+    const att = this.svc("attachments");
+    if (!att) return "";
+    const tmpId = `vision-${Date.now()}`;
+    let agent = null;
+    try {
+      const setup = async (agentCtx) => {
+        try {
+          const presets = this.svc("agentPresets");
+          if (presets?.mount) await presets.mount(agentCtx);
+        } catch {
+          // 忽略
+        }
+      };
+      agent = await agents.create({
+        sessionId: SessionId(tmpId),
+        meta: { cwd: this.cfg.workspace },
+        setup,
+        agentOptions: this.agentOptions(),
+      });
+      const ref = await att.saveImage({ data: image.data, mediaType: image.mediaType });
+      const session = agent.session;
+      const firstSeq = session.seq;
+      agent.followup(
+        createUserMessage({
+          content: [
+            { type: "text", text: question || "这张图是什么？一两句话描述，别长篇。" },
+            { type: "image", attachment: ref },
+          ],
+          source: { kind: "user" },
+        }),
+      );
+      await withTimeout(agent.whenIdle(), 45000, "vision-turn");
+      return String(extractReply(session, firstSeq) ?? "").trim();
+    } catch (err) {
+      this.logger?.warn?.(`[onebot] 看图失败：${err?.message ?? err}`);
+      return "";
+    } finally {
+      try {
+        await agent?.dispose?.();
+      } catch {
+        // 忽略
+      }
+    }
+  }
+
   /** 静默回合：只让她想/记，不把任何内容发到 QQ */
   async runSilent(key, instruction) {
     const entry = await this.ensure(key);
@@ -2061,6 +2110,7 @@ export function apply(ctx, _pluginConfig) {
     "person_dossier",
     "group_recap",
     "who_said",
+    "view_avatar",
     "revise_self",
     "forget_self",
     // 只读网络：查天气/新闻这类需求要靠它，安全但限频
@@ -2867,16 +2917,35 @@ export function apply(ctx, _pluginConfig) {
             const now = Date.now();
             const recent = outages.filter((o) => now - o.upAt < 24 * 3600_000);
             if (!recent.length) {
-              return { ok: true, count: 0, note: "最近 24 小时没有掉线记录" };
+              return {
+                ok: true,
+                count: 0,
+                recentlyDown: outageDownAt > 0,
+                note:
+                  outageDownAt > 0
+                    ? "你此刻正在掉线中（还没恢复），所以历史记录里没有它"
+                    : "最近 24 小时没有掉线记录",
+              };
             }
-            const items = recent.slice(-10).map((o) => {
-              const d = new Date(o.downAt);
-              const u = new Date(o.upAt);
-              const fmt = (x) =>
-                `${String(x.getHours()).padStart(2, "0")}:${String(x.getMinutes()).padStart(2, "0")}`;
-              return { from: fmt(d), to: fmt(u), minutes: o.minutes };
-            });
+            const fmt = (x) =>
+              `${String(x.getHours()).padStart(2, "0")}:${String(x.getMinutes()).padStart(2, "0")}`;
+            const items = recent.slice(-10).map((o) => ({
+              from: fmt(new Date(o.downAt)),
+              to: fmt(new Date(o.upAt)),
+              minutes: o.minutes,
+            }));
+            // 当前这次还没恢复的掉线，也要能看到
+            if (outageDownAt > 0) {
+              const mins = Math.max(1, Math.round((Date.now() - outageDownAt) / 60000));
+              items.push({
+                from: fmt(new Date(outageDownAt)),
+                to: "现在",
+                minutes: mins,
+                ongoing: true,
+              });
+            }
             const totalMin = items.reduce((a, b) => a + b.minutes, 0);
+            audit({ kind: "check_outages", count: items.length, ongoing: outageDownAt > 0 });
             return {
               ok: true,
               count: items.length,
@@ -3120,6 +3189,57 @@ export function apply(ctx, _pluginConfig) {
         }),
       );
       logger.info?.("[onebot] 自我认知工具已注册（status/memory/dossier/recap/who_said）");
+
+      // 看头像：有兴趣的时候瞄一眼别人头像长什么样
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "view_avatar",
+          description:
+            "看一眼某人的 QQ 头像长什么样。有兴趣、想接梗、或者想知道对方是什么风格时用。" +
+            "别滥用——一天最多看几次，每次都会花一点算力。",
+          parameters: {
+            qq: { type: "string", description: "对方 QQ 号" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args, exec) => {
+            const qq = String(args?.qq ?? "").trim();
+            if (!/^\d{5,12}$/.test(qq)) return { ok: false, reason: "QQ 号不对" };
+            // 限频：每小时最多 3 次
+            const now = Date.now();
+            while (avatarTimes.length && now - avatarTimes[0] > 3600_000) avatarTimes.shift();
+            if (avatarTimes.length >= (Number(cfg.avatarPeekPerHour) || 3)) {
+              return { ok: false, reason: "这一小时看够了，先干正事" };
+            }
+            const url = `https://q1.qlogo.cn/g?b=qq&nk=${qq}&s=640`;
+            const img = await downloadImage(url, 2 * 1024 * 1024);
+            if (!img) return { ok: false, reason: "头像下载失败" };
+            avatarTimes.push(now);
+            const sid = String(exec?.agent?.session?.id ?? "");
+            const entry = sid ? sessions.bySessionId(sid) : null;
+            const who =
+              (() => {
+                try {
+                  people.load();
+                  return people.data[qq]?.name || qq;
+                } catch {
+                  return qq;
+                }
+              })();
+            const desc = await sessions.describeImage(
+              img,
+              `这是 QQ 用户「${who}」的头像。用一两句话描述画面内容（画的是什么、什么风格、什么颜色），` +
+                "像随口说一句，不要分析、不要评价。",
+            );
+            if (!desc) return { ok: false, reason: "看了但没看明白" };
+            audit({ kind: "view_avatar", qq, desc: desc.slice(0, 200) });
+            return { ok: true, who, avatar: desc };
+          },
+        }),
+      );
+      logger.info?.("[onebot] 看头像工具已注册");
 
       // 拒聊：声明后一段时间内不再回这个人，并结束当前的续聊
       ctx.get?.("tools")?.register?.(
@@ -6143,6 +6263,21 @@ export function apply(ctx, _pluginConfig) {
             }
           }
         }
+        // 被引用消息里的文字，也要作为上下文（引用往往就是在回应这段）
+        try {
+          const qText = qsegs
+            .filter((x) => x?.type === "text")
+            .map((x) => String(x?.data?.text ?? ""))
+            .join("")
+            .trim();
+          if (qText && qText !== String(parsed.text || "").trim()) {
+            parsed.quotedText = qText.slice(0, 300);
+            parsed.quotedFrom = String(quoted?.sender?.card || quoted?.sender?.nickname || "");
+            logger.info?.(`[onebot] 引用内容已取到：${qText.slice(0, 40)}`);
+          }
+        } catch {
+          // 忽略
+        }
         const fwSeg = qsegs.find((x) => x?.type === "forward");
         if (fwSeg) {
           parsed.forwards.push({
@@ -6403,7 +6538,15 @@ export function apply(ctx, _pluginConfig) {
       const rendered = facts.render(6);
       if (rendered) factLine = `[你记得的事] ${rendered}\n`;
     }
-    const body = vibeNote + slangNote + selfLine + emptyAtNote + forwardNote + fileNote + catchupNote + recallNote + linkNote + crossNote + factLine + bodyBase + observed;
+    // 引用了某条消息：把那段也给她看，否则容易答非所问
+    let quoteNote = "";
+    if (parsed.quotedText) {
+      quoteNote = `\n[对方引用的那条消息]${parsed.quotedFrom ? parsed.quotedFrom + "：" : ""}${parsed.quotedText}\n`;
+    } else if (parsed.replyIds?.length && parsed.replySummary) {
+      // 原文查不到（旧客户端消息），用摘要兜底
+      quoteNote = `\n[对方引用的那条消息]（只有摘要）${parsed.replySummary}\n`;
+    }
+    const body = vibeNote + slangNote + selfLine + emptyAtNote + quoteNote + forwardNote + fileNote + catchupNote + recallNote + linkNote + crossNote + factLine + bodyBase + observed;
     const ownerNote =
       cfg.ownerId && String(ev.user_id) === String(cfg.ownerId) && ev.message_type !== "group"
         ? "（这是你的主人。）\n"
@@ -6955,7 +7098,8 @@ export function apply(ctx, _pluginConfig) {
     try {
       const now = Date.now();
       const recent = outages.filter((o) => now - o.upAt < 2 * 3600_000).slice(-3);
-      if (!recent.length) return "";
+      const ongoing = outageDownAt > 0;
+      if (!recent.length && !ongoing) return "";
       const list = recent
         .map((o) => {
           const d = new Date(o.upAt);
@@ -6964,7 +7108,10 @@ export function apply(ctx, _pluginConfig) {
           return `${hh}:${mm} 恢复（断了 ${o.minutes} 分钟）`;
         })
         .join("；");
-      return `（说明：你最近断线过 — ${list}。断线期间的消息可能刚补回来或者丢了，如果对方说"你怎么不说话"就是这个原因。）`;
+      const ong = ongoing
+        ? `你刚刚断线过，${Math.max(1, Math.round((now - outageDownAt) / 60000))} 分钟前才恢复。`
+        : "";
+      return `（说明：${ong}你最近断线过 — ${list}。断线期间的消息可能刚补回来或者丢了，如果对方说"你怎么不说话"就是这个原因。）`;
     } catch {
       return "";
     }
@@ -7118,6 +7265,44 @@ export function apply(ctx, _pluginConfig) {
       return next();
     }
   });
+
+  // ── 统一的工具调用日志：她调了什么、成没成，都留个痕 ──
+  const TOOL_LOG_SKIP = new Set(["list_stickers", "repeat_reminder"]);
+  try {
+    ctx.on("tools/post-execute", async (exec, result, next) => {
+      const decision = await next();
+      try {
+        const toolName = String(exec?.name ?? "");
+        if (!toolName || TOOL_LOG_SKIP.has(toolName)) return decision;
+        const argsStr = (() => {
+          try {
+            return JSON.stringify(exec?.args ?? {}).slice(0, 120);
+          } catch {
+            return "";
+          }
+        })();
+        const failed =
+          decision?.kind === "error" ||
+          !!result?.error ||
+          (typeof result?.content === "string" && /error|失败/i.test(result.content.slice(0, 40)));
+        audit({
+          kind: "tool",
+          tool: toolName,
+          args: argsStr,
+          ok: !failed,
+        });
+        if (failed) {
+          logger.warn?.(`[onebot] 工具失败：${toolName} ${argsStr}`);
+        }
+      } catch {
+        // 日志失败不影响工具
+      }
+      return decision;
+    });
+    logger.info?.("[onebot] 工具调用日志已启用");
+  } catch (err) {
+    logger.warn?.(`[onebot] 工具日志注册失败：${err?.message ?? err}`);
+  }
 
   // ── 自发消息转发：agent 自己开口（speak-up 等）时把话发到 QQ ──
   // 桥触发的回合由 sendHuman 自己发，这里只处理「不是桥触发的」turn。
