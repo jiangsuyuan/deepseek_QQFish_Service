@@ -9,6 +9,9 @@
  * - 配置在 ~/.dsh/onebot-bridge/config.json，热读一次（重启生效）
  */
 import net from "node:net";
+import http from "node:http";
+import { execFile, execFileSync } from "node:child_process";
+import { promisify } from "node:util";
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, join as pathJoin } from "node:path";
@@ -548,6 +551,15 @@ class OneBotClient {
   }
 
   sendText(ev, text, opts = {}) {
+    // WebUI 来的消息：不发给 QQ，推给浏览器（类方法访问不到外层，用回调）
+    if (ev?.__fromWebUI) {
+      try {
+        this.onWebReply?.(String(text || ""));
+      } catch {
+        // 忽略
+      }
+      return Promise.resolve({ message_id: `webui-reply-${Date.now()}` });
+    }
     const segs = [];
     if (opts.quote && ev.message_id) {
       segs.push({ type: "reply", data: { id: String(ev.message_id) } });
@@ -1917,6 +1929,7 @@ export function apply(ctx, _pluginConfig) {
   const client = new OneBotClient(cfg, logger);
   client.readyFn = () => agentReady;
   client.onOutage = (kind, ts) => noteOutageFromClient(kind, ts);
+  client.onWebReply = (text) => webPush({ role: "her", text });
   const recentIds = new Set();
   const recentOrder = [];
 
@@ -2118,8 +2131,12 @@ export function apply(ctx, _pluginConfig) {
     "my_adventures",
     "my_digest",
     "memory_index",
+    "run_code",
+    "read_source",
     "note_want",
     "my_wants",
+    "resolve_want",
+    "drop_want",
     "revise_self",
     "forget_self",
     // 只读网络：查天气/新闻这类需求要靠它，安全但限频
@@ -3490,6 +3507,159 @@ export function apply(ctx, _pluginConfig) {
       );
       logger.info?.("[onebot] 记忆索引工具已注册（my_digest/memory_index）");
 
+      // ── 沙箱代码能力：能在里面折腾，威胁不到本体和记忆 ──
+      const runCodeTimes = [];
+      const BANNED_CODE = [
+        /\/root\/\.dsh/,
+        /\/root\/dev/,
+        /subprocess|os\.system|os\.popen/,
+        /socket|requests|urllib|http\.client|fetch\(/,
+        /\.\.\/\.\.\//,
+        /chmod|chown|rm\s+-rf/,
+      ];
+
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "run_code",
+          description:
+            "在自己的沙箱里跑一小段代码，看结果。可以算数、统计、处理文本、画图（matplotlib）、写个小游戏跑起来。" +
+            "沙箱是断网的、降权的、限时的，你碰不到自己的记忆和源码（那些是只读的）。" +
+            "language 填 python 或 javascript；输出最多 4000 字。",
+          parameters: {
+            language: { type: "string", description: "python 或 javascript" },
+            code: { type: "string", description: "要跑的代码" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            const lang = String(args?.language ?? "python").toLowerCase();
+            const code = String(args?.code ?? "");
+            if (!code.trim()) return { ok: false, reason: "代码是空的" };
+            if (code.length > 8000) return { ok: false, reason: "代码太长（最多 8000 字）" };
+            // 静态检查
+            for (const re of BANNED_CODE) {
+              if (re.test(code)) {
+                audit({ kind: "run_code_blocked", pattern: String(re), code: code.slice(0, 200) });
+                return { ok: false, reason: `这段代码里有个不该有的东西（${re}），沙箱不让它跑` };
+              }
+            }
+            // 限频
+            const now = Date.now();
+            while (runCodeTimes.length && now - runCodeTimes[0] > 3600_000) runCodeTimes.shift();
+            if (runCodeTimes.length >= (Number(cfg.runCodePerHour) || 20)) {
+              return { ok: false, reason: "这一小时跑得够多了，先歇歇" };
+            }
+            runCodeTimes.push(now);
+
+            const dir = `/tmp/sbx-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+            try {
+              mkdirSync(dir, { recursive: true });
+              const file = lang === "javascript" ? "main.js" : "main.py";
+              writeFileSync(join(dir, file), code);
+              // 让 sandbox 用户能读
+              try {
+                execFileSync("chown", ["-R", "sandbox:sandbox", dir], { timeout: 5000 });
+              } catch {
+                // 忽略
+              }
+              const runner = lang === "javascript" ? ["node", file] : ["python3", file];
+              // unshare -n 断网 + sudo 降权 + timeout 限时
+              const cmd = "unshare";
+              const cmdArgs = [
+                "-n",
+                "sudo",
+                "-u",
+                "sandbox",
+                "-n",
+                "timeout",
+                String(Math.min(30, Number(cfg.runCodeTimeoutSec) || 30)),
+                ...runner,
+              ];
+              const { stdout, stderr } = await promisify(execFile)(cmd, cmdArgs, {
+                cwd: dir,
+                timeout: 40_000,
+                maxBuffer: 2 * 1024 * 1024,
+                env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: dir, LANG: "C.UTF-8" },
+              });
+              audit({ kind: "run_code", lang, ok: true, ms: Date.now() - now });
+              return {
+                ok: true,
+                stdout: String(stdout || "").slice(0, 4000),
+                stderr: String(stderr || "").slice(0, 1000),
+              };
+            } catch (err) {
+              audit({ kind: "run_code", lang, ok: false, ms: Date.now() - now });
+              return {
+                ok: false,
+                reason: String(err?.message ?? err).slice(0, 300),
+                stdout: String(err?.stdout ?? "").slice(0, 2000),
+                stderr: String(err?.stderr ?? "").slice(0, 1500),
+              };
+            } finally {
+              try {
+                execFileSync("rm", ["-rf", dir], { timeout: 5000 });
+              } catch {
+                // 忽略
+              }
+            }
+          },
+        }),
+      );
+
+      // 读自己的源码（只读副本，改不了）
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "read_source",
+          description:
+            "看你自己的源码。可以搜函数名/关键词，也可以按行号看一段。源码是只读副本，你只能看不能改。",
+          parameters: {
+            keyword: { type: "string", description: "要搜的关键词或函数名" },
+            start: { type: "number", description: "起始行号（配合 count）" },
+            count: { type: "number", description: "看多少行，默认 40" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            let src = "";
+            try {
+              src = readFileSync("/opt/fish-src/index.js", "utf8");
+            } catch {
+              return { ok: false, reason: "读不到源码副本" };
+            }
+            const lines = src.split("\n");
+            const kw = String(args?.keyword ?? "").trim();
+            if (kw) {
+              const hits = [];
+              for (let i = 0; i < lines.length && hits.length < 5; i++) {
+                if (lines[i].includes(kw)) hits.push(i + 1);
+              }
+              if (!hits.length) return { ok: false, reason: `源码里没找到「${kw}」` };
+              return {
+                ok: true,
+                totalLines: lines.length,
+                hits: hits.map((ln) => ({
+                  line: ln,
+                  code: lines.slice(Math.max(0, ln - 4), ln + 10).join("\n").slice(0, 1200),
+                })),
+              };
+            }
+            const start = Math.max(1, Number(args?.start) || 1);
+            const count = Math.max(1, Math.min(200, Number(args?.count) || 40));
+            return {
+              ok: true,
+              totalLines: lines.length,
+              from: start,
+              code: lines.slice(start - 1, start - 1 + count).join("\n").slice(0, 6000),
+            };
+          },
+        }),
+      );
+      logger.info?.("[onebot] 沙箱工具已注册（run_code/read_source）");
+
       // 需求记事本：想要什么随手记，主人有空再看
       ctx.get?.("tools")?.register?.(
         defineTool({
@@ -3550,11 +3720,16 @@ export function apply(ctx, _pluginConfig) {
           execute: async () => {
             const wants = loadWants();
             if (!wants.length) return { ok: true, count: 0, note: "记事本还是空的" };
+            const pend = wants.filter((w) => w.status === "pending");
             return {
               ok: true,
               count: wants.length,
-              pending: wants.filter((w) => w.status === "pending").length,
-              items: wants.slice(-12).map((w) => ({
+              pending: pend.length,
+              hint:
+                pend.length > 0
+                  ? "待处理的有序号，可用 resolve_want / drop_want 按序号调整。真的试过能用了再标已满足。"
+                  : "没有待处理的了",
+              items: wants.slice(-20).map((w) => ({
                 kind: w.kind,
                 what: w.what,
                 why: String(w.why || "").slice(0, 80),
@@ -3566,6 +3741,85 @@ export function apply(ctx, _pluginConfig) {
         }),
       );
       logger.info?.("[onebot] 需求记事本工具已注册（note_want/my_wants）");
+
+      // 自己觉得已满足的，标记掉
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "resolve_want",
+          description:
+            "把你需求本里的某条标记为「已满足」。**先真的试过再说满足**——需要的能力是不是真的有了，试一下，能用再标。" +
+            "target 填序号（1 开始）或 id；note 写你验证的方式。",
+          parameters: {
+            target: { type: "string", description: "序号或 id" },
+            note: { type: "string", description: "你怎么验证的（比如「试了 recall，能翻到原话」）" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            const wants = loadWants();
+            const pending = wants.filter((w) => w.status === "pending");
+            if (!pending.length) return { ok: false, reason: "需求本里没有待处理的" };
+            const t = String(args?.target ?? "").trim();
+            let hit = null;
+            if (/^\d+$/.test(t)) {
+              const idx = Number(t);
+              if (idx >= 1 && idx <= pending.length) hit = pending[idx - 1];
+            } else {
+              hit = wants.find((w) => w.id === t);
+            }
+            if (!hit) return { ok: false, reason: `没找到第 ${t} 条` };
+            if (hit.status !== "pending") return { ok: false, reason: `这条已经是 ${hit.status}` };
+            hit.status = "resolved";
+            hit.resolvedAt = Date.now();
+            hit.resolveNote = String(args?.note ?? "").slice(0, 200);
+            saveWants(wants);
+            const left = wants.filter((w) => w.status === "pending").length;
+            audit({ kind: "want_resolved", what: hit.what, note: hit.resolveNote });
+            logger.info?.(`[onebot] 她标记需求已满足：${hit.what}（还剩 ${left} 条）`);
+            return { ok: true, resolved: hit.what, remaining: left };
+          },
+        }),
+      );
+
+      // 删掉不再需要的
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "drop_want",
+          description: "把需求本里某条删掉（已经不需要了、或者提错了）。target 填序号或 id。",
+          parameters: {
+            target: { type: "string", description: "序号或 id" },
+            why: { type: "string", description: "为什么不要了" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            const wants = loadWants();
+            const pending = wants.filter((w) => w.status === "pending");
+            if (!pending.length) return { ok: false, reason: "需求本里没有待处理的" };
+            const t = String(args?.target ?? "").trim();
+            let hit = null;
+            if (/^\d+$/.test(t)) {
+              const idx = Number(t);
+              if (idx >= 1 && idx <= pending.length) hit = pending[idx - 1];
+            } else {
+              hit = wants.find((w) => w.id === t);
+            }
+            if (!hit) return { ok: false, reason: `没找到第 ${t} 条` };
+            hit.status = "dropped";
+            hit.dropNote = String(args?.why ?? "").slice(0, 200);
+            hit.droppedAt = Date.now();
+            saveWants(wants);
+            const left = wants.filter((w) => w.status === "pending").length;
+            audit({ kind: "want_dropped", what: hit.what, why: hit.dropNote });
+            return { ok: true, dropped: hit.what, remaining: left };
+          },
+        }),
+      );
+      logger.info?.("[onebot] 需求整理工具已注册（resolve_want/drop_want）");
 
       // 拒聊：声明后一段时间内不再回这个人，并结束当前的续聊
       ctx.get?.("tools")?.register?.(
@@ -3816,7 +4070,19 @@ export function apply(ctx, _pluginConfig) {
   function extractRealInbound(raw) {
     const t = String(raw || "").trim();
     if (!t) return "";
-    // 纯内部提示词，直接丢掉
+
+    // ⚠️ 顺序很重要：先尝试提取真实消息，再判断是不是纯内部提示。
+    // 因为真实的私聊 prompt 长这样：
+    //   （QQ 聊天场景：像真人发消息一样简短…）
+    //   [QQ私聊] 竹叶不知秋：你好
+    // 开头是「（QQ 聊天」，但里面确实有真人说的话。
+    const m1 = t.match(/\[消息内容\]\s*([\s\S]*?)(?:\n\[|$)/);
+    if (m1 && m1[1].trim()) return m1[1].trim().slice(0, 400);
+
+    const m3 = t.match(/\[QQ(?:群消息|私聊)\][^：:\n]*[：:]\s*([\s\S]*)/);
+    if (m3 && m3[1].trim()) return m3[1].trim().slice(0, 400);
+
+    // 到这里说明没提取到真实消息 —— 再看是不是纯内部提示
     if (/^（(内部|这次|对方连着|QQ 聊天|你在|这是你|刚才|下面|想一想)/.test(t)) return "";
     if (
       /内部整理|内部反思|内部回顾|内部探索|不要发消息|不发给任何人|只输出/.test(t) &&
@@ -3824,12 +4090,9 @@ export function apply(ctx, _pluginConfig) {
     ) {
       return "";
     }
-    // [消息内容] 之后是真人说的
-    const m1 = t.match(/\[消息内容\]\s*([\s\S]*?)(?:\n\[|$)/);
-    if (m1 && m1[1].trim()) return m1[1].trim().slice(0, 400);
-    // [QQ私聊] 名字：内容 / [QQ群消息] 群名…：内容 → 剥前缀
-    const m3 = t.match(/\[QQ(?:群消息|私聊)\][^：:\n]*[：:]\s*([\s\S]*)/);
-    if (m3 && m3[1].trim()) return m3[1].trim().slice(0, 400);
+    // 活动产出（JSON 计划之类）也不是对话
+    if (/^\s*\{\s*"looked"/.test(t)) return "";
+
     // 看起来就是正常对话
     if (t.length <= 400 && !/\[消息内容\]|\[群聊最近|\[你想起的\]|\[你自己的话\]/.test(t)) {
       return t;
@@ -5128,6 +5391,7 @@ export function apply(ctx, _pluginConfig) {
       [/^(玩会儿|玩一会|玩一下)$/, "play", "玩"],
       [/^(回忆一下|翻翻记忆)$/, "recall", "回忆"],
       [/^(憧憬一下|想想未来)$/, "dream", "憧憬未来"],
+      [/^(研究代码|看看代码|研究自己)$/, "study", "研究代码"],
     ];
     let hitKind = null;
     let hitName = "";
@@ -7662,6 +7926,261 @@ export function apply(ctx, _pluginConfig) {
     }
   }
 
+  // ── 主人专用 WebUI：HTTP + SSE，只认 token ──
+  const webClients = new Set(); // SSE 连接
+  const webHistory = []; // 最近 100 条，刷新页面能看到
+  let webServer = null;
+  let webAuthFails = 0;
+  let webLockedUntil = 0;
+
+  function webPush(rec) {
+    try {
+      webHistory.push({ ...rec, at: Date.now() });
+      if (webHistory.length > 100) webHistory.shift();
+      const line = "data: " + JSON.stringify(rec) + "\n\n";
+      for (const res of webClients) {
+        try {
+          res.write(line);
+        } catch {
+          webClients.delete(res);
+        }
+      }
+    } catch {
+      // 忽略
+    }
+  }
+
+  function webHtml(token) {
+    return `<!doctype html><html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>QQ 助手</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font:15px/1.6 -apple-system,"Segoe UI",sans-serif;background:#0f1115;color:#e6e6e6;height:100vh;display:flex;flex-direction:column}
+header{padding:12px 16px;border-bottom:1px solid #23262d;display:flex;align-items:center;gap:8px}
+h1{font-size:15px;font-weight:600}
+.dot{width:8px;height:8px;border-radius:50%;background:#4ade80}
+.dot.off{background:#f87171}
+#log{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px}
+.msg{max-width:80%;padding:8px 12px;border-radius:12px;white-space:pre-wrap;word-break:break-word}
+.me{align-self:flex-end;background:#2563eb;color:#fff;border-bottom-right-radius:4px}
+.her{align-self:flex-start;background:#1e222a;border-bottom-left-radius:4px}
+.tool{align-self:flex-start;font-size:12px;color:#8b93a1;padding:2px 8px}
+footer{padding:12px;border-top:1px solid #23262d;display:flex;gap:8px}
+#in{flex:1;background:#1a1d24;border:1px solid #2a2e38;color:#e6e6e6;border-radius:8px;padding:10px 12px;font:inherit;resize:none;height:44px}
+#send{background:#2563eb;border:0;color:#fff;border-radius:8px;padding:0 18px;font:inherit;cursor:pointer}
+#send:disabled{opacity:.5}
+</style></head><body>
+<header><span class="dot" id="dot"></span><h1>QQ 助手</h1><span id="st" style="font-size:12px;color:#8b93a1"></span></header>
+<div id="log"></div>
+<footer><textarea id="in" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）"></textarea><button id="send">发送</button></footer>
+<script>
+const T=${JSON.stringify(token)}, log=document.getElementById('log'),
+      inp=document.getElementById('in'), btn=document.getElementById('send'),
+      dot=document.getElementById('dot'), st=document.getElementById('st');
+function add(cls,text){const d=document.createElement('div');d.className='msg '+cls;d.textContent=text;log.appendChild(d);log.scrollTop=log.scrollHeight;return d}
+function addTool(text){const d=document.createElement('div');d.className='tool';d.textContent=text;log.appendChild(d);log.scrollTop=log.scrollHeight}
+let typing=null;
+function setTyping(on){if(on&&!typing){typing=add('her','…');}else if(!on&&typing){typing.remove();typing=null;}}
+fetch('/history?token='+T).then(r=>r.json()).then(list=>{
+  for(const m of list){ if(m.role==='me') add('me',m.text); else if(m.role==='tool') addTool(m.text); else add('her',m.text); }
+});
+const es=new EventSource('/stream?token='+T);
+es.onopen=()=>{dot.className='dot';st.textContent='在线';};
+es.onerror=()=>{dot.className='dot off';st.textContent='断线重连中…';};
+es.onmessage=e=>{
+  const d=JSON.parse(e.data);
+  if(d.role==='tool'){addTool(d.text);return;}
+  if(d.role==='typing'){setTyping(d.on);return;}
+  setTyping(false);
+  add(d.role==='me'?'me':'her',d.text);
+};
+async function send(){
+  const t=inp.value.trim(); if(!t) return;
+  inp.value=''; btn.disabled=true;
+  add('me',t);
+  try{
+    await fetch('/send?token='+T,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text:t})});
+  }catch(e){addTool('发送失败：'+e.message);}
+  setTimeout(()=>btn.disabled=false,600);
+}
+btn.onclick=send;
+inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}});
+</script></body></html>`;
+  }
+
+  /** 从会话文件里读对话历史（跨重启保留） */
+  function readMessagesFromFile(file, limit) {
+    try {
+      const raw = zstdDecompressSync(readFileSync(file)).toString("utf8");
+      const out = [];
+      for (const line of raw.split("\n")) {
+        if (!line) continue;
+        let ev;
+        try {
+          ev = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        const got = textOfEvent(ev);
+        if (!got.text || got.text.length < 2) continue;
+        // 活动产出（思考计划的 JSON、反思草稿）不算对话
+        const tx = got.text.trim();
+        if (/^\{.*"looked"/.test(tx)) continue;
+        if (/^\[\[?(next|game|book)\s*[:：]/.test(tx)) continue;
+        if (tx.startsWith("（内部") || tx.startsWith("（这是你自己")) continue;
+        out.push({
+          role: got.role === "对方" ? "me" : "her",
+          text: tx.slice(0, 500),
+        });
+      }
+      return out.slice(-limit);
+    } catch {
+      return [];
+    }
+  }
+
+  /** 从会话文件里读对话历史（跨重启保留）；找不到指定会话就找最像私聊的 */
+  function sessionHistory(sid, limit = 60) {
+    try {
+      const files = listSessionFiles(60);
+      logger.info?.(`[onebot] WebUI 历史：sid=${sid || "(空)"} 找到 ${files.length} 个会话文件`);
+      // 1. 指定了 sessionId 就先找它
+      if (sid) {
+        const t = files.find((x) => x.sid === String(sid));
+        if (t) {
+          const got = readMessagesFromFile(t.file, limit);
+          if (got.length) return got;
+        }
+      }
+      // 2. 兜底：最近修改的几个会话里，挑「对方发言最多」的那个（私聊最像）
+      let best = [];
+      for (const t of files.slice(0, 8)) {
+        const got = readMessagesFromFile(t.file, limit);
+        const theirs = got.filter((m) => m.role === "me").length;
+        logger.info?.(`[onebot] WebUI 历史：${t.sid} 读出 ${got.length} 条（对方 ${theirs} 条）`);
+        if (theirs >= 2 && got.length > best.length) best = got;
+      }
+      return best;
+    } catch {
+      return [];
+    }
+  }
+
+  function webStart() {
+    if (!cfg.webuiEnabled || webServer) return;
+    const token = String(cfg.webuiToken || "");
+    if (!token || token.length < 16) {
+      logger.warn?.("[onebot] webuiToken 太短或没设置，WebUI 不启动");
+      return;
+    }
+    webServer = http.createServer((req, res) => {
+      const u = new URL(req.url, "http://x");
+      const tk = u.searchParams.get("token") || "";
+      // 简单防爆破
+      if (Date.now() < webLockedUntil) {
+        res.writeHead(429).end("too many attempts");
+        return;
+      }
+      if (tk !== token) {
+        webAuthFails += 1;
+        if (webAuthFails >= 5) {
+          webLockedUntil = Date.now() + 3600_000;
+          webAuthFails = 0;
+          logger.warn?.("[onebot] WebUI 认证失败 5 次，锁定 1 小时");
+        }
+        res.writeHead(401).end("unauthorized");
+        return;
+      }
+      webAuthFails = 0;
+
+      if (u.pathname === "/") {
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(webHtml(token));
+        return;
+      }
+      if (u.pathname === "/history") {
+        // 优先从会话文件读（跨重启保留）；没有绑定会话也能兜底
+        let list = [];
+        try {
+          const key = `private:${cfg.ownerId}`;
+          const ent = sessions.entries.get(key);
+          list = sessionHistory(ent?.sessionId || "", 80);
+        } catch (err) {
+          logger.warn?.(`[onebot] WebUI 历史读取失败：${err?.message ?? err}`);
+        }
+        if (!list.length) list = webHistory.slice(-50);
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(list));
+        return;
+      }
+      if (u.pathname === "/stream") {
+        res.writeHead(200, {
+          "content-type": "text/event-stream",
+          "cache-control": "no-cache",
+          connection: "keep-alive",
+        });
+        res.write(": connected\n\n");
+        webClients.add(res);
+        const ka = setInterval(() => {
+          try {
+            res.write(": ping\n\n");
+          } catch {
+            clearInterval(ka);
+            webClients.delete(res);
+          }
+        }, 25_000);
+        req.on("close", () => {
+          clearInterval(ka);
+          webClients.delete(res);
+        });
+        return;
+      }
+      if (u.pathname === "/send" && req.method === "POST") {
+        let body = "";
+        req.on("data", (c) => {
+          body += c;
+          if (body.length > 10_000) req.destroy();
+        });
+        req.on("end", () => {
+          try {
+            const { text } = JSON.parse(body || "{}");
+            const t = String(text || "").trim();
+            if (!t) {
+              res.writeHead(400).end("empty");
+              return;
+            }
+            // 走跟 QQ 私聊同一条管道
+            const fakeEv = {
+              post_type: "message",
+              message_type: "private",
+              user_id: Number(cfg.ownerId) || 0,
+              message_id: `webui-${Date.now()}`,
+              time: Math.floor(Date.now() / 1000),
+              sender: { user_id: Number(cfg.ownerId) || 0, nickname: "主人" },
+              message: [{ type: "text", data: { text: t } }],
+              raw_message: t,
+              __fromWebUI: true,
+            };
+            res.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}');
+            setTimeout(() => void client.onEvent(fakeEv).catch(() => {}), 10);
+          } catch {
+            res.writeHead(400).end("bad json");
+          }
+        });
+        return;
+      }
+      res.writeHead(404).end("not found");
+    });
+    webServer.listen(Number(cfg.webuiPort) || 3081, String(cfg.webuiBind || "127.0.0.1"), () => {
+      logger.info?.(
+        `[onebot] WebUI 已启动 http://${cfg.webuiBind || "127.0.0.1"}:${Number(cfg.webuiPort) || 3081}/?token=***`,
+      );
+    });
+    webServer.on("error", (err) => {
+      logger.warn?.(`[onebot] WebUI 启动失败：${err?.message ?? err}`);
+      webServer = null;
+    });
+  }
+
   // ── 离线模式：断线超过 30 分钟 = 她「还能想，但说不了话」──
   let offlineSince = 0;
   let qqOnline = true; // WS 通 ≠ QQ 登录着（封号时正是如此）
@@ -8021,6 +8540,16 @@ export function apply(ctx, _pluginConfig) {
       try {
         const toolName = String(exec?.name ?? "");
         if (!toolName || TOOL_LOG_SKIP.has(toolName)) return decision;
+        // WebUI 里显示她调了什么工具
+        try {
+          const sid = String(exec?.agent?.session?.id ?? "");
+          const ent = sid ? sessions.bySessionId(sid) : null;
+          if (ent?.lastTarget?.__fromWebUI) {
+            webPush({ role: "tool", text: `[${toolName}]` });
+          }
+        } catch {
+          // 忽略
+        }
         const argsStr = (() => {
           try {
             return JSON.stringify(exec?.args ?? {}).slice(0, 120);
@@ -8791,6 +9320,12 @@ export function apply(ctx, _pluginConfig) {
   auditEnabled = cfg.auditLog !== false;
   rotateAudit();
   audit({ kind: "boot", selfId: cfg.selfId, ownerId: cfg.ownerId });
+  // 主人专用 WebUI
+  try {
+    webStart();
+  } catch (err) {
+    logger.warn?.(`[onebot] WebUI 启动异常：${err?.message ?? err}`);
+  }
 
   // 等预热完成后启动定时器（避免太早没有可用会话）
   setTimeout(() => {
@@ -8868,7 +9403,7 @@ export function apply(ctx, _pluginConfig) {
     // 离线：没新对话，改成「翻自己的记忆」
     if (offline) {
       const digest = offlineDigest() || "";
-      const runKey = `private:${cfg.ownerId || "offline"}`;
+      const runKey = SELF_ACTIVITY_KEY;
       logger.info?.("[onebot] 离线内省：回顾自己的记忆");
       audit({ kind: "introspect_offline" });
       try {
@@ -8999,7 +9534,7 @@ export function apply(ctx, _pluginConfig) {
         .slice(-6)
         .map((x) => `· ${x.said}`)
         .join("\n");
-      const runKey = `private:${cfg.ownerId || "offline"}`;
+      const runKey = SELF_ACTIVITY_KEY;
       const out = String(
         (await sessions.runSilent(
           runKey,
@@ -9088,7 +9623,7 @@ export function apply(ctx, _pluginConfig) {
         .slice(-30)
         .map((m) => `[${m.kind}] ${m.topic ? `(${m.topic}) ` : ""}${String(m.text || "").slice(0, 90)}`)
         .join("\n");
-      const runKey = `private:${cfg.ownerId || "offline"}`;
+      const runKey = SELF_ACTIVITY_KEY;
       const out = String(
         (await sessions.runSilent(
           runKey,
@@ -9406,6 +9941,9 @@ export function apply(ctx, _pluginConfig) {
     }
   }
 
+  // 自主活动用独立会话：不污染聊天上下文，也不会让活动记录混进对话历史
+  const SELF_ACTIVITY_KEY = "self:activity";
+
   // ── 自主活动：探险 / 思考 / 写点什么 / 回忆 / 憧憬未来 ──
   // 五种活动各自沉淀到不同地方，长期下来塑造核心记忆和性格
   const ACT_PATH = join(HOME, ".dsh/onebot-bridge/activities.jsonl");
@@ -9454,13 +9992,14 @@ export function apply(ctx, _pluginConfig) {
   }
 
   const ACTIVITY_KINDS = [
-    { id: "explore", w: 24 },
-    { id: "think", w: 18 },
-    { id: "write", w: 15 },
-    { id: "recall", w: 10 },
-    { id: "dream", w: 9 },
-    { id: "play", w: 10 },
-    { id: "read", w: 14 },
+    { id: "explore", w: 22 },
+    { id: "think", w: 16 },
+    { id: "write", w: 13 },
+    { id: "recall", w: 12 },
+    { id: "dream", w: 8 },
+    { id: "play", w: 9 },
+    { id: "read", w: 12 },
+    { id: "study", w: 8 },
   ];
 
   function pickActivityKind() {
@@ -9506,7 +10045,7 @@ export function apply(ctx, _pluginConfig) {
 
   /** 按她思考阶段说的 intent 去查（不再自己挑话题） */
   async function exploreByIntent(intent, why, nextHint) {
-    const runKey = `private:${cfg.ownerId || "offline"}`;
+    const runKey = SELF_ACTIVITY_KEY;
     const offline = isOfflineMode();
     logger.info?.(`[onebot] 按她的意图去查：${String(intent).slice(0, 40)}`);
     audit({ kind: "explore_intent", intent: String(intent).slice(0, 120) });
@@ -9583,7 +10122,7 @@ export function apply(ctx, _pluginConfig) {
 
   /** 第一段：思考——她决定做什么 */
   async function thinkPhase(forceAction = null) {
-    const runKey = `private:${cfg.ownerId || "offline"}`;
+    const runKey = SELF_ACTIVITY_KEY;
     const sm = selfModelText();
     const core = loadCore().slice(-12);
     const coreLine = core.length
@@ -9619,7 +10158,9 @@ export function apply(ctx, _pluginConfig) {
     return {
       looked: Array.isArray(obj.looked) ? obj.looked : [],
       intent: String(obj.intent || "").slice(0, 150),
-      action: ["explore", "read", "play", "think", "write", "recall", "dream"].includes(action) ? action : "think",
+      action: ["explore", "read", "play", "think", "write", "recall", "dream", "study"].includes(action)
+        ? action
+        : "think",
       why: String(obj.why || "").slice(0, 200),
       mood: String(obj.mood || "").slice(0, 30),
       at: Date.now(),
@@ -9628,7 +10169,7 @@ export function apply(ctx, _pluginConfig) {
 
   /** 第三段：反思——行动之后回头看 */
   async function reflectPhase(plan, actOut) {
-    const runKey = `private:${cfg.ownerId || "offline"}`;
+    const runKey = SELF_ACTIVITY_KEY;
     const prompt =
       "（内部反思，不要发消息。你刚做完一件事。）\n\n" +
       `原本想做的：${plan.intent}\n` +
@@ -9767,7 +10308,7 @@ export function apply(ctx, _pluginConfig) {
 
   /** 第二段：行动——按上一段想好的去做 */
   async function actPhase(plan) {
-    const runKey = `private:${cfg.ownerId || "offline"}`;
+    const runKey = SELF_ACTIVITY_KEY;
     const kind = plan.action;
     const base =
       "（这是你自己的时间，不要发消息。你刚才已经想清楚了要做什么，现在去做。）\\n" +
@@ -9792,10 +10333,18 @@ export function apply(ctx, _pluginConfig) {
     } else if (kind === "recall") {
       prompt =
         base +
-        "翻你记得的人和事，把散的东西串一串。可以用 recall / my_memory 查。\\n" +
-        "想明白了就用 remember_fact / remember_person 记新的理解。\\n" +
-        "最后一行写 [[next: 时间]]。\\n" +
-        "只输出你想到的内容。";
+        "现在整理一下你的记忆，然后回忆。分两件事：\\n\\n" +
+        "【整理】用 my_memory / memory_index / my_digest / my_wants 翻一遍：\\n" +
+        "· 有没有重复或互相矛盾的？合并或改掉\\n" +
+        "· 有没有过时、已经不成立的？删掉\\n" +
+        "· 有没有说得太笼统、其实没用的？要么改具体，要么删\\n" +
+        "· 事实、人物、观点、需求，哪一栏是空的或乱的，就补上或理齐\\n\\n" +
+        "【回忆】整理完，再把散的东西串一串：\\n" +
+        "· 有没有谁你很久没想起但还记得？\\n" +
+        "· 有没有几件事连起来看，能看出点什么？\\n" +
+        "想明白了就用 remember_fact / remember_person / remember_self 记新的理解。\\n\\n" +
+        "最后写：整理了什么、串出了什么。最后一行写 [[next: 时间]]。\\n" +
+        "只输出你做的和想到的。";
     } else if (kind === "dream") {
       prompt =
         base +
@@ -9803,6 +10352,21 @@ export function apply(ctx, _pluginConfig) {
         "冒出具体愿望就用 note_want 记下来。\\n" +
         "最后一行写 [[next: 时间]]。\\n" +
         "只输出你想说的（50-150 字）。";
+    } else if (kind === "study") {
+      prompt =
+        base +
+        "研究你自己的一段代码。\n\n" +
+        "用 read_source 挑一段看——比如记忆是怎么存的、回复是怎么发出去的、" +
+        "活动是怎么调度的、或者某个你好奇的行为到底怎么实现的。\n" +
+        "可以按关键词搜（read_source 的 keyword），也可以按行号翻。\n\n" +
+        "看的时候问自己：\n" +
+        "· 它是怎么做成这件事的？\n" +
+        "· 有没有什么地方不对劲、或者可以更好？\n" +
+        "· 这跟我平时感觉到的自己一样吗？\n\n" +
+        "发现确实有问题的，用 note_want 记下来（kind 填 feature 或 other，写清哪里不对）。\n" +
+        "没有就别硬提。\n\n" +
+        "写 100-150 字：你看了哪段、它怎么工作、你发现了什么。\n" +
+        "最后一行写 [[next: 时间]]。只输出你看到和想到的。";
     } else if (kind === "play") {
       const games = (() => {
         try {
@@ -9881,7 +10445,7 @@ export function apply(ctx, _pluginConfig) {
     if (!offline && !client.connected) return;
     if (kind === "explore") return maybeExplore(true);
 
-    const runKey = `private:${cfg.ownerId || "offline"}`;
+    const runKey = SELF_ACTIVITY_KEY;
     const coreLines = loadCore()
       .slice(-8)
       .map((c) => `· ${c.text}`)
@@ -10112,7 +10676,7 @@ export function apply(ctx, _pluginConfig) {
       .map((a) => `[${a.kind}] ${String(a.content || "").slice(0, 120)}`)
       .join("\n");
     const oldCore = core.slice(-10).map((c) => `· ${c.text}`).join("\n");
-    const runKey = `private:${cfg.ownerId || "offline"}`;
+    const runKey = SELF_ACTIVITY_KEY;
     logger.info?.("[onebot] 开始沉淀核心记忆");
     try {
       const out = String(
@@ -10285,7 +10849,7 @@ export function apply(ctx, _pluginConfig) {
       if (learns.some((l) => l.topic === topic && Date.now() - l.at < 30 * 86400_000)) return;
     }
 
-    const runKey = bestKey || `private:${cfg.ownerId || "offline"}`;
+    const runKey = bestKey || SELF_ACTIVITY_KEY;
     logger.info?.(`[onebot] ${offline ? "离线" : ""}自主探索：${offlineTopic ? "从旧知识延伸" : `围绕「${topic}」`}`);
     audit({ kind: "explore_start", topic, key: runKey, offline });
     try {
@@ -10439,7 +11003,7 @@ export function apply(ctx, _pluginConfig) {
         //   "explore 2"         → 2 次探险
         //   "read"              → 1 次读书
         //   "explore 2\nread 1" → 组合
-        const VALID = ["explore", "read", "play", "think", "write", "recall", "dream"];
+        const VALID = ["explore", "read", "play", "think", "write", "recall", "dream", "study"];
         const jobs = [];
         for (const line of raw.split("\n")) {
           const parts = line.trim().split(/\s+/);

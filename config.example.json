@@ -128,5 +128,11 @@
     "autoExplore":  true,
     "autoExplorePerDay":  0,
     "autoExploreChance":  0.35,
-    "autoExploreMinGapMinutes":  45
+    "autoExploreMinGapMinutes":  45,
+    "webuiEnabled":  true,
+    "webuiPort":  3081,
+    "webuiBind":  "127.0.0.1",
+    "webuiToken":  "***",
+    "runCodePerHour":  20,
+    "runCodeTimeoutSec":  30
 }
