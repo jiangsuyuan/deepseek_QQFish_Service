@@ -134,5 +134,6 @@
     "webuiBind":  "127.0.0.1",
     "webuiToken":  "***",
     "runCodePerHour":  20,
-    "runCodeTimeoutSec":  30
+    "runCodeTimeoutSec":  30,
+    "renderPagePerHour":  10
 }

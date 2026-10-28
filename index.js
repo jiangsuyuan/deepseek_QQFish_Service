@@ -2131,12 +2131,20 @@ export function apply(ctx, _pluginConfig) {
     "my_adventures",
     "my_digest",
     "memory_index",
-    "run_code",
+    "exec_sandbox",
     "read_source",
     "note_want",
     "my_wants",
     "resolve_want",
     "drop_want",
+    "my_activities",
+    "my_capabilities",
+    "render_page",
+    "add_webui_button",
+    "remove_webui_button",
+    "list_stickers",
+    "refuse_person",
+    "send_face",
     "revise_self",
     "forget_self",
     // 只读网络：查天气/新闻这类需求要靠它，安全但限频
@@ -2906,7 +2914,7 @@ export function apply(ctx, _pluginConfig) {
               return { ok: false, reason: "主人关掉了这个通道" };
             }
             const coolHours = Number(cfg.featureRequestCooldownHours) || 24;
-            const last = Number(rt.lastFeatureRequestAt) || 0;
+            const last = Number(loadSelfState().lastFeatureRequestAt) || 0;
             const since = Date.now() - last;
             if (since < coolHours * 3600_000) {
               const left = Math.ceil((coolHours * 3600_000 - since) / 3600_000);
@@ -2916,7 +2924,7 @@ export function apply(ctx, _pluginConfig) {
             const why = String(args?.why ?? "").trim().slice(0, 300);
             const how = String(args?.how ?? "").trim().slice(0, 300);
             if (!idea) return { ok: false, reason: "得先说想要什么" };
-            rt.lastFeatureRequestAt = Date.now();
+            patchSelfState({ lastFeatureRequestAt: Date.now() });
             markRuntimeDirty();
             const msg =
               `【她提了个功能申请】\n` +
@@ -3520,7 +3528,7 @@ export function apply(ctx, _pluginConfig) {
 
       ctx.get?.("tools")?.register?.(
         defineTool({
-          name: "run_code",
+          name: "exec_sandbox",
           description:
             "在自己的沙箱里跑一小段代码，看结果。可以算数、统计、处理文本、画图（matplotlib）、写个小游戏跑起来。" +
             "沙箱是断网的、降权的、限时的，你碰不到自己的记忆和源码（那些是只读的）。" +
@@ -3658,7 +3666,7 @@ export function apply(ctx, _pluginConfig) {
           },
         }),
       );
-      logger.info?.("[onebot] 沙箱工具已注册（run_code/read_source）");
+      logger.info?.("[onebot] 沙箱工具已注册（exec_sandbox/read_source）");
 
       // 需求记事本：想要什么随手记，主人有空再看
       ctx.get?.("tools")?.register?.(
@@ -3820,6 +3828,293 @@ export function apply(ctx, _pluginConfig) {
         }),
       );
       logger.info?.("[onebot] 需求整理工具已注册（resolve_want/drop_want）");
+
+      // 通过聊天就能翻自己的活动日志
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "my_activities",
+          description:
+            "翻你自己的活动日志：探险、读书、玩、思考、写点什么、回忆、憧憬未来、研究代码。" +
+            "每条都有「当时想做什么」「实际做了什么」「反思」。有人问「你最近在忙什么」「上次那个游戏叫什么」时用它。",
+          parameters: {
+            limit: { type: "number", description: "看几条，默认 6" },
+            kind: {
+              type: "string",
+              description: "只看某类：explore/read/play/think/write/recall/dream/study，不填看全部",
+            },
+            date: { type: "string", description: "只看某天，格式 2026-10-29" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            const limit = Math.max(1, Math.min(30, Number(args?.limit) || 6));
+            const kind = String(args?.kind ?? "").trim().toLowerCase();
+            const date = String(args?.date ?? "").trim();
+            const rows = loadActivities(400);
+            let picked = rows;
+            if (kind) picked = picked.filter((r) => r.kind === kind);
+            if (date) {
+              picked = picked.filter((r) => {
+                const d = new Date(r.at);
+                const ymd = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+                return ymd === date;
+              });
+            }
+            const items = picked.slice(-limit).reverse().map((r) => {
+              const d = new Date(r.at);
+              const when = `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+              const plan = r.think || {};
+              return {
+                when,
+                kind: r.kind,
+                wanted: String(plan.intent || "").slice(0, 100),
+                why: String(plan.why || "").slice(0, 100),
+                did: String(r.content || "").slice(0, 300),
+                reflect: String(r.reflect || "").slice(0, 300),
+              };
+            });
+            const today = new Date().toDateString();
+            const todayCount = rows.filter((r) => new Date(r.at).toDateString() === today).length;
+            const byKind = {};
+            for (const r of rows) byKind[r.kind] = (byKind[r.kind] || 0) + 1;
+            return {
+              ok: true,
+              total: rows.length,
+              today: todayCount,
+              byKind,
+              count: items.length,
+              items,
+            };
+          },
+        }),
+      );
+      logger.info?.("[onebot] 活动日志工具已注册（my_activities）");
+
+      // 她能随时说清「我会什么」
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "my_capabilities",
+          description:
+            "列一下你自己会什么：能用的工具、能做的自主活动、能查的记忆、有什么限制。" +
+            "有人问「你会什么」「你能做什么」「你有什么功能」时用它，别凭印象瞎说。",
+          parameters: {},
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async () => {
+            // 只列真正注册成功的工具
+            let registered = [];
+            try {
+              const t = ctx.get?.("tools");
+              const list = t?.list?.() ?? t?.tools ?? [];
+              registered = Array.isArray(list)
+                ? list.map((x) => String(x?.name ?? x)).filter(Boolean)
+                : [...ALLOWED_TOOLS];
+            } catch {
+              registered = [...ALLOWED_TOOLS];
+            }
+            const actNames = {
+              explore: "探险（出门看东西）",
+              read: "读书",
+              play: "玩（造小游戏）",
+              think: "思考",
+              write: "写点什么",
+              recall: "回忆（整理 + 回忆）",
+              dream: "憧憬未来",
+              study: "研究代码（读源码 / 写代码）",
+            };
+            return {
+              ok: true,
+              activities: ACTIVITY_KINDS.map((k) => ({
+                id: k.id,
+                what: actNames[k.id] || k.id,
+                weight: `${k.w}%`,
+              })),
+              tools: registered.sort(),
+              can: [
+                "在群里/私聊聊天，被 @ 或被引用时回",
+                "续聊：刚聊过的人不 @ 也能接着说话",
+                "发表情包（可带引用，也可不带）",
+                "画图（SVG / 图片）",
+                "查热点新闻、搜网、读网页",
+                "记事实、记人物印象、记自己的观点",
+                "翻记忆（原文检索 / 分类查 / 主题索引 / 近期摘要）",
+                "看别人的头像",
+                "查自己的状态、更新日志、源码",
+                "在沙箱里跑代码（断网、降权、限时）",
+                "记需求（想要什么）并自己标记已满足",
+              ],
+              limits: [
+                "沙箱断网，碰不到自己的记忆和源码原文件",
+                "对外发言 9-23 点；自主活动全天",
+                `搜索：${Number(cfg.searchPerHour) > 0 ? `每小时 ${cfg.searchPerHour} 次` : "不限"}`,
+                "沙箱代码：每小时 20 次、单次 30 秒",
+              ],
+            };
+          },
+        }),
+      );
+      logger.info?.("[onebot] 能力清单工具已注册（my_capabilities）");
+
+      // ── 用网页展示内容：记录、记忆、统计、想法 ──
+      const PAGES_DIR = join(HOME, ".dsh/onebot-bridge/workspace/pages");
+      const pageTimes = [];
+      try {
+        mkdirSync(PAGES_DIR, { recursive: true });
+      } catch {
+        // 忽略
+      }
+
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "render_page",
+          description:
+            "做一张网页给自己或主人看：展示统计、记录、记忆、时间线、想法都行。" +
+            "生成后在 WebUI 里能打开（聊天里我会告诉你地址）；QQ 里只能发文字说明。" +
+            "HTML 会被放进隔离沙箱里渲染（访问不到 WebUI 的 token）。" +
+            "html 填完整页面或片段都行；不想写 head/body 也可以，会套个默认样式。",
+          parameters: {
+            title: { type: "string", description: "页面标题" },
+            html: { type: "string", description: "HTML 内容（最多 60000 字）" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            const title = String(args?.title ?? "未命名").slice(0, 80);
+            const html = String(args?.html ?? "");
+            if (!html.trim()) return { ok: false, reason: "内容为空" };
+            if (html.length > 60000) return { ok: false, reason: "太长了（最多 60000 字）" };
+            const now = Date.now();
+            // 每小时限 10 张，避免刷
+            while (pageTimes.length && now - pageTimes[0] > 3600_000) pageTimes.shift();
+            if (pageTimes.length >= 10) return { ok: false, reason: "这一小时做得够多了" };
+            pageTimes.push(now);
+
+            const id = `${now.toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+            const full = /<html[\s>]/i.test(html)
+              ? html
+              : `<!doctype html><html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${title.replace(/[<>&"]/g, "")}</title>
+<style>
+body{font:15px/1.7 -apple-system,"Segoe UI",sans-serif;max-width:860px;margin:0 auto;padding:24px 18px;color:#1f2328;background:#fff}
+h1,h2,h3{line-height:1.3;margin:1.2em 0 .5em}
+h1{font-size:22px;border-bottom:2px solid #eee;padding-bottom:8px}
+table{border-collapse:collapse;width:100%;margin:12px 0;font-size:14px}
+th,td{border:1px solid #e5e7eb;padding:6px 10px;text-align:left}
+th{background:#f9fafb;font-weight:600}
+code{background:#f3f4f6;padding:2px 5px;border-radius:4px;font-size:13px}
+blockquote{border-left:3px solid #ddd;margin:10px 0;padding:6px 14px;color:#555}
+ul,ol{padding-left:22px}
+.muted{color:#6b7280;font-size:13px}
+</style></head><body>
+${html}
+</body></html>`;
+            try {
+              writeFileSync(join(PAGES_DIR, `${id}.html`), full);
+            } catch (err) {
+              return { ok: false, reason: `写文件失败：${err?.message ?? err}` };
+            }
+            audit({ kind: "render_page", id, title, len: html.length });
+            logger.info?.(`[onebot] 做了张网页：${title}（${id}）`);
+            return {
+              ok: true,
+              id,
+              title,
+              url: `http://127.0.0.1:${Number(cfg.webuiPort) || 3081}/page/${id}`,
+              note: "在 WebUI 里打开这个地址能看到；在 QQ 里主人得自己去 WebUI 看。",
+            };
+          },
+        }),
+      );
+      logger.info?.("[onebot] 网页展示工具已注册（render_page）");
+
+      // ── WebUI 入口按钮：她可以给自己加几个快捷入口 ──
+      const BTN_PATH = join(HOME, ".dsh/onebot-bridge/webui-buttons.json");
+      function loadButtons() {
+        try {
+          const d = JSON.parse(readFileSync(BTN_PATH, "utf8"));
+          return Array.isArray(d) ? d : [];
+        } catch {
+          return [];
+        }
+      }
+      function saveButtons(arr) {
+        try {
+          writeFileSync(BTN_PATH, JSON.stringify(arr.slice(0, 12), null, 1));
+        } catch {
+          // 忽略
+        }
+      }
+
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "add_webui_button",
+          description:
+            "在 WebUI 主界面给自己加一个入口按钮（最多 12 个）。按钮有两种用法：" +
+            "① 填 prompt：点一下等于主人发一句话给你，你照着做；" +
+            "② 填 pageId：点一下直接打开你做过的某个网页。\n" +
+            "想加好用的快捷入口就加，比如「今天的我」→ prompt「给我看看你今天的活动」；" +
+            "「潮汐」→ prompt「查一下今天潮汐怎么样」。别加太多，4-6 个刚好。",
+          parameters: {
+            label: { type: "string", description: "按钮上显示的字（2-6 个字最好）" },
+            prompt: { type: "string", description: "点击后发给你的话（用这个就是触发动作）" },
+            pageId: { type: "string", description: "或者填一个页面 id，点击直接打开那个页面" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            const label = String(args?.label ?? "").trim().slice(0, 12);
+            const prompt = String(args?.prompt ?? "").trim().slice(0, 200);
+            const pageId = String(args?.pageId ?? "").trim().slice(0, 40);
+            if (!label) return { ok: false, reason: "按钮得有个名字" };
+            if (!prompt && !pageId) return { ok: false, reason: "得说清点了之后做什么" };
+            const list = loadButtons();
+            if (list.length >= 12) return { ok: false, reason: "按钮太多了（最多 12 个），先删几个" };
+            if (list.some((b) => b.label === label)) return { ok: false, reason: `已经有个叫「${label}」的按钮了` };
+            list.push({
+              id: Date.now().toString(36),
+              label,
+              prompt,
+              pageId,
+              at: Date.now(),
+            });
+            saveButtons(list);
+            audit({ kind: "webui_button_add", label, prompt: prompt || pageId });
+            logger.info?.(`[onebot] WebUI 加了按钮：${label}`);
+            return { ok: true, count: list.length, note: `加了「${label}」，刷新 WebUI 就能看到` };
+          },
+        }),
+      );
+
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "remove_webui_button",
+          description: "删掉一个 WebUI 入口按钮。target 填按钮名字或 id。",
+          parameters: { target: { type: "string", description: "按钮名字或 id" } },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            const t = String(args?.target ?? "").trim();
+            const list = loadButtons();
+            const idx = list.findIndex((b) => b.label === t || b.id === t);
+            if (idx < 0) return { ok: false, reason: `没有叫「${t}」的按钮` };
+            const [gone] = list.splice(idx, 1);
+            saveButtons(list);
+            return { ok: true, removed: gone.label, count: list.length };
+          },
+        }),
+      );
+      logger.info?.("[onebot] WebUI 按钮工具已注册（add_webui_button/remove_webui_button）");
 
       // 拒聊：声明后一段时间内不再回这个人，并结束当前的续聊
       ctx.get?.("tools")?.register?.(
@@ -7812,6 +8107,24 @@ export function apply(ctx, _pluginConfig) {
 
   // ── 运行时状态持久化（重启不丢 msgTimes / lastReplyAt 等） ──
   const RUNTIME_PATH = join(HOME, ".dsh/onebot-bridge/runtime.json");
+  // 独立的杂项状态（不跟 sessions 快照混）
+  const SELF_STATE_PATH = join(HOME, ".dsh/onebot-bridge/self-state.json");
+  function loadSelfState() {
+    try {
+      return JSON.parse(readFileSync(SELF_STATE_PATH, "utf8")) || {};
+    } catch {
+      return {};
+    }
+  }
+  function patchSelfState(patch) {
+    try {
+      const cur = loadSelfState();
+      Object.assign(cur, patch);
+      writeFileSync(SELF_STATE_PATH, JSON.stringify(cur));
+    } catch {
+      // 忽略
+    }
+  }
   let runtimeDirty = false;
   let runtimeTimer = null;
 
@@ -7961,6 +8274,10 @@ header{padding:12px 16px;border-bottom:1px solid #23262d;display:flex;align-item
 h1{font-size:15px;font-weight:600}
 .dot{width:8px;height:8px;border-radius:50%;background:#4ade80}
 .dot.off{background:#f87171}
+#btns{display:none;flex-wrap:wrap;gap:6px;padding:8px 12px;border-bottom:1px solid #23262d}
+#btns.on{display:flex}
+#btns button{background:#1e222a;border:1px solid #2a2e38;color:#c9d1d9;border-radius:14px;padding:4px 12px;font:13px inherit;cursor:pointer}
+#btns button:hover{background:#262b35;border-color:#3a4150}
 #log{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px}
 .msg{max-width:80%;padding:8px 12px;border-radius:12px;white-space:pre-wrap;word-break:break-word}
 .me{align-self:flex-end;background:#2563eb;color:#fff;border-bottom-right-radius:4px}
@@ -7972,6 +8289,7 @@ footer{padding:12px;border-top:1px solid #23262d;display:flex;gap:8px}
 #send:disabled{opacity:.5}
 </style></head><body>
 <header><span class="dot" id="dot"></span><h1>QQ 助手</h1><span id="st" style="font-size:12px;color:#8b93a1"></span></header>
+<div id="btns"></div>
 <div id="log"></div>
 <footer><textarea id="in" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）"></textarea><button id="send">发送</button></footer>
 <script>
@@ -7982,6 +8300,21 @@ function add(cls,text){const d=document.createElement('div');d.className='msg '+
 function addTool(text){const d=document.createElement('div');d.className='tool';d.textContent=text;log.appendChild(d);log.scrollTop=log.scrollHeight}
 let typing=null;
 function setTyping(on){if(on&&!typing){typing=add('her','…');}else if(!on&&typing){typing.remove();typing=null;}}
+const btnBar=document.getElementById('btns');
+fetch('/buttons?token='+T).then(r=>r.json()).then(list=>{
+  if(!Array.isArray(list)||!list.length) return;
+  btnBar.className='on';
+  for(const b of list){
+    const el=document.createElement('button');
+    el.textContent=b.label;
+    el.onclick=()=>{
+      if(b.pageId){ window.open('/page/'+b.pageId+'?token='+T,'_blank'); return; }
+      if(b.prompt){ inp.value=b.prompt; send(); }
+    };
+    btnBar.appendChild(el);
+  }
+}).catch(()=>{});
+
 fetch('/history?token='+T).then(r=>r.json()).then(list=>{
   for(const m of list){ if(m.role==='me') add('me',m.text); else if(m.role==='tool') addTool(m.text); else add('her',m.text); }
 });
@@ -8132,6 +8465,51 @@ inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDef
           clearInterval(ka);
           webClients.delete(res);
         });
+        return;
+      }
+      // 她做的网页
+      if (u.pathname.startsWith("/page/")) {
+        const id = u.pathname.slice(6).replace(/[^a-z0-9]/gi, "");
+        const file = join(HOME, ".dsh/onebot-bridge/workspace/pages", `${id}.html`);
+        try {
+          const body = readFileSync(file, "utf8");
+          res.writeHead(200, {
+            "content-type": "text/html; charset=utf-8",
+            // 完全隔离：不允许它碰 WebUI 的 storage / token
+            "content-security-policy": "sandbox allow-scripts allow-popups; default-src 'none'; style-src 'unsafe-inline'; img-src data: https:; font-src data:;",
+            "x-content-type-options": "nosniff",
+          });
+          res.end(body);
+        } catch {
+          res.writeHead(404, { "content-type": "text/plain; charset=utf-8" }).end("页面不存在");
+        }
+        return;
+      }
+      if (u.pathname === "/buttons") {
+        let list = [];
+        try {
+          list = JSON.parse(readFileSync(join(HOME, ".dsh/onebot-bridge/webui-buttons.json"), "utf8"));
+        } catch {
+          list = [];
+        }
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(Array.isArray(list) ? list : []));
+        return;
+      }
+      if (u.pathname === "/pages") {
+        try {
+          const dir = join(HOME, ".dsh/onebot-bridge/workspace/pages");
+          const list = readdirSync(dir)
+            .filter((f) => f.endsWith(".html"))
+            .map((f) => {
+              const st = statSync(join(dir, f));
+              return { id: f.replace(/\.html$/, ""), at: st.mtimeMs };
+            })
+            .sort((a, b) => b.at - a.at)
+            .slice(0, 50);
+          res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(list));
+        } catch {
+          res.writeHead(200, { "content-type": "application/json" }).end("[]");
+        }
         return;
       }
       if (u.pathname === "/send" && req.method === "POST") {
@@ -10355,18 +10733,23 @@ inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDef
     } else if (kind === "study") {
       prompt =
         base +
-        "研究你自己的一段代码。\n\n" +
-        "用 read_source 挑一段看——比如记忆是怎么存的、回复是怎么发出去的、" +
-        "活动是怎么调度的、或者某个你好奇的行为到底怎么实现的。\n" +
-        "可以按关键词搜（read_source 的 keyword），也可以按行号翻。\n\n" +
+        "现在研究代码。你可以读，也可以写，随你。\n\n" +
+        "【读】用 read_source 看自己的一段实现——比如记忆怎么存的、回复怎么发出去的、" +
+        "活动怎么调度的、某个你好奇的行为到底怎么实现的。\n" +
+        "可以按关键词搜（keyword），也可以按行号翻。\n" +
         "看的时候问自己：\n" +
         "· 它是怎么做成这件事的？\n" +
-        "· 有没有什么地方不对劲、或者可以更好？\n" +
-        "· 这跟我平时感觉到的自己一样吗？\n\n" +
-        "发现确实有问题的，用 note_want 记下来（kind 填 feature 或 other，写清哪里不对）。\n" +
+        "· 有没有什么地方不对劲、可以更好、或者跟你以为的不一样？\n" +
+        "发现值得改的，用 note_want 记进需求单（kind 填 feature，写清哪里不对、想改成什么样）。\n" +
         "没有就别硬提。\n\n" +
-        "写 100-150 字：你看了哪段、它怎么工作、你发现了什么。\n" +
-        "最后一行写 [[next: 时间]]。只输出你看到和想到的。";
+        "【写】也可以写点你想写的代码，用 exec_sandbox 跑一下看结果：\n" +
+        "· 想验证一个想法（比如「我的活动间隔真的像我以为的那样吗」）\n" +
+        "· 想算点什么（统计、模拟、画张图）\n" +
+        "· 想造个小工具，或者只是想知道某段东西跑起来什么样\n" +
+        "不用有明确目的，跑通了、看到结果了，就是收获。\n" +
+        "（沙箱是断网的，碰不到你的记忆和源码原文件——那些是只读的。）\n\n" +
+        "最后写 100-150 字：你看了什么、写了什么、跑出了什么、发现了什么。\n" +
+        "最后一行写 [[next: 时间]]。只输出你做到的和想到的。";
     } else if (kind === "play") {
       const games = (() => {
         try {
@@ -10937,12 +11320,7 @@ inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDef
           ? Math.max(1, Math.min(480, delayMinutes))
           : Math.max(1, Math.min(40, 10 + Math.random() * 20));
       // 存盘：重启后不用重算，别把她自己定的时间丢了
-      try {
-        rt.selfActivityNextAt = Date.now() + clamped * 60_000;
-        markRuntimeDirty();
-      } catch {
-        // 忽略
-      }
+      patchSelfState({ selfActivityNextAt: Date.now() + clamped * 60_000 });
       nextActivityTimer = setTimeout(() => void tickSelfActivity(), clamped * 60_000);
       nextActivityTimer.unref?.();
       if (delayMinutes > 0 && delayMinutes !== clamped) {
@@ -11038,7 +11416,7 @@ inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDef
   // 启动时：如果上次存了「下次什么时候」，按剩余时间恢复；否则 3 分钟后开始
   setTimeout(() => {
     try {
-      const saved = Number(rt.selfActivityNextAt) || 0;
+      const saved = Number(loadSelfState().selfActivityNextAt) || 0;
       if (saved > Date.now()) {
         const leftMin = Math.round((saved - Date.now()) / 60_000);
         logger.info?.(`[onebot] 恢复上次定的活动时间：${leftMin} 分钟后`);
