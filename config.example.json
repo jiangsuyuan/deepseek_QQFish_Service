@@ -113,8 +113,20 @@
     "nameMentionChance":  0.7,
     "nameMentionCooldownMinutes":  15,
     "friendRequests":  true,
-    "searchPerHour":  8,
     "stickerSavePerHour":  3,
     "stickerMaxCount":  300,
-    "stickerMaxMB":  30
+    "stickerMaxMB":  30,
+    "selfActivityEnabled":  true,
+    "selfActivityPerDay":  20,
+    "selfActivityChance":  0.5,
+    "selfActivityStartHour":  0,
+    "selfActivityEndHour":  24,
+    "memoryWalkChance":  0.7,
+    "digestEvery":  20,
+    "selfModelMinGapHours":  48,
+    "searchPerHour":  0,
+    "autoExplore":  true,
+    "autoExplorePerDay":  0,
+    "autoExploreChance":  0.35,
+    "autoExploreMinGapMinutes":  45
 }
