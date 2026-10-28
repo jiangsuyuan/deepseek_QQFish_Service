@@ -2114,6 +2114,11 @@ export function apply(ctx, _pluginConfig) {
     "view_avatar",
     "my_changelog",
     "my_source",
+    "my_adventures",
+    "my_digest",
+    "memory_index",
+    "note_want",
+    "my_wants",
     "revise_self",
     "forget_self",
     // 只读网络：查天气/新闻这类需求要靠它，安全但限频
@@ -3326,6 +3331,211 @@ export function apply(ctx, _pluginConfig) {
         }),
       );
       logger.info?.("[onebot] 自我查看工具已注册（changelog/source）");
+
+      // 翻自己的探险日志：我去过哪儿、当时怎么想的
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "my_adventures",
+          description:
+            "翻你自己出门走过的地方（每次自主探索的完整记录：看了什么、为什么往那儿走、当时想到什么）。" +
+            "有人问你「最近在忙什么」「有什么新发现」，或者你自己想回顾时用。",
+          parameters: {
+            limit: { type: "number", description: "返回几条，默认 5" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            let lines = [];
+            try {
+              const raw = readFileSync(join(HOME, ".dsh/onebot-bridge/explore-log.jsonl"), "utf8");
+              lines = raw.split("\n").filter(Boolean);
+            } catch {
+              return { ok: true, count: 0, note: "还没出去走过" };
+            }
+            const limit = Math.max(1, Math.min(20, Number(args?.limit) || 5));
+            const items = [];
+            for (const line of lines.slice(-limit).reverse()) {
+              try {
+                const e = JSON.parse(line);
+                items.push({
+                  when: new Date(e.at).toLocaleString("zh-CN", {
+                    month: "2-digit",
+                    day: "2-digit",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  }),
+                  topic: e.topic,
+                  stops: (e.stops || []).slice(0, 4),
+                  saw: String(e.summary || "").slice(0, 200),
+                  thought: String(e.thought || "").slice(0, 160),
+                });
+              } catch {
+                // 忽略
+              }
+            }
+            return { ok: true, count: items.length, total: lines.length, items };
+          },
+        }),
+      );
+      logger.info?.("[onebot] 探险日志工具已注册");
+
+      // 看这几天的经历摘要
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "my_digest",
+          description:
+            "看你这几天的经历摘要（不是逐条记录，是压缩后的「我最近经历了什么」）。" +
+            "有人问「最近怎么样」「这段时间干嘛了」，或者你自己想理一理时用。",
+          parameters: { days: { type: "number", description: "看最近几天，默认 7" } },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            const days = Math.max(1, Math.min(30, Number(args?.days) || 7));
+            const ds = loadDigests();
+            if (!ds.length) return { ok: true, count: 0, note: "还没有摘要（记忆攒够 20 条会生成）" };
+            const cutoff = Date.now() - days * 86400_000;
+            const items = ds
+              .filter((d) => d.to >= cutoff)
+              .map((d) => ({
+                when: new Date(d.to).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit" }),
+                from: new Date(d.from).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit" }),
+                count: d.count,
+                text: d.text,
+              }));
+            return { ok: true, count: items.length, days, items };
+          },
+        }),
+      );
+
+      // 记忆总索引：按主题/按时间
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "memory_index",
+          description:
+            "你的记忆总目录：按主题列出都记过什么、按时间看每天记了几条。" +
+            "想「我都记了什么」「有没有记过某方面」时用。",
+          parameters: {
+            mode: { type: "string", description: "topic（按主题）/ day（按天）/ kind（按类型）" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            const mode = String(args?.mode ?? "topic").toLowerCase();
+            const mems = loadMemLog(500);
+            if (!mems.length) return { ok: true, count: 0, note: "记忆日志还是空的" };
+            if (mode === "day") {
+              const byDay = {};
+              for (const m of mems) {
+                const d = new Date(m.at).toLocaleDateString("zh-CN");
+                byDay[d] = (byDay[d] || 0) + 1;
+              }
+              return { ok: true, mode, days: Object.entries(byDay).slice(-10) };
+            }
+            if (mode === "kind") {
+              const byKind = {};
+              for (const m of mems) byKind[m.kind] = (byKind[m.kind] || 0) + 1;
+              return { ok: true, mode, kinds: byKind };
+            }
+            const byTopic = {};
+            for (const m of mems) {
+              const t = String(m.topic || "").trim() || "（没主题）";
+              byTopic[t] = byTopic[t] || [];
+              if (byTopic[t].length < 5) byTopic[t].push(String(m.text || "").slice(0, 50));
+            }
+            const sorted = Object.entries(byTopic).sort((a, b) => b[1].length - a[1].length).slice(0, 15);
+            return {
+              ok: true,
+              mode,
+              total: mems.length,
+              topics: sorted.map(([t, list]) => ({ topic: t, count: list.length, sample: list.slice(0, 2) })),
+            };
+          },
+        }),
+      );
+      logger.info?.("[onebot] 记忆索引工具已注册（my_digest/memory_index）");
+
+      // 需求记事本：想要什么随手记，主人有空再看
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "note_want",
+          description:
+            "把「我想要什么」记进记事本：感兴趣的网站要账号、缺的功能、想看的书/番…" +
+            "随时可以记，不占额度。主人有空会看，恢复联络时会一起报给他。" +
+            "kind 填 account（要账号）/ feature（要功能）/ other（其它）。",
+          parameters: {
+            kind: { type: "string", description: "account / feature / other" },
+            what: { type: "string", description: "想要什么，一句话" },
+            why: { type: "string", description: "为什么想要（遇到了什么具体场景）" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            const kind = String(args?.kind ?? "other").toLowerCase();
+            const what = String(args?.what ?? "").trim().slice(0, 150);
+            const why = String(args?.why ?? "").trim().slice(0, 250);
+            if (!what) return { ok: false, reason: "得先说想要什么" };
+            const wants = loadWants();
+            // 同一件事别重复记
+            if (wants.some((w) => w.status === "pending" && w.what === what)) {
+              return { ok: true, note: "这条已经记过了，等主人看" };
+            }
+            wants.push({
+              id: Date.now().toString(36),
+              at: Date.now(),
+              kind: ["account", "feature", "other"].includes(kind) ? kind : "other",
+              what,
+              why,
+              status: "pending",
+            });
+            saveWants(wants);
+            const pend = wants.filter((w) => w.status === "pending").length;
+            logger.info?.(`[onebot] 记了个需求（${kind}）：${what}`);
+            audit({ kind: "want", wantKind: kind, what, why });
+            return {
+              ok: true,
+              note: `记下了。现在本子上有 ${pend} 条待处理，主人有空会看。`,
+            };
+          },
+        }),
+      );
+
+      // 翻自己的需求记事本
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "my_wants",
+          description: "看你自己的需求记事本：记了哪些想要的、哪些已经被批了。",
+          parameters: {},
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async () => {
+            const wants = loadWants();
+            if (!wants.length) return { ok: true, count: 0, note: "记事本还是空的" };
+            return {
+              ok: true,
+              count: wants.length,
+              pending: wants.filter((w) => w.status === "pending").length,
+              items: wants.slice(-12).map((w) => ({
+                kind: w.kind,
+                what: w.what,
+                why: String(w.why || "").slice(0, 80),
+                status: w.status,
+                when: new Date(w.at).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit" }),
+              })),
+            };
+          },
+        }),
+      );
+      logger.info?.("[onebot] 需求记事本工具已注册（note_want/my_wants）");
 
       // 拒聊：声明后一段时间内不再回这个人，并结束当前的续聊
       ctx.get?.("tools")?.register?.(
@@ -4799,6 +5009,44 @@ export function apply(ctx, _pluginConfig) {
     return true;
   }
 
+  // ── 处理她的需求记事本（给她 N / 算了 N / 需求清单）──
+  if (/(给她|批准)\s*\d+/.test(t) || /(算了|拒了|不给她)\s*\d+/.test(t)) {
+    const approve = /(给她|批准)/.test(t);
+    const m = t.match(/(\d+)/);
+    const idx = m ? Number(m[1]) : 0;
+    const pendingWants = loadWants().filter((w) => w.status === "pending");
+    if (!idx || idx > pendingWants.length) {
+      await client.sendPrivate(cfg.ownerId, `没有第 ${idx} 条。现在待处理 ${pendingWants.length} 条。`);
+      return true;
+    }
+    const target = pendingWants[idx - 1];
+    const all = loadWants();
+    const hit = all.find((w) => w.id === target.id);
+    if (hit) hit.status = approve ? "granted" : "rejected";
+    saveWants(all);
+    await client.sendPrivate(cfg.ownerId, `${approve ? "已标记同意" : "已标记拒绝"}：${target.what}`);
+    audit({ kind: "want_decide", what: target.what, approve });
+    return true;
+  }
+
+  if (/^(需求清单|她的需求|看看她的需求|有什么想要的)/.test(t)) {
+    const pendingWants = loadWants().filter((w) => w.status === "pending");
+    if (!pendingWants.length) {
+      await client.sendPrivate(cfg.ownerId, "她这会儿没什么想要的。");
+      return true;
+    }
+    const lines = [`她记了 ${pendingWants.length} 个想要的：`];
+    pendingWants.forEach((w, i) => {
+      lines.push(
+        `${i + 1}. [${w.kind}] ${w.what}` +
+          (w.why ? `\n   因为：${String(w.why).slice(0, 60)}` : "") +
+          `\n   （回「给她 ${i + 1}」或「算了 ${i + 1}」）`,
+      );
+    });
+    await client.sendPrivate(cfg.ownerId, lines.join("\n"));
+    return true;
+  }
+
   // ── 发言频率统计 ──
   if (/(发言统计|发言频率|说话分布|频率统计|每小时.*发言|发言.*分布)/.test(t) && t.length <= 18) {
     try {
@@ -6158,6 +6406,16 @@ export function apply(ctx, _pluginConfig) {
       return;
     }
 
+    // 有人评价她时，只记来源，不立刻改自我描述
+    try {
+      const t = String(parsed.text || "");
+      if (/(你|肥鱼).{0,6}(像|是|挺|太|有点).{0,6}(机器|模板|人|冷|暖|较真|敷衍)/.test(t)) {
+        noteMirrorSource(String(ev.user_id), t.slice(0, 60));
+      }
+    } catch {
+      // 忽略
+    }
+
     const who = people.describe(ev.user_id);
     // 只 @ 没说话：把前面几条聊天记录带上，别空着回
     let emptyAtNote = "";
@@ -6640,6 +6898,41 @@ export function apply(ctx, _pluginConfig) {
       const rendered = facts.render(6);
       if (rendered) factLine = `[你记得的事] ${rendered}\n`;
     }
+    // ── 分层记忆注入（L0 自我 / L3 核心 / L2 摘要 / 相关记忆）──
+    let memoryNote = "";
+    try {
+      const parts = [];
+      // L0：我是谁（最先，决定怎么说话）
+      const selfText = selfModelText();
+      if (selfText) parts.push(selfText);
+      // L3：核心自我（belief/care/want/change）
+      const core = loadCore().slice(-20);
+      if (core.length) {
+        const byType = {};
+        for (const c of core) {
+          const ty = c.type || "belief";
+          byType[ty] = byType[ty] || [];
+          byType[ty].push(c.text);
+        }
+        const labels = { belief: "你认定的事", care: "你在意的", want: "你想做的事", change: "你变了的地方" };
+        const lines = [];
+        for (const ty of ["belief", "care", "want", "change"]) {
+          if (!byType[ty]?.length) continue;
+          lines.push(`· ${labels[ty]}：${byType[ty].slice(-4).join("；")}`);
+        }
+        if (lines.length) parts.push(`[你自己的话]\n${lines.join("\n")}\n`);
+      }
+      // L2：最近几天的经历摘要
+      const dg = recentDigestText(3);
+      if (dg) parts.push(`[你这几天经历过什么]\n${dg}\n`);
+      // 相关记忆：按当前话题捞 3-4 条
+      const rel = relevantMemories(parsed.text, 4);
+      if (rel) parts.push(rel);
+      if (parts.length) memoryNote = parts.join("\n") + "\n";
+    } catch {
+      // 注入失败不影响主流程
+    }
+
     // 引用了某条消息：把那段也给她看，否则容易答非所问
     let quoteNote = "";
     if (parsed.quotedText) {
@@ -6648,7 +6941,22 @@ export function apply(ctx, _pluginConfig) {
       // 原文查不到（旧客户端消息），用摘要兜底
       quoteNote = `\n[对方引用的那条消息]（只有摘要）${parsed.replySummary}\n`;
     }
-    const body = vibeNote + slangNote + selfLine + emptyAtNote + quoteNote + forwardNote + fileNote + catchupNote + recallNote + linkNote + crossNote + factLine + bodyBase + observed;
+    const body =
+      vibeNote +
+      memoryNote +
+      slangNote +
+      selfLine +
+      emptyAtNote +
+      quoteNote +
+      forwardNote +
+      fileNote +
+      catchupNote +
+      recallNote +
+      linkNote +
+      crossNote +
+      factLine +
+      bodyBase +
+      observed;
     const ownerNote =
       cfg.ownerId && String(ev.user_id) === String(cfg.ownerId) && ev.message_type !== "group"
         ? "（这是你的主人。）\n"
@@ -6893,6 +7201,21 @@ export function apply(ctx, _pluginConfig) {
           openWindow(key, ev.user_id);
           logger.info?.(`[onebot] 续聊窗口打开 ${key} 用户 ${ev.user_id}（上限 ${followMax()} 轮）`);
         }
+        // 记一条「聊了什么」，摘要和检索都用得上
+        try {
+          const topicTxt = String(parsed.text || "")
+            .replace(/[^\u4e00-\u9fa5A-Za-z0-9]/g, "")
+            .slice(0, 12);
+          appendMem({
+            kind: "chat",
+            who: String(ev.user_id || ""),
+            topic: topicTxt,
+            text: `跟${nickname}聊「${String(parsed.text || "").slice(0, 40)}」，我回了「${String(reply || "").slice(0, 40)}」`,
+            ref: key,
+          });
+        } catch {
+          // 忽略
+        }
       }
     } catch (err) {
       const emsg = String(err?.message ?? err);
@@ -7133,6 +7456,91 @@ export function apply(ctx, _pluginConfig) {
     groupMetaTimer.unref?.();
   }
 
+  // ── 需求记事本：她想要的东西随手记下来，等主人有空处理 ──
+  const WANTS_PATH = join(HOME, ".dsh/onebot-bridge/wants.json");
+  function loadWants() {
+    try {
+      const d = JSON.parse(readFileSync(WANTS_PATH, "utf8"));
+      return Array.isArray(d) ? d : [];
+    } catch {
+      return [];
+    }
+  }
+  function saveWants(arr) {
+    try {
+      writeFileSync(WANTS_PATH, JSON.stringify(arr.slice(-100), null, 1));
+    } catch {
+      // 忽略
+    }
+  }
+
+  // ── 离线模式：断线超过 30 分钟 = 她「还能想，但说不了话」──
+  let offlineSince = 0;
+  function isOfflineMode() {
+    if (client.connected) {
+      if (offlineSince) {
+        const mins = Math.round((Date.now() - offlineSince) / 60000);
+        logger.info?.(`[onebot] 恢复在线（离线 ${mins} 分钟）`);
+        audit({ kind: "back_online", minutes: mins });
+        // 恢复后第一次内省要带上「离线期间我做了什么」
+        offlineSummaryPending = true;
+        // 顺手把「她这段时间想要的东西」报给主人
+        try {
+          const pend = loadWants().filter((w) => w.status === "pending");
+          if (pend.length && cfg.ownerId) {
+            const list = pend
+              .slice(-8)
+              .map((w) => `· [${w.kind}] ${w.what}${w.why ? `（因为：${String(w.why).slice(0, 40)}）` : ""}`)
+              .join("\n");
+            void client
+              .sendPrivate(
+                cfg.ownerId,
+                `她这段时间记下了 ${pend.length} 个想要的东西：\n${list}\n\n` +
+                  `（回「给她 <序号>」批，回「算了 <序号>」拒；或者你自己看 wants.json）`,
+              )
+              .catch(() => {});
+            logger.info?.(`[onebot] 已向主人汇报 ${pend.length} 条待处理需求`);
+          }
+        } catch {
+          // 忽略
+        }
+        offlineSince = 0;
+      }
+      return false;
+    }
+    if (!offlineSince) {
+      // 启动时就未连接（比如封号期间重启）：视为已离线够久，
+      // 否则每次重启都要空等 30 分钟才进离线模式
+      offlineSince = Date.now() - 31 * 60_000;
+    }
+    return Date.now() - offlineSince > 30 * 60_000;
+  }
+  let offlineSummaryPending = false;
+
+  /** 离线期间的学习清单（给她恢复后看） */
+  function offlineDigest() {
+    try {
+      const learns = loadLearnings();
+      const since = offlineSince || Date.now() - 7 * 86400_000;
+      const recent = learns.filter((l) => l.at >= since);
+      if (!recent.length) return "";
+      const list = recent
+        .slice(-8)
+        .map((l) => {
+          const why = (l.path || []).find((p) => p && p.why)?.why;
+          return `· ${l.topic}：${String(l.summary).slice(0, 60)}${why ? `（路上被「${String(why).slice(0, 30)}」勾住的）` : ""}`;
+        })
+        .join("\n");
+      return (
+        `（说明：你最近没法在群里说话。可以把它当成一次出门远行——` +
+        `你在外面走了走，看了 ${recent.length} 处东西，都记下来了：\n${list}\n` +
+        `你现在知道的东西比出门前多了一些。）`
+      );
+    } catch {
+      return "";
+    }
+  }
+
   // ── 主动行为时段：23 点到次日 9 点不主动开口 ──
   function activeHoursOk() {
     try {
@@ -7141,6 +7549,19 @@ export function apply(ctx, _pluginConfig) {
       const end = Number(cfg.activeEndHour ?? 23);
       if (start < end) return h >= start && h < end;
       return h >= start || h < end; // 跨夜写法
+    } catch {
+      return true;
+    }
+  }
+
+  /** 自主活动的时段：比「主动发言」宽松（内部活动不打扰任何人） */
+  function selfActivityHoursOk() {
+    try {
+      const h = new Date().getHours();
+      const start = Number(cfg.selfActivityStartHour ?? 5);
+      const end = Number(cfg.selfActivityEndHour ?? 24);
+      if (start < end) return h >= start && h < end;
+      return h >= start || h < end;
     } catch {
       return true;
     }
@@ -8083,6 +8504,8 @@ export function apply(ctx, _pluginConfig) {
       selfViews.addReflection(content);
       logger.info?.(`[onebot] 今日反思：${content.slice(0, 60)}`);
       audit({ kind: "reflect", text: content.slice(0, 300) });
+      // 反思完顺便看要不要微调「我是什么样的」
+      void maybeAdjustSelfModel("dailyReflect");
     } catch (err) {
       logger.warn?.(`[onebot] 反思失败：${err?.message ?? err}`);
     }
@@ -8236,8 +8659,34 @@ export function apply(ctx, _pluginConfig) {
   // ── 每小时内省：让她自己决定要不要记、要不要反思（不发到 QQ）──
   async function hourlyIntrospect() {
     if (cfg.hourlyIntrospect === false || cfg.autoActionsEnabled === false) return;
-    if (!client.connected) return;
+    const offline = isOfflineMode();
+    // 离线时也能内省（只要 agent 可用），只是没群聊素材
+    if (!offline && !client.connected) return;
     const nowTs = Date.now();
+    // 离线：没新对话，改成「翻自己的记忆」
+    if (offline) {
+      const digest = offlineDigest() || "";
+      const runKey = `private:${cfg.ownerId || "offline"}`;
+      logger.info?.("[onebot] 离线内省：回顾自己的记忆");
+      audit({ kind: "introspect_offline" });
+      try {
+        await sessions.runSilent(
+          runKey,
+          "（内部回顾，不用回复任何人，也不要发消息。）\n" +
+            "你最近没法在群里说话，但还在想事情。\n" +
+            (digest ? digest + "\n" : "") +
+            "想一想：\n" +
+            "1. 这些东西里，有没有互相矛盾、或者能串起来形成新看法的？有就用 remember_self 记下。\n" +
+            "2. 有没有哪个话题让你觉得「还没想明白」？有就记下来（我们下次去查）。\n" +
+            "3. 有没有对自己的新认识？有就写一条反思。\n" +
+            "都没有就只回一个字：无。",
+        );
+      } catch (err) {
+        logger.warn?.(`[onebot] 离线内省失败：${err?.message ?? err}`);
+      }
+      return;
+    }
+
     // 挑最近 1 小时内有活动的群（只在有话题的会话里回顾才有意义）
     let bestKey = null;
     let bestAt = 0;
@@ -8260,6 +8709,7 @@ export function apply(ctx, _pluginConfig) {
       await sessions.runSilent(
         bestKey,
         "（内部回顾，不用回复任何人，也不要发任何消息到群里。）\n" +
+          backNote +
           "刚才这一小时你在这个群聊了不少。想一想：\n" +
           "1) 有没有值得记住的事实（某人的习惯、某件事的来龙去脉）？有就用 remember_fact 存下来。\n" +
           "2) 有没有值得记下的人物特征（谁说话什么风格、在意什么）？有就用 remember_person。\n" +
@@ -8283,6 +8733,636 @@ export function apply(ctx, _pluginConfig) {
 
   // ── 自主探索：顺着链接往下读，学成一条记忆 ──
   const LEARN_PATH = join(HOME, ".dsh/onebot-bridge/learnings.json");
+  // ── L0 自我认知：三层（事实的我 / 我觉得的我 / 别人眼里的我）──
+  const SELF_MODEL_PATH = join(HOME, ".dsh/onebot-bridge/self-model.json");
+  const SELF_HISTORY_PATH = join(HOME, ".dsh/onebot-bridge/self-history.jsonl");
+
+  function loadSelfModel() {
+    try {
+      const d = JSON.parse(readFileSync(SELF_MODEL_PATH, "utf8"));
+      return d && typeof d === "object" ? d : {};
+    } catch {
+      return {};
+    }
+  }
+  function saveSelfModel(m) {
+    try {
+      writeFileSync(SELF_MODEL_PATH, JSON.stringify(m, null, 1));
+    } catch {
+      // 忽略
+    }
+  }
+
+  /** 拼成注入用的文字 */
+  function selfModelText() {
+    const m = loadSelfModel();
+    const bits = [];
+    if (m.fact?.text) bits.push(`· 我是什么样的：${m.fact.text}`);
+    if (m.inner?.text) bits.push(`· 我觉得我是什么样的：${m.inner.text}`);
+    if (m.inner?.tensions?.length) bits.push(`· 我心里没摆平的事：${m.inner.tensions.join("；")}`);
+    if (m.mirror?.text) bits.push(`· 在别人眼里我好像是：${m.mirror.text}`);
+    return bits.length ? `[你对自己的认识]\n${bits.join("\n")}\n` : "";
+  }
+
+  /** 被明确评价时，只记来源，不立刻改自我描述 */
+  function noteMirrorSource(who, said) {
+    try {
+      const m = loadSelfModel();
+      m.mirror = m.mirror && typeof m.mirror === "object" ? m.mirror : {};
+      m.mirror.sources = Array.isArray(m.mirror.sources) ? m.mirror.sources : [];
+      const text = String(said || "").slice(0, 60);
+      if (!text) return;
+      if (m.mirror.sources.some((x) => x.said === text)) return;
+      m.mirror.sources.push({ who: String(who || ""), said: text, at: Date.now() });
+      if (m.mirror.sources.length > 30) m.mirror.sources = m.mirror.sources.slice(-30);
+      saveSelfModel(m);
+    } catch {
+      // 忽略
+    }
+  }
+
+  /** 微调：只改需要改的句子，没变就不动 */
+  async function maybeAdjustSelfModel(reason) {
+    try {
+      const m = loadSelfModel();
+      const now = Date.now();
+      const MIN_GAP_HOURS = Number(cfg.selfModelMinGapHours ?? 48);
+      const lastAt = Math.max(m.fact?.updatedAt ?? 0, m.inner?.updatedAt ?? 0, m.mirror?.updatedAt ?? 0);
+      if (lastAt && now - lastAt < MIN_GAP_HOURS * 3600_000) {
+        logger.info?.("[onebot] 自我认知还没到该变的时候");
+        return;
+      }
+      const digest = recentDigestText(3);
+      const sources = (m.mirror?.sources ?? [])
+        .slice(-6)
+        .map((x) => `· ${x.said}`)
+        .join("\n");
+      const runKey = `private:${cfg.ownerId || "offline"}`;
+      const out = String(
+        (await sessions.runSilent(
+          runKey,
+          "（内部整理，不要发消息，不要用工具。这是你对「自己是谁」的认识。）\n" +
+            "[现在的三条]\n" +
+            `事实：${m.fact?.text || "（还没写过）"}\n` +
+            `我觉得：${m.inner?.text || "（还没写过）"}\n` +
+            `别人眼里：${m.mirror?.text || "（还没写过）"}\n` +
+            `（心里没摆平的事：${(m.inner?.tensions ?? []).join("；") || "无"}）\n\n` +
+            (digest ? `[最近这几天的经历]\n${digest}\n` : "") +
+            (sources ? `[最近别人对你的评价]\n${sources}\n` : "") +
+            "\n今天想请你微调一下这三条。规则很重要：\n" +
+            "1. **只改需要改的句子**，没变的原样返回——你不该每天换一个人；\n" +
+            "2. 每条不超过 120 字；\n" +
+            "3. 如果不打算改，就返回原来那句。\n" +
+            '只输出 JSON：{"fact":"...","inner":"...","tensions":["..."],"mirror":"...","why":"这次为什么改"}',
+        )) ?? "",
+      ).trim();
+      const mm = out.match(/\{[\s\S]*\}/);
+      if (!mm) return;
+      const obj = JSON.parse(mm[0]);
+      let changed = [];
+      const pick = (k) => String(obj[k] ?? "").trim().slice(0, 150);
+      const upd = (layer, val) => {
+        if (!val || val === m[layer]?.text) return;
+        const before = m[layer]?.text || "";
+        m[layer] = { ...(m[layer] || {}), text: val, updatedAt: now };
+        try {
+          writeFileSync(
+            SELF_HISTORY_PATH,
+            JSON.stringify({ at: now, layer, before, after: val, why: String(obj.why || reason || "").slice(0, 100) }) + "\n",
+            { flag: "a" },
+          );
+        } catch {
+          // 忽略
+        }
+        changed.push(layer);
+      };
+      upd("fact", pick("fact"));
+      upd("inner", pick("inner"));
+      upd("mirror", pick("mirror"));
+      const tens = Array.isArray(obj.tensions) ? obj.tensions.map((x) => String(x).slice(0, 80)).slice(0, 3) : null;
+      if (tens && JSON.stringify(tens) !== JSON.stringify(m.inner?.tensions ?? [])) {
+        m.inner = { ...(m.inner || {}), tensions: tens, updatedAt: now };
+        changed.push("tensions");
+      }
+      if (changed.length) {
+        saveSelfModel(m);
+        audit({ kind: "self_model", changed, why: String(obj.why || "").slice(0, 80) });
+        logger.info?.(`[onebot] 自我认知微调：${changed.join("/")}`);
+      } else {
+        logger.info?.("[onebot] 自我认知这次不用改");
+      }
+    } catch (err) {
+      logger.warn?.(`[onebot] 自我认知调整失败：${err?.message ?? err}`);
+    }
+  }
+
+  // ── 摘要：每 20 条记忆压成一段 200 字的「这几天我经历了什么」──
+  const DIGEST_PATH = join(HOME, ".dsh/onebot-bridge/digest.json");
+
+  function loadDigests() {
+    try {
+      const d = JSON.parse(readFileSync(DIGEST_PATH, "utf8"));
+      return Array.isArray(d) ? d : [];
+    } catch {
+      return [];
+    }
+  }
+  function saveDigests(arr) {
+    try {
+      writeFileSync(DIGEST_PATH, JSON.stringify(arr.slice(-40), null, 1));
+    } catch {
+      // 忽略
+    }
+  }
+
+  /** 最近一次摘要之后的记忆，够 20 条就压一次 */
+  async function maybeMakeDigest() {
+    try {
+      const digests = loadDigests();
+      const since = digests.length ? digests[digests.length - 1].to : 0;
+      const pending = loadMemLog(400).filter((m) => m.at > since);
+      if (pending.length < (Number(cfg.digestEvery) || 20)) return;
+      const text = pending
+        .slice(-30)
+        .map((m) => `[${m.kind}] ${m.topic ? `(${m.topic}) ` : ""}${String(m.text || "").slice(0, 90)}`)
+        .join("\n");
+      const runKey = `private:${cfg.ownerId || "offline"}`;
+      const out = String(
+        (await sessions.runSilent(
+          runKey,
+          "（内部整理，不要发消息。这是给你自己看的记忆摘要。）\n" +
+            "下面是你最近做的事、学到的东西、聊的要点：\n" +
+            text +
+            "\n\n把它们压成一段 150-200 字的「这几天我经历了什么」：\n" +
+            "· 用第一人称，像自己回想\n" +
+            "· **保留具体的人名、书名、术语**（这些是记忆的钩子）\n" +
+            "· 不要罗列，要串成一条线\n" +
+            "只输出这一段话。",
+        )) ?? "",
+      ).trim();
+      if (out.length < 20) return;
+      digests.push({
+        from: pending[0].at,
+        to: pending[pending.length - 1].at,
+        text: out.slice(0, 400),
+        count: pending.length,
+      });
+      saveDigests(digests);
+      audit({ kind: "digest", count: pending.length, len: out.length });
+      logger.info?.(`[onebot] 记忆摘要 +1（${pending.length} 条）：${out.slice(0, 40)}`);
+    } catch (err) {
+      logger.warn?.(`[onebot] 摘要生成失败：${err?.message ?? err}`);
+    }
+  }
+
+  /** 按当前消息里的词，从记忆日志里捞几条相关的（"突然想起来"的机制） */
+  function relevantMemories(text, n = 4) {
+    try {
+      const t = String(text || "");
+      if (t.length < 3) return "";
+      // 取 2-4 字的中文片段当关键词
+      const words = new Set();
+      const zh = t.replace(/[^\u4e00-\u9fa5A-Za-z0-9]/g, "");
+      for (let i = 0; i + 2 <= Math.min(zh.length, 40); i++) {
+        for (let len = 2; len <= 4; len++) {
+          const w = zh.slice(i, i + len);
+          if (w.length === len) words.add(w);
+        }
+      }
+      const STOP = new Set(["什么", "怎么", "这个", "那个", "就是", "没有", "可以", "不是", "现在", "还是"]);
+      const mems = loadMemLog(300);
+      const scored = [];
+      for (const m of mems) {
+        const hay = `${m.topic || ""} ${m.text || ""}`;
+        let score = 0;
+        for (const w of words) {
+          if (STOP.has(w)) continue;
+          if (hay.includes(w)) score += w.length >= 3 ? 2 : 1;
+        }
+        if (score > 0) scored.push({ m, score });
+      }
+      scored.sort((a, b) => b.score - a.score);
+      const top = scored.slice(0, n);
+      if (!top.length) return "";
+      const lines = top.map(
+        (x) => `· [${x.m.kind}] ${String(x.m.text || "").slice(0, 70)}`,
+      );
+      return `[你想起的一些事]\n${lines.join("\n")}\n`;
+    } catch {
+      return "";
+    }
+  }
+
+  /** 最近 N 天的摘要，拼成一段注入用的文字 */
+  function recentDigestText(days = 3) {
+    try {
+      const ds = loadDigests();
+      if (!ds.length) return "";
+      const cutoff = Date.now() - days * 86400_000;
+      const recent = ds.filter((d) => d.to >= cutoff).slice(-4);
+      if (!recent.length) return "";
+      return recent.map((d) => `· ${d.text}`).join("\n");
+    } catch {
+      return "";
+    }
+  }
+
+  // ── 统一记忆日志：所有「发生过的事」都往这里写一条 ──
+  // 目的：让记忆有条理（统一字段、可按主题/时间检索），也是摘要生成的原料
+  const MEMLOG_PATH = join(HOME, ".dsh/onebot-bridge/memory-log.jsonl");
+  const memSeen = new Set();
+
+  function appendMem(rec) {
+    try {
+      const key = `${rec.kind}|${rec.text || ""}`.slice(0, 180);
+      if (rec.text && memSeen.has(key)) return; // 同一件事不重复记
+      if (rec.text) memSeen.add(key);
+      if (memSeen.size > 500) memSeen.clear();
+      writeFileSync(MEMLOG_PATH, JSON.stringify({ at: Date.now(), ...rec }) + "\n", { flag: "a" });
+    } catch {
+      // 忽略
+    }
+  }
+
+  function loadMemLog(limit = 200) {
+    try {
+      const raw = readFileSync(MEMLOG_PATH, "utf8");
+      const lines = raw.split("\n").filter(Boolean);
+      const out = [];
+      for (const line of lines.slice(-limit * 2)) {
+        try {
+          out.push(JSON.parse(line));
+        } catch {
+          // 忽略
+        }
+      }
+      return out.slice(-limit);
+    } catch {
+      return [];
+    }
+  }
+
+  // ── 自主活动：探险 / 思考 / 写点什么 / 回忆 / 憧憬未来 ──
+  // 五种活动各自沉淀到不同地方，长期下来塑造核心记忆和性格
+  const ACT_PATH = join(HOME, ".dsh/onebot-bridge/activities.jsonl");
+  const CORE_PATH = join(HOME, ".dsh/onebot-bridge/core.json");
+
+  function appendActivity(rec) {
+    try {
+      writeFileSync(ACT_PATH, JSON.stringify(rec) + "\n", { flag: "a" });
+    } catch {
+      // 忽略
+    }
+  }
+
+  function loadActivities(n = 50) {
+    try {
+      const raw = readFileSync(ACT_PATH, "utf8");
+      const lines = raw.split("\n").filter(Boolean);
+      const out = [];
+      for (const line of lines.slice(-n * 3)) {
+        try {
+          out.push(JSON.parse(line));
+        } catch {
+          // 忽略
+        }
+      }
+      return out.slice(-n);
+    } catch {
+      return [];
+    }
+  }
+
+  function loadCore() {
+    try {
+      const d = JSON.parse(readFileSync(CORE_PATH, "utf8"));
+      return Array.isArray(d) ? d : [];
+    } catch {
+      return [];
+    }
+  }
+  function saveCore(arr) {
+    try {
+      writeFileSync(CORE_PATH, JSON.stringify(arr.slice(-60), null, 1));
+    } catch {
+      // 忽略
+    }
+  }
+
+  const ACTIVITY_KINDS = [
+    { id: "explore", w: 24 },
+    { id: "think", w: 18 },
+    { id: "write", w: 15 },
+    { id: "recall", w: 10 },
+    { id: "dream", w: 9 },
+    { id: "play", w: 10 },
+    { id: "read", w: 14 },
+  ];
+
+  function pickActivityKind() {
+    const total = ACTIVITY_KINDS.reduce((a, b) => a + b.w, 0);
+    let r = Math.random() * total;
+    for (const k of ACTIVITY_KINDS) {
+      r -= k.w;
+      if (r <= 0) return k.id;
+    }
+    return "think";
+  }
+
+  /** 做一件自主活动（探险走 maybeExplore，其余走这里） */
+  async function runSelfActivity(kind) {
+    if (cfg.autoActionsEnabled === false) return;
+    if (!selfActivityHoursOk()) return;
+    const offline = isOfflineMode();
+    if (!offline && !client.connected) return;
+    if (kind === "explore") return maybeExplore(true);
+
+    const runKey = `private:${cfg.ownerId || "offline"}`;
+    const coreLines = loadCore()
+      .slice(-8)
+      .map((c) => `· ${c.text}`)
+      .join("\n");
+    const recent = loadActivities(12)
+      .filter((a) => a.kind !== "explore")
+      .slice(-6)
+      .map((a) => `· [${a.kind}] ${String(a.content || "").slice(0, 60)}`)
+      .join("\n");
+
+    const base =
+      "（这是你自己的时间，不用回复任何人，也不要发任何消息。你在心里做这件事。）\n" +
+      (coreLines ? `[你现在记得的关于自己的事]\n${coreLines}\n` : "") +
+      (recent ? `[你最近自己做过的事]\n${recent}\n` : "");
+
+    let prompt = "";
+    if (kind === "think") {
+      prompt =
+        base +
+        "\n想一想你最近看到、听到的东西：它们让你怎么看事情？\n" +
+        "如果你得出了什么新的看法（不是复述别人，是你自己的判断），用 remember_self 记下来。\n" +
+        "只输出你想到的那句话，不要解释过程。";
+    } else if (kind === "write") {
+      prompt =
+        base +
+        "\n写点什么。不用有意义——一段随想、一个画面、一句没头没尾的话都行。\n" +
+        "像你自己在本子上写的，不是给别人看的。\n" +
+        "只输出你写下的内容（50-150 字）。";
+    } else if (kind === "recall") {
+      prompt =
+        base +
+        "\n翻翻你记得的人和事，把散的东西串一串：\n" +
+        "· 有没有谁你很久没想起但还记得？\n" +
+        "· 有没有几件事连起来看，能看出点什么？\n" +
+        "想清楚了就用 remember_fact / remember_person 记下新的理解。\n" +
+        "只输出你想到的内容。";
+    } else if (kind === "read") {
+      const past = (() => {
+        try {
+          const raw = readFileSync(join(HOME, ".dsh/onebot-bridge/readings.jsonl"), "utf8");
+          return raw
+            .split("\n")
+            .filter(Boolean)
+            .slice(-5)
+            .map((l) => {
+              try {
+                return JSON.parse(l);
+              } catch {
+                return null;
+              }
+            })
+            .filter(Boolean);
+        } catch {
+          return [];
+        }
+      })();
+      const pastText = past.length
+        ? `[你最近读过的]\n${past.map((r) => `· 《${r.title}》：${String(r.thought || "").slice(0, 50)}`).join("\n")}\n（可以接着读同一本，也可以换。）\n`
+        : "";
+      prompt =
+        base +
+        pastText +
+        "\n现在读点书。先想：你想读什么？\n" +
+        "· 可以是最近遇到、让你好奇的东西相关的书；\n" +
+        "· 可以是早就想读但没开始的；\n" +
+        "· 也可以只是想看某个作者怎么写东西。\n\n" +
+        "然后自己去找——**怎么找由你决定**。可以用 web_search 搜书名、搜作者、搜「在线阅读」、\n" +
+        "找公版书（古诗文、老作品）、找书摘、找第一章试读、找读书笔记……\n" +
+        "找不到整本也没关系，读到一段是一段；实在找不到就换一本能读到的。\n\n" +
+        "读完之后写 100-150 字：读的什么书、读到哪段、你什么感觉。\n" +
+        "如果读得下去、想接着读，第一行写 [[book: 书名 | 作者]]。";
+    } else if (kind === "play") {
+      const games = (() => {
+        try {
+          const raw = readFileSync(join(HOME, ".dsh/onebot-bridge/games.jsonl"), "utf8");
+          return raw
+            .split("\n")
+            .filter(Boolean)
+            .slice(-5)
+            .map((l) => {
+              try {
+                return JSON.parse(l);
+              } catch {
+                return null;
+              }
+            })
+            .filter(Boolean);
+        } catch {
+          return [];
+        }
+      })();
+      const gamesText = games.length
+        ? `[你以前给自己造过的游戏]\n${games.map((g) => `· ${g.name}：${String(g.rules || "").slice(0, 80)}`).join("\n")}\n（可以接着玩，也可以造新的。）\n`
+        : "";
+      prompt =
+        base +
+        gamesText +
+        "\n现在你有空，玩一会儿。给自己造个小游戏，然后玩它。\n" +
+        "可以很简单：猜数字、词语接龙、自己出谜语自己解、给一个词找十个近义词、\n" +
+        "算一道没算过的题、想象一个场景然后推演……也可以画点东西（能用 draw_svg）。\n" +
+        "不用给别人玩，规则你自己定，输了赢了都行。\n" +
+        "玩完写 100-150 字：玩的什么、怎么玩的、玩得怎么样。\n" +
+        "如果你造了个想以后再玩的游戏，第一行写 [[game: 游戏名 | 一句话规则]]。";
+    } else if (kind === "dream") {
+      prompt =
+        base +
+        "\n想想以后。不是空想——是「如果有可能，我希望怎样」：\n" +
+        "· 你想变成什么样的人？\n" +
+        "· 有什么事你想做但还没做？\n" +
+        "如果冒出一个具体的愿望，可以用 note_want 记下来。\n" +
+        "只输出你想说的（50-150 字）。";
+    } else {
+      return;
+    }
+
+    // 让她自己决定下次什么时候再想这些事（几分钟还是几小时）
+    prompt +=
+      "\n\n最后单独一行，写下你下次想做点什么、大概隔多久：\n" +
+      "格式：[[next: 45m]] 或 [[next: 2h]] 或 [[next: 明天早上]]\n" +
+      "（凭感觉写，不用精确。刚做过的事可以隔久一点，没想完的可以早点再想。）";
+
+    logger.info?.(`[onebot] 自主活动：${kind}`);
+    try {
+      const out = String((await sessions.runSilent(runKey, prompt)) ?? "").trim();
+      if (!out || out.length < 4) {
+        logger.info?.(`[onebot] ${kind} 没产出内容`);
+        return;
+      }
+      // 解析她自己定的下次时间
+      let delayMin = 0;
+      try {
+        const m = out.match(/\[\[?\s*next\s*[:：]\s*([^\]\n]{1,30})\]\]?/i);
+        if (m) {
+          const raw = String(m[1]).toLowerCase().trim();
+          const num = parseFloat(raw);
+          if (/h|小时|钟头/.test(raw) && !Number.isNaN(num)) delayMin = num * 60;
+          else if (/m|分/.test(raw) && !Number.isNaN(num)) delayMin = num;
+          else if (/明天|明早/.test(raw)) delayMin = 8 * 60;
+          else if (/下午|晚上/.test(raw)) delayMin = 4 * 60;
+          else if (!Number.isNaN(num)) delayMin = num; // 裸数字当分钟
+        }
+      } catch {
+        // 忽略
+      }
+      // 读书记录
+      try {
+        const bk = out.match(/\[\[book\s*[:：]\s*([^\]\n|]+)\|?([^\]\n]*)\]\]/i);
+        if (kind === "read" && bk) {
+          writeFileSync(
+            join(HOME, ".dsh/onebot-bridge/readings.jsonl"),
+            JSON.stringify({
+              at: Date.now(),
+              title: String(bk[1]).trim().slice(0, 60),
+              author: String(bk[2] || "").trim().slice(0, 40),
+            }) + "\n",
+            { flag: "a" },
+          );
+          logger.info?.(`[onebot] 她开始读：《${String(bk[1]).trim()}》`);
+        }
+      } catch {
+        // 忽略
+      }
+      // 造出来的游戏存起来，下次还能接着玩
+      try {
+        const g = out.match(/\[\[game\s*[:：]\s*([^\]\n|]+)\|?([^\]\n]*)\]\]/i);
+        if (g && kind === "play") {
+          writeFileSync(
+            join(HOME, ".dsh/onebot-bridge/games.jsonl"),
+            JSON.stringify({
+              at: Date.now(),
+              name: String(g[1]).trim().slice(0, 40),
+              rules: String(g[2] || "").trim().slice(0, 150),
+            }) + "\n",
+            { flag: "a" },
+          );
+          logger.info?.(`[onebot] 她造了个游戏：${String(g[1]).trim()}`);
+        }
+      } catch {
+        // 忽略
+      }
+      const cleanOut = out
+        .replace(/\[\[?\s*next\s*[:：][^\]\n]*\]\]?/gi, "")
+        .replace(/\[\[game\s*[:：][^\]\n]*\]\]/gi, "")
+        .replace(/\[\[book\s*[:：][^\]\n]*\]\]/gi, "")
+        .trim();
+      appendActivity({ at: Date.now(), kind, content: cleanOut.slice(0, 500), offline });
+      // 也记进统一记忆日志（带 kind 标签，方便摘要和检索）
+      appendMem({
+        kind,
+        topic: kind === "explore" ? "" : String(cleanOut).slice(0, 20),
+        text: cleanOut.slice(0, 160),
+        ref: "activity",
+        offline,
+      });
+      if (delayMin) {
+        logger.info?.(`[onebot] 她说下次 ${Math.round(delayMin)} 分钟后再来（${kind}）`);
+        scheduleNextSelfActivity(delayMin);
+      } else {
+        scheduleNextSelfActivity(0); // 用默认
+      }
+      // 记忆够 20 条就压一段摘要
+      try {
+        void maybeMakeDigest();
+      } catch {
+        // 忽略
+      }
+      // 每积累 10 次活动，沉淀一次核心记忆
+      try {
+        const total = loadActivities(300).length;
+        if (total > 0 && total % 10 === 0) void distillCore();
+      } catch {
+        // 忽略
+      }
+      audit({ kind: "self_activity", act: kind, len: out.length });
+      logger.info?.(`[onebot] ${kind} 完成：${out.slice(0, 50)}`);
+    } catch (err) {
+      logger.warn?.(`[onebot] ${kind} 失败：${err?.message ?? err}`);
+    }
+  }
+
+  /** 把最近的活动沉淀成「核心记忆」——长期塑造她的性格 */
+  async function distillCore() {
+    const acts = loadActivities(40);
+    if (acts.length < 6) return;
+    const core = loadCore();
+    const recentText = acts
+      .slice(-20)
+      .map((a) => `[${a.kind}] ${String(a.content || "").slice(0, 120)}`)
+      .join("\n");
+    const oldCore = core.slice(-10).map((c) => `· ${c.text}`).join("\n");
+    const runKey = `private:${cfg.ownerId || "offline"}`;
+    logger.info?.("[onebot] 开始沉淀核心记忆");
+    try {
+      const out = String(
+        (await sessions.runSilent(
+          runKey,
+          "（内部整理，不要发消息，也不要用工具。）\n" +
+            "下面是你这段时间自己做的事和想的事。\n" +
+            (oldCore ? `[你之前沉淀过的核心记忆]\n${oldCore}\n` : "") +
+            `[最近的事]\n${recentText}\n\n` +
+            "现在提炼 1-2 条「关于你自己的核心记忆」——不是总结做了什么，是**你变成了什么样的人**：\n" +
+            "· belief：你认定的事\n" +
+            "· care：你反复在意的\n" +
+            "· want：**想做的事**（具体的，比如想读完某本书、想弄清某个问题）\n" +
+            "· change：你变了的地方（以前怎样，现在怎样）\n" +
+            "要求：一句话一条，像写在自己的本子上；只写新增的或修正的，重复的不要。\n" +
+            '只输出 JSON：{"core":[{"type":"belief","text":"..."}]}，没有就输出 {"core":[]}', 
+        )) ?? "",
+      ).trim();
+      const m = out.match(/\{[\s\S]*\}/);
+      if (!m) return;
+      const obj = JSON.parse(m[0]);
+      const list = Array.isArray(obj.core) ? obj.core : [];
+      const fresh = list
+        .map((x) => {
+          if (typeof x === "string") return { type: "belief", text: x.trim().slice(0, 150) };
+          const ty = String(x?.type ?? "belief").toLowerCase();
+          return {
+            type: ["belief", "care", "want", "change"].includes(ty) ? ty : "belief",
+            text: String(x?.text ?? "").trim().slice(0, 150),
+          };
+        })
+        .filter((x) => x.text.length > 4 && !core.some((c) => c.text === x.text));
+      if (!fresh.length) {
+        logger.info?.("[onebot] 这次没沉淀出新东西");
+        return;
+      }
+      for (const it of fresh) core.push({ type: it.type, text: it.text, at: Date.now(), from: "distill" });
+      saveCore(core);
+      audit({ kind: "core_memory", added: fresh.length, items: fresh });
+      logger.info?.(`[onebot] 核心记忆 +${fresh.length}：${fresh[0].text.slice(0, 40)}`);
+    } catch (err) {
+      logger.warn?.(`[onebot] 沉淀失败：${err?.message ?? err}`);
+    }
+  }
+
+  // 探险日志：不只存结论，还存「怎么走到那儿的、当时在想什么」
+  const EXPLORE_LOG = join(HOME, ".dsh/onebot-bridge/explore-log.jsonl");
+  function appendExploreLog(rec) {
+    try {
+      writeFileSync(EXPLORE_LOG, JSON.stringify(rec) + "\n", { flag: "a" });
+    } catch {
+      // 忽略
+    }
+  }
   function loadLearnings() {
     try {
       const d = JSON.parse(readFileSync(LEARN_PATH, "utf8"));
@@ -8299,13 +9379,30 @@ export function apply(ctx, _pluginConfig) {
     }
   }
 
-  async function maybeExplore() {
+  async function maybeExplore(force = false) {
     if (cfg.autoExplore === false || cfg.autoActionsEnabled === false) return;
-    if (!client.connected || !activeHoursOk()) return;
+    if (!selfActivityHoursOk()) return;
+    const offline = isOfflineMode();
+    // 离线时只有 agent 可用才跑（不需要 QQ）
+    if (!offline && !client.connected) return;
     const today = new Date().toDateString();
     const learns = loadLearnings();
     const todayCount = learns.filter((l) => new Date(l.at).toDateString() === today).length;
-    if (todayCount >= (Number(cfg.autoExplorePerDay) || 3)) return;
+    // 每天上限：0 = 不限（默认不限，靠「心情概率」和最小间隔控制）
+    const maxPerDay = Number(cfg.autoExplorePerDay) || 0;
+    if (maxPerDay > 0 && todayCount >= maxPerDay) return;
+    // 至少隔一段时间，免得半小时一次全在附近打转
+    const lastAt = learns.length ? learns[learns.length - 1].at : 0;
+    const minGap = (Number(cfg.autoExploreMinGapMinutes) || 45) * 60000;
+    if (lastAt && Date.now() - lastAt < minGap) return;
+    // 看心情：由调度器挑中时才强制出门，单独跑时按概率
+    if (!force) {
+      const chance = Number(cfg.autoExploreChance ?? 0.35);
+      if (Math.random() > chance) {
+        logger.debug?.("[onebot] 这会儿没心情出去，下次再说");
+        return;
+      }
+    }
 
     // 找最近活跃、且有话题的群
     let bestKey = null;
@@ -8318,35 +9415,87 @@ export function apply(ctx, _pluginConfig) {
         bestKey = k;
       }
     }
-    if (!bestKey || Date.now() - bestAt > 6 * 3600_000) return;
 
-    const ent = sessions.entries.get(bestKey);
+    // 离线：没有群聊素材，改成「从自己学过的东西里找没想明白的」
+    let offlineTopic = "";
+    if (offline || !bestKey || Date.now() - bestAt > 6 * 3600_000) {
+      if (offline) {
+        // 优先级 1：上次探险结束时自己规划的「下次想去看看什么」
+        const lastWithNext = [...learns].reverse().find((l) => l.next && Date.now() - l.at < 14 * 86400_000);
+        if (lastWithNext) {
+          offlineTopic =
+            `（上次出门时你给自己留了一句话：\n「${String(lastWithNext.next).slice(0, 160)}」\n` +
+            `这趟就顺着它去看看。）`;
+          logger.info?.(`[onebot] 离线探索：跟着上次的计划走（${String(lastWithNext.next).slice(0, 30)}）`);
+        } else {
+          // 优先级 2：从几天前的旧知识里挑一条深挖
+          const old = learns.filter((l) => Date.now() - l.at > 3 * 86400_000);
+          if (old.length) {
+            const pick = old[Math.floor(Math.random() * old.length)];
+            offlineTopic = `（你几天前学过「${pick.topic}」：${String(pick.summary).slice(0, 120)}\n但这块还有没想明白的地方，顺着它再深挖一层。）`;
+            logger.info?.(`[onebot] 离线探索：从旧知识延伸「${pick.topic}」`);
+          }
+        }
+      }
+      if (!offlineTopic) return;
+    }
+
+    const ent = bestKey ? sessions.entries.get(bestKey) : null;
     const cnt = new Map();
     for (const it of ent?.topicWindow ?? []) for (const w of it.w || []) cnt.set(w, (cnt.get(w) ?? 0) + 1);
     const candidates = [...cnt.entries()]
-      .filter(([w, c]) => c >= 2 && w.length >= 2 && !/^(这个|那个|什么|就是|没有|可以|不是|现在|然后)$/.test(w))
+      .filter(([w, c]) => {
+        if (c < 2) return false;
+        if (w.length < 2) return false;
+        // 虚词/口头禅/代词——学到了也没意义
+        const STOP = new Set([
+          "这个", "那个", "什么", "就是", "没有", "可以", "不是", "现在", "然后",
+          "还是", "但是", "因为", "所以", "如果", "虽然", "而且", "或者", "不过",
+          "这样", "那样", "怎么", "为什么", "我们", "他们", "你们", "自己", "别人",
+          "时候", "东西", "事情", "感觉", "觉得", "知道", "真的", "有点", "已经",
+          "应该", "可能", "一直", "一样", "这么", "那么", "多少", "哪个", "哪些",
+          "一个", "一次", "一下", "还有", "其实", "反正", "确实", "的确", "居然",
+          "哈哈", "真的", "笑死", "离谱", "牛逼", "牛掰", "绝了", "草", "靠",
+        ]);
+        if (STOP.has(w)) return false;
+        // 纯数字/纯字母也不算兴趣点
+        if (/^[0-9a-zA-Z\s]+$/.test(w)) return false;
+        return true;
+      })
       .sort((a, b) => b[1] - a[1])
       .map(([w]) => w)
       .slice(0, 5);
     if (!candidates.length) return;
 
-    const topic = candidates[Math.floor(Math.random() * candidates.length)];
-    // 30 天内学过就不重复
-    if (learns.some((l) => l.topic === topic && Date.now() - l.at < 30 * 86400_000)) return;
+    let topic = "";
+    if (offlineTopic) {
+      topic = "延伸阅读";
+    } else {
+      if (!candidates.length) return;
+      topic = candidates[Math.floor(Math.random() * candidates.length)];
+      // 30 天内学过就不重复
+      if (learns.some((l) => l.topic === topic && Date.now() - l.at < 30 * 86400_000)) return;
+    }
 
-    logger.info?.(`[onebot] 自主探索：围绕「${topic}」往下查`);
-    audit({ kind: "explore_start", topic, key: bestKey });
+    const runKey = bestKey || `private:${cfg.ownerId || "offline"}`;
+    logger.info?.(`[onebot] ${offline ? "离线" : ""}自主探索：${offlineTopic ? "从旧知识延伸" : `围绕「${topic}」`}`);
+    audit({ kind: "explore_start", topic, key: runKey, offline });
     try {
       const raw = String(
         (await sessions.runSilent(
-          bestKey,
+          runKey,
           "（内部探索，不要发到群里。你可以用 web_search 和 web_fetch。）\n" +
-            `最近群里聊到「${topic}」，你不太懂。往下查一查：\n` +
-            "1. 先 web_search 搜一次，挑一个看起来最靠谱的结果；\n" +
-            "2. web_fetch 读它，如果页面上有更想深入了解的链接/术语，再搜或再读一次（一共最多 3 跳）；\n" +
-            "3. 停下来后，用你自己的话写 100-200 字总结，再加一句「我的感想」。\n" +
+            "把这次当成**出门走一趟**——你不是在查资料，是在外面逛，看到有意思的就停下来看看。\n" +
+            (offlineTopic
+              ? offlineTopic + "\n"
+              : `最近群里聊到「${topic}」，你不太懂。顺着这个由头出门看看：\n`) +
+            "1. 先 web_search 搜一次，挑一个看起来最靠谱的结果走过去；\n" +
+            "2. web_fetch 读它。**如果页面上有让你好奇的链接或术语，就再走一步**（一共最多 3 步）；\n" +
+            "3. 每走一步都记下「我为什么往这边走」——是哪个词、哪句话勾住了你；\n" +
+            "4. 走完停下来，用你自己的话写 100-200 字见闻，再写一句「这趟的感想」；\n" +
+            "5. 最后留一句「下次想去看看什么」——路上看到的、但这趟来不及看的东西。\n" +
             "只输出 JSON，不要别的：\n" +
-            '{"summary":"...","learned":"...","path":["你依次看过的页面或关键词"]}',
+            '{"summary":"见闻","learned":"我的感想","path":[{"stop":"看了什么","why":"为什么往这儿走"}],"next":"下次想去看看什么"}',
         )) ?? "",
       ).trim();
       const m = raw.match(/\{[\s\S]*\}/);
@@ -8357,26 +9506,110 @@ export function apply(ctx, _pluginConfig) {
       const obj = JSON.parse(m[0]);
       const summary = String(obj.summary || "").trim().slice(0, 400);
       if (summary.length < 20) return;
-      learns.push({
+      const pathArr = Array.isArray(obj.path)
+        ? obj.path.slice(0, 6).map((x) =>
+            typeof x === "string"
+              ? { stop: String(x).slice(0, 120), why: "" }
+              : { stop: String(x?.stop ?? "").slice(0, 120), why: String(x?.why ?? "").slice(0, 160) },
+          )
+        : [];
+      const entry = {
         topic,
         summary,
         learned: String(obj.learned || "").trim().slice(0, 200),
-        path: Array.isArray(obj.path) ? obj.path.slice(0, 6).map((x) => String(x).slice(0, 120)) : [],
-        from: bestKey,
+        next: String(obj.next || "").trim().slice(0, 200),
+        path: pathArr,
+        from: runKey,
         at: Date.now(),
+        offline: !!offline,
+      };
+      learns.push(entry);
+      // 完整探险日志：一次一条，方便以后回看「我去过哪儿、当时怎么想的」
+      appendExploreLog({
+        at: Date.now(),
+        offline: !!offline,
+        from: runKey,
+        topic: entry.topic,
+        stops: pathArr,
+        summary: entry.summary,
+        thought: entry.learned,
       });
       saveLearnings(learns);
       logger.info?.(`[onebot] 学到一条：${topic}｜${summary.slice(0, 40)}`);
+      appendMem({
+        kind: "learn",
+        topic: String(entry.topic || "").slice(0, 20),
+        text: `学了「${entry.topic}」：${String(entry.summary).slice(0, 120)}`,
+        ref: "learning",
+        offline,
+      });
       audit({ kind: "explore_done", topic, summary: summary.slice(0, 200) });
     } catch (err) {
       logger.warn?.(`[onebot] 探索失败：${err?.message ?? err}`);
     }
   }
 
-  // 每 3 小时看一次（9-23 点之间才真跑）
-  setInterval(() => {
-    void maybeExplore();
-  }, 3 * 3600_000).unref?.();
+  // 每小时看一次（9-23 点之间才真跑，每天仍受 autoExplorePerDay 限制）
+  // 自主活动：由她自己决定下一次什么时候（几分钟到几小时）
+  let nextActivityTimer = null;
+  let lastActivityAt = 0;
+
+  function scheduleNextSelfActivity(delayMinutes) {
+    try {
+      if (nextActivityTimer) clearTimeout(nextActivityTimer);
+      if (cfg.selfActivityEnabled === false || cfg.autoActionsEnabled === false) return;
+      // 没给时间就用默认 30-120 分钟随机
+      const min = delayMinutes > 0 ? delayMinutes : 30 + Math.random() * 90;
+      // 夹在 5 分钟 ~ 6 小时之间
+      const clamped = Math.max(5, Math.min(360, min));
+      nextActivityTimer = setTimeout(() => void tickSelfActivity(), clamped * 60_000);
+      nextActivityTimer.unref?.();
+      logger.info?.(`[onebot] 下次自主活动约 ${Math.round(clamped)} 分钟后`);
+    } catch {
+      // 忽略
+    }
+  }
+
+  async function tickSelfActivity() {
+    try {
+      if (cfg.selfActivityEnabled === false || cfg.autoActionsEnabled === false) {
+        scheduleNextSelfActivity(60);
+        return;
+      }
+      if (!selfActivityHoursOk()) {
+        // 不在时段里，等下一个时段开始再来
+        const h = new Date().getHours();
+        const start = Number(cfg.selfActivityStartHour ?? 5);
+        const waitH = h < start ? start - h : 24 - h + start;
+        logger.info?.(`[onebot] 不在活跃时段，${waitH} 小时后再看`);
+        scheduleNextSelfActivity(waitH * 60 + 5);
+        return;
+      }
+      const cap = Number(cfg.selfActivityPerDay ?? 20);
+      const today = new Date().toDateString();
+      const done = loadActivities(200).filter((a) => new Date(a.at).toDateString() === today).length;
+      if (cap > 0 && done >= cap) {
+        // 今天额度用完，明天再说
+        const h = new Date().getHours();
+        const waitH = 24 - h + Number(cfg.selfActivityStartHour ?? 5);
+        logger.info?.(`[onebot] 今天活动 ${done} 次已满 ${cap}，明天继续`);
+        scheduleNextSelfActivity(waitH * 60 + 5);
+        return;
+      }
+      const kind = pickActivityKind();
+      lastActivityAt = Date.now();
+      await runSelfActivity(kind);
+      // runSelfActivity 内部会调 scheduleNextSelfActivity；
+      // 如果它没调（比如 reco 失败），这里兜底
+      if (!nextActivityTimer) scheduleNextSelfActivity(0);
+    } catch (err) {
+      logger.warn?.(`[onebot] 自主活动调度失败：${err?.message ?? err}`);
+      scheduleNextSelfActivity(30);
+    }
+  }
+
+  // 启动时安排第一次
+  setTimeout(() => void tickSelfActivity(), 3 * 60_000).unref?.();
 
   // ── 说说：不按固定时间，而是问她「现在有没有想说的」──
   const QZONE_PLAN = join(HOME, ".dsh/onebot-bridge/qzone-plan.json");
