@@ -1,0 +1,41 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "fish-tray",
+  "version": "0.1.0",
+  "identifier": "com.fish.tray",
+  "build": {
+    "frontendDist": "../src"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "chat",
+        "title": "竹筒肥鱼",
+        "width": 400,
+        "height": 800,
+        "minWidth": 320,
+        "minHeight": 460,
+        "visible": false,
+        "decorations": true,
+        "skipTaskbar": true,
+        "resizable": true,
+        "alwaysOnTop": false,
+        "center": false,
+        "additionalBrowserArgs": "--no-sandbox --disable-features=msWebOOUI,msPdfOOUI --disable-gpu-sandbox"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' http: https:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/icon.ico"],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}
