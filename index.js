@@ -532,6 +532,15 @@ class OneBotClient {
 
   /** 发一张本地图片（表情包） */
   sendImage(ev, filePath, opts = {}) {
+    // WebUI 来的：把图存成静态文件，推给浏览器（不发 QQ）
+    if (ev?.__fromWebUI) {
+      try {
+        this.onWebImage?.(filePath);
+      } catch {
+        // 忽略
+      }
+      return Promise.resolve({ message_id: `webui-img-${Date.now()}` });
+    }
     let imgSeg;
     try {
       const b64 = readFileSync(filePath).toString("base64");
@@ -1930,6 +1939,18 @@ export function apply(ctx, _pluginConfig) {
   client.readyFn = () => agentReady;
   client.onOutage = (kind, ts) => noteOutageFromClient(kind, ts);
   client.onWebReply = (text) => webPush({ role: "her", text });
+  client.onWebImage = (filePath) => {
+    try {
+      const id = `img-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
+      const ext = (String(filePath).match(/\.(jpe?g|png|gif|webp)$/i) || [, "jpg"])[1].toLowerCase();
+      const dest = join(HOME, ".dsh/onebot-bridge/workspace/pages", `${id}.${ext}`);
+      writeFileSync(dest, readFileSync(filePath));
+      webPush({ role: "her", image: `/img/${id}.${ext}` });
+      logger.info?.(`[onebot] 表情包已推给 WebUI：${id}.${ext}`);
+    } catch (err) {
+      webPush({ role: "tool", text: `表情包没发出去：${String(err?.message ?? err).slice(0, 60)}` });
+    }
+  };
   const recentIds = new Set();
   const recentOrder = [];
 
@@ -3974,8 +3995,14 @@ export function apply(ctx, _pluginConfig) {
           description:
             "做一张网页给自己或主人看：展示统计、记录、记忆、时间线、想法都行。" +
             "生成后在 WebUI 里能打开（聊天里我会告诉你地址）；QQ 里只能发文字说明。" +
-            "HTML 会被放进隔离沙箱里渲染（访问不到 WebUI 的 token）。" +
-            "html 填完整页面或片段都行；不想写 head/body 也可以，会套个默认样式。",
+            "html 填完整页面或片段都行；不想写 CSS 也没关系，下面这些 class 已经写好了样式：\n" +
+            "· 标题：h1 / h2 / h3，副标题用 class=\"sub\"，灰字用 class=\"muted\"\n" +
+            "· 卡片：<div class=\"card\"><h3>标题</h3>内容</div>\n" +
+            "· 统计格：<div class=\"grid\"><div class=\"stat\"><span class=\"n\">33</span><span class=\"k\">活动</span></div></div>\n" +
+            "· 条形图：<div class=\"bars\"><div class=\"bar\"><span class=\"n\">翻记忆</span><span class=\"track\"><i style=\"width:80%\"></i></span><b>8</b></div></div>\n" +
+            "· 时间线：<div class=\"timeline\"><div class=\"item\"><div class=\"t\">09:12</div><div class=\"c\">内容</div></div></div>\n" +
+            "· 标签：<span class=\"tag\">标签</span>；引用块：class=\"quote\"；表格/代码/列表都有默认样式\n" +
+            "加了 .hot 会变成橙色强调。要在 HTML 里用 <style> 自己写也行（内联样式允许）。",
           parameters: {
             title: { type: "string", description: "页面标题" },
             html: { type: "string", description: "HTML 内容（最多 60000 字）" },
@@ -4002,16 +4029,53 @@ export function apply(ctx, _pluginConfig) {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${title.replace(/[<>&"]/g, "")}</title>
 <style>
-body{font:15px/1.7 -apple-system,"Segoe UI",sans-serif;max-width:860px;margin:0 auto;padding:24px 18px;color:#1f2328;background:#fff}
+body{font:15px/1.7 -apple-system,"Segoe UI",sans-serif;max-width:880px;margin:0 auto;padding:24px 18px;color:#1f2328;background:#fff}
+.wrap{max-width:880px}
 h1,h2,h3{line-height:1.3;margin:1.2em 0 .5em}
-h1{font-size:22px;border-bottom:2px solid #eee;padding-bottom:8px}
-table{border-collapse:collapse;width:100%;margin:12px 0;font-size:14px}
-th,td{border:1px solid #e5e7eb;padding:6px 10px;text-align:left}
-th{background:#f9fafb;font-weight:600}
-code{background:#f3f4f6;padding:2px 5px;border-radius:4px;font-size:13px}
-blockquote{border-left:3px solid #ddd;margin:10px 0;padding:6px 14px;color:#555}
-ul,ol{padding-left:22px}
+h1{font-size:23px;border-bottom:2px solid #eee;padding-bottom:8px;margin-top:0}
+h2{font-size:17px;margin-top:1.6em}
+h3{font-size:15px}
+.sub{color:#6b7280;font-size:14px;margin:-4px 0 20px}
 .muted{color:#6b7280;font-size:13px}
+table{border-collapse:collapse;width:100%;margin:12px 0;font-size:14px}
+th,td{border:1px solid #e5e7eb;padding:7px 11px;text-align:left;vertical-align:top}
+th{background:#f9fafb;font-weight:600}
+tr:nth-child(even) td{background:#fcfcfd}
+code{background:#f3f4f6;padding:2px 5px;border-radius:4px;font-size:13px;font-family:ui-monospace,Menlo,monospace}
+pre{background:#f6f8fa;padding:12px 14px;border-radius:8px;overflow-x:auto;font-size:13px}
+pre code{background:none;padding:0}
+blockquote{border-left:3px solid #ddd;margin:12px 0;padding:6px 14px;color:#555;background:#fafafa}
+ul,ol{padding-left:22px}
+li{margin:4px 0}
+a{color:#0969da;text-decoration:none}
+a:hover{text-decoration:underline}
+/* ── 常用组件（直接用，不用自己写 CSS）── */
+.card{border:1px solid #e5e7eb;border-radius:10px;padding:14px 16px;margin:12px 0;background:#fff}
+.card h3{margin-top:0}
+.tag{display:inline-block;background:#eef2f7;color:#3b4a5a;border-radius:6px;padding:1px 8px;font-size:12px;margin:2px 4px 2px 0}
+.tag.hot{background:#fff1e6;color:#b3541e}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin:14px 0}
+.stat{border:1px solid #e5e7eb;border-radius:10px;padding:12px 14px;text-align:center;background:#fcfcfd}
+.stat .n{display:block;font-size:26px;font-weight:600;line-height:1.2;color:#1f2328}
+.stat .k{display:block;font-size:12px;color:#6b7280;margin-top:2px}
+/* 进度条/条形图：.bars > .bar > .n + .track > i + b */
+.bars{margin:14px 0}
+.bar{display:flex;align-items:center;gap:10px;margin:6px 0;font-size:14px}
+.bar .n{width:88px;flex:none;color:#3b4a5a}
+.bar .track{flex:1;height:10px;background:#eef1f4;border-radius:5px;overflow:hidden}
+.bar .track i{display:block;height:100%;background:#3b82f6;border-radius:5px}
+.bar b{width:32px;flex:none;text-align:right;color:#6b7280;font-weight:500;font-size:13px}
+.bar.hot .track i{background:#f97316}
+/* 时间线：.timeline > .item > .t + .c */
+.timeline{border-left:2px solid #e5e7eb;margin:14px 0 14px 6px;padding-left:16px}
+.timeline .item{position:relative;margin:0 0 14px}
+.timeline .item:before{content:"";position:absolute;left:-23px;top:7px;width:9px;height:9px;border-radius:50%;background:#3b82f6;border:2px solid #fff;box-shadow:0 0 0 2px #e5e7eb}
+.timeline .t{font-size:12px;color:#6b7280;font-variant-numeric:tabular-nums}
+.timeline .c{margin-top:1px}
+.timeline .item.hot:before{background:#f97316}
+/* 引用块/引文 */
+.quote{border-left:3px solid #3b82f6;background:#f5f9ff;padding:10px 14px;margin:12px 0;border-radius:0 8px 8px 0;color:#334155}
+hr{border:0;border-top:1px solid #eee;margin:22px 0}
 </style></head><body>
 ${html}
 </body></html>`;
@@ -4377,6 +4441,14 @@ ${html}
     const m3 = t.match(/\[QQ(?:群消息|私聊)\][^：:\n]*[：:]\s*([\s\S]*)/);
     if (m3 && m3[1].trim()) return m3[1].trim().slice(0, 400);
 
+    // DSH 自己注入的运行时说明，不是人说的话
+    if (/^(Time sampled while preparing|Browser time zone for this request|Elapsed since the preceding|Current runtime context|Current DSH file policy|Approval prompts are disabled|Current DeepSeek Harness implementation checkout|Current working directory)/i.test(t)) {
+      return "";
+    }
+    if (/Time sampled while preparing|Browser time zone for this request|Current runtime context\. This snapshot supersedes/i.test(t) && t.length < 1200) {
+      return "";
+    }
+
     // 到这里说明没提取到真实消息 —— 再看是不是纯内部提示
     if (/^（(内部|这次|对方连着|QQ 聊天|你在|这是你|刚才|下面|想一想)/.test(t)) return "";
     if (
@@ -4388,6 +4460,14 @@ ${html}
     // 活动产出（JSON 计划之类）也不是对话
     if (/^\s*\{\s*"looked"/.test(t)) return "";
 
+    // 兜底前先排掉 prompt 模板（这些不是人说的话）
+    if (
+      /（QQ 聊天[:：]|（QQ私聊[:：]|像真人发消息|长度要有变化|不要用 markdown|不要复述我的问题|只输出|不要发消息|点了智慧会发/.test(
+        t,
+      )
+    ) {
+      return "";
+    }
     // 看起来就是正常对话
     if (t.length <= 400 && !/\[消息内容\]|\[群聊最近|\[你想起的\]|\[你自己的话\]/.test(t)) {
       return t;
@@ -5675,6 +5755,20 @@ ${html}
     return true;
   }
 
+  // ── 重置今天的活动额度 ──
+  if (/(重置|清空|清零).{0,4}额度|额度.{0,4}(重置|清空|清零)|^多活动会儿$/.test(t.trim())) {
+    try {
+      const before = Number(loadSelfState().selfActivityResetAt) || 0;
+      patchSelfState({ selfActivityResetAt: Date.now() });
+      await client.sendHuman(ev, "额度清掉了，接下来我按自己的节奏来。");
+      logger.info?.("[onebot] 主人重置了活动额度");
+      audit({ kind: "reset_activity_quota", before });
+    } catch (err) {
+      await client.sendHuman(ev, `重置失败：${String(err?.message ?? err).slice(0, 60)}`);
+    }
+    return true;
+  }
+
   // ── 让她立刻做活动（活动一下 / 连做 N 轮 / 去探险 等）──
   {
     const t2 = t.trim();
@@ -5703,7 +5797,7 @@ ${html}
       await client.sendHuman(ev, `好，连做 ${n2} 轮。`);
       void (async () => {
         for (let i = 0; i < n2; i++) {
-          await runThinkingCycle();
+          await runThinkingCycle({ byOwner: true });
           if (i < n2 - 1) await new Promise((r) => setTimeout(r, 2000));
         }
       })();
@@ -5711,12 +5805,12 @@ ${html}
     }
     if (hitKind) {
       await client.sendHuman(ev, `好，去做${hitName}。`);
-      void runSelfActivity(hitKind).catch(() => {});
+      void runThinkingCycle({ forceAction: hitKind, byOwner: true }).catch(() => {});
       return true;
     }
     if (/^(活动一下|做点活动|随便干点什么)$/.test(t2)) {
       await client.sendHuman(ev, "好，我自己看着来。");
-      void runThinkingCycle().catch(() => {});
+      void runThinkingCycle({ byOwner: true }).catch(() => {});
       return true;
     }
   }
@@ -8246,10 +8340,36 @@ ${html}
   let webAuthFails = 0;
   let webLockedUntil = 0;
 
+  const WEBHIST_PATH = join(HOME, ".dsh/onebot-bridge/webui-history.jsonl");
+
+  function loadWebHistory(limit = 120) {
+    try {
+      const raw = readFileSync(WEBHIST_PATH, "utf8");
+      const out = [];
+      for (const line of raw.split("\n")) {
+        if (!line) continue;
+        try {
+          out.push(JSON.parse(line));
+        } catch {
+          // 忽略
+        }
+      }
+      return out.slice(-limit);
+    } catch {
+      return [];
+    }
+  }
+
   function webPush(rec) {
     try {
-      webHistory.push({ ...rec, at: Date.now() });
+      const item = { ...rec, at: Date.now() };
+      webHistory.push(item);
       if (webHistory.length > 100) webHistory.shift();
+      try {
+        appendFileSync(WEBHIST_PATH, JSON.stringify(item) + "\n");
+      } catch {
+        // 忽略
+      }
       const line = "data: " + JSON.stringify(rec) + "\n\n";
       for (const res of webClients) {
         try {
@@ -8270,36 +8390,79 @@ ${html}
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font:15px/1.6 -apple-system,"Segoe UI",sans-serif;background:#0f1115;color:#e6e6e6;height:100vh;display:flex;flex-direction:column}
-header{padding:12px 16px;border-bottom:1px solid #23262d;display:flex;align-items:center;gap:8px}
+header{padding:12px 16px;border-bottom:1px solid #23262d;display:flex;align-items:center;gap:8px;flex:none}
 h1{font-size:15px;font-weight:600}
+#pg{margin-left:auto;font-size:13px;color:#7cc4ff;text-decoration:none;border:1px solid #2a3340;border-radius:12px;padding:3px 10px}
+#pg:hover{background:#1a2330}
 .dot{width:8px;height:8px;border-radius:50%;background:#4ade80}
 .dot.off{background:#f87171}
-#btns{display:none;flex-wrap:wrap;gap:6px;padding:8px 12px;border-bottom:1px solid #23262d}
+#live{display:none;flex:none;padding:8px 12px;font-size:12px;color:#8b93a1;border-bottom:1px solid #23262d;max-height:110px;overflow-y:auto;line-height:1.6}
+#live.on{display:block}
+#live .l{opacity:.85}
+#live .l b{color:#7cc4ff;font-weight:500}
+#btns{display:none;flex:none;flex-wrap:wrap;gap:6px;padding:8px 12px;border-bottom:1px solid #23262d}
 #btns.on{display:flex}
 #btns button{background:#1e222a;border:1px solid #2a2e38;color:#c9d1d9;border-radius:14px;padding:4px 12px;font:13px inherit;cursor:pointer}
 #btns button:hover{background:#262b35;border-color:#3a4150}
-#log{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px}
+#log{flex:1 1 0;min-height:140px;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px}
 .msg{max-width:80%;padding:8px 12px;border-radius:12px;white-space:pre-wrap;word-break:break-word}
 .me{align-self:flex-end;background:#2563eb;color:#fff;border-bottom-right-radius:4px}
 .her{align-self:flex-start;background:#1e222a;border-bottom-left-radius:4px}
 .tool{align-self:flex-start;font-size:12px;color:#8b93a1;padding:2px 8px}
-footer{padding:12px;border-top:1px solid #23262d;display:flex;gap:8px}
+footer{padding:12px;border-top:1px solid #23262d;display:flex;gap:8px;flex:none}
 #in{flex:1;background:#1a1d24;border:1px solid #2a2e38;color:#e6e6e6;border-radius:8px;padding:10px 12px;font:inherit;resize:none;height:44px}
 #send{background:#2563eb;border:0;color:#fff;border-radius:8px;padding:0 18px;font:inherit;cursor:pointer}
 #send:disabled{opacity:.5}
 </style></head><body>
-<header><span class="dot" id="dot"></span><h1>QQ 助手</h1><span id="st" style="font-size:12px;color:#8b93a1"></span></header>
+<header><span class="dot" id="dot"></span><h1>QQ 助手</h1><span id="st" style="font-size:12px;color:#8b93a1"></span><a id="pg" href="/pages?token=${encodeURIComponent(token)}" target="_blank">页面</a></header>
 <div id="btns"></div>
+<div id="live"></div>
 <div id="log"></div>
 <footer><textarea id="in" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）"></textarea><button id="send">发送</button></footer>
 <script>
 const T=${JSON.stringify(token)}, log=document.getElementById('log'),
       inp=document.getElementById('in'), btn=document.getElementById('send'),
       dot=document.getElementById('dot'), st=document.getElementById('st');
-function add(cls,text){const d=document.createElement('div');d.className='msg '+cls;d.textContent=text;log.appendChild(d);log.scrollTop=log.scrollHeight;return d}
+function linkify(el,text){
+  // 把 /page/xxx 或 http://host:port/page/xxx 变成可点链接（并纠正端口到当前 WebUI）
+  const re=new RegExp('(?:https?:[/][/][^\\s]+)?[/]page[/]([a-z0-9]+)','gi');
+  let last=0, m;
+  el.textContent='';
+  while((m=re.exec(text))!==null){
+    if(m.index>last) el.appendChild(document.createTextNode(text.slice(last,m.index)));
+    const a=document.createElement('a');
+    a.href='/page/'+m[1]+'?token='+T;
+    a.target='_blank';
+    a.textContent='打开页面';
+    a.style.color='#7cc4ff';
+    el.appendChild(a);
+    last=m.index+m[0].length;
+  }
+  if(last<text.length) el.appendChild(document.createTextNode(text.slice(last)));
+}
+function add(cls,text){
+  const d=document.createElement('div');d.className='msg '+cls;
+  if(cls==='her'&&new RegExp('[/]page[/][a-z0-9]+','i').test(text)) linkify(d,text); else d.textContent=text;
+  log.appendChild(d);log.scrollTop=log.scrollHeight;return d
+}
 function addTool(text){const d=document.createElement('div');d.className='tool';d.textContent=text;log.appendChild(d);log.scrollTop=log.scrollHeight}
 let typing=null;
 function setTyping(on){if(on&&!typing){typing=add('her','…');}else if(!on&&typing){typing.remove();typing=null;}}
+const live=document.getElementById('live');
+function addLive(d){
+  live.className='on';
+  const el=document.createElement('div');el.className='l';
+  const b=document.createElement('b');b.textContent=(d.kind?({explore:'出门',read:'读书',play:'玩',think:'想事',write:'写',recall:'整理记忆',dream:'想以后',study:'研究代码'}[d.kind]||d.kind):'')+' ';
+  el.appendChild(b);el.appendChild(document.createTextNode(d.text||''));
+  live.appendChild(el);
+  while(live.children.length>6) live.removeChild(live.firstChild);
+  live.scrollTop=live.scrollHeight;
+}
+fetch('/activities?token='+T).then(r=>r.json()).then(list=>{
+  if(!Array.isArray(list)||!list.length) return;
+  live.className='on';
+  for(const a of list.slice(0,4).reverse()) addLive({kind:a.kind,text:a.intent||a.did});
+}).catch(()=>{});
 const btnBar=document.getElementById('btns');
 fetch('/buttons?token='+T).then(r=>r.json()).then(list=>{
   if(!Array.isArray(list)||!list.length) return;
@@ -8309,14 +8472,24 @@ fetch('/buttons?token='+T).then(r=>r.json()).then(list=>{
     el.textContent=b.label;
     el.onclick=()=>{
       if(b.pageId){ window.open('/page/'+b.pageId+'?token='+T,'_blank'); return; }
-      if(b.prompt){ inp.value=b.prompt; send(); }
+      if(b.prompt){ inp.value=b.prompt; send('button:'+b.label); }
     };
     btnBar.appendChild(el);
   }
 }).catch(()=>{});
 
 fetch('/history?token='+T).then(r=>r.json()).then(list=>{
-  for(const m of list){ if(m.role==='me') add('me',m.text); else if(m.role==='tool') addTool(m.text); else add('her',m.text); }
+  for(const m of list){
+    if(m.image){
+      const wrap=document.createElement('div');wrap.className='msg her';
+      const img=document.createElement('img');img.src=m.image+'?token='+T;
+      img.style.maxWidth='200px';img.style.borderRadius='8px';img.style.display='block';
+      wrap.appendChild(img);log.appendChild(wrap);
+    }
+    else if(m.role==='me') add('me',m.text||'');
+    else if(m.role==='tool') addTool(m.text||'');
+    else add('her',m.text||'');
+  }
 });
 const es=new EventSource('/stream?token='+T);
 es.onopen=()=>{dot.className='dot';st.textContent='在线';};
@@ -8324,20 +8497,37 @@ es.onerror=()=>{dot.className='dot off';st.textContent='断线重连中…';};
 es.onmessage=e=>{
   const d=JSON.parse(e.data);
   if(d.role==='tool'){addTool(d.text);return;}
+  if(d.role==='activity'){addLive(d);return;}
   if(d.role==='typing'){setTyping(d.on);return;}
   setTyping(false);
-  add(d.role==='me'?'me':'her',d.text);
+  if(d.image){
+    const wrap=document.createElement('div');wrap.className='msg her';
+    const img=document.createElement('img');
+    img.src=d.image+'?token='+T;
+    img.style.maxWidth='200px';img.style.borderRadius='8px';img.style.display='block';
+    wrap.appendChild(img);log.appendChild(wrap);log.scrollTop=log.scrollHeight;
+    return;
+  }
+  add(d.role==='me'?'me':'her',d.text||'');
 };
-async function send(){
+async function send(from){
+  if(typeof from!=='string') from='';
   const t=inp.value.trim(); if(!t) return;
   inp.value=''; btn.disabled=true;
-  add('me',t);
+  if(from&&from.startsWith('button:')){
+    const d=document.createElement('div');d.className='msg me';
+    const tag=document.createElement('span');
+    tag.textContent='['+from.slice(7)+'] ';
+    tag.style.opacity='.65';tag.style.fontSize='12px';
+    d.appendChild(tag);d.appendChild(document.createTextNode(t));
+    log.appendChild(d);log.scrollTop=log.scrollHeight;
+  } else add('me',t);
   try{
-    await fetch('/send?token='+T,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text:t})});
+    await fetch('/send?token='+T,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text:t,from:from||''})});
   }catch(e){addTool('发送失败：'+e.message);}
   setTimeout(()=>btn.disabled=false,600);
 }
-btn.onclick=send;
+btn.onclick=()=>send();
 inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}});
 </script></body></html>`;
   }
@@ -8359,12 +8549,18 @@ inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDef
         if (!got.text || got.text.length < 2) continue;
         // 活动产出（思考计划的 JSON、反思草稿）不算对话
         const tx = got.text.trim();
+        // 兜底：明显是 prompt 模板的整条丢掉
+        if (/（QQ 聊天[:：]|像真人发消息|长度要有变化|点了智慧会发|不要复述我的问题/.test(tx)) continue;
         if (/^\{.*"looked"/.test(tx)) continue;
         if (/^\[\[?(next|game|book)\s*[:：]/.test(tx)) continue;
         if (tx.startsWith("（内部") || tx.startsWith("（这是你自己")) continue;
+        // 统一成毫秒时间戳，否则和图片记录排在一起会错位
+        let ts = Number(ev.time) || Number(ev.ts) || 0;
+        if (ts > 0 && ts < 1e12) ts *= 1000; // 秒 -> 毫秒
         out.push({
           role: got.role === "对方" ? "me" : "her",
           text: tx.slice(0, 500),
+          at: ts || 0,
         });
       }
       return out.slice(-limit);
@@ -8428,7 +8624,13 @@ inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDef
       webAuthFails = 0;
 
       if (u.pathname === "/") {
-        res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(webHtml(token));
+        res
+          .writeHead(200, {
+            "content-type": "text/html; charset=utf-8",
+            "cache-control": "no-store, no-cache, must-revalidate",
+            pragma: "no-cache",
+          })
+          .end(webHtml(token));
         return;
       }
       if (u.pathname === "/history") {
@@ -8442,6 +8644,18 @@ inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDef
           logger.warn?.(`[onebot] WebUI 历史读取失败：${err?.message ?? err}`);
         }
         if (!list.length) list = webHistory.slice(-50);
+        // 补上持久化的图片/工具记录（会话文件里没有这些）
+        try {
+          const saved = loadWebHistory(200).filter((m) => m.image || m.role === "tool");
+          if (saved.length) {
+            // 会话记录里那些没有时间戳的（旧数据），排在最前面，别跟图片混在末尾
+            const noTime = list.filter((m) => !m.at);
+            const timed = list.filter((m) => m.at);
+            list = [...noTime, ...[...timed, ...saved].sort((a, b) => (a.at || 0) - (b.at || 0))].slice(-150);
+          }
+        } catch {
+          // 忽略
+        }
         res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(list));
         return;
       }
@@ -8467,6 +8681,22 @@ inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDef
         });
         return;
       }
+      // 她发的图片（表情包等）
+      if (u.pathname.startsWith("/img/")) {
+        const name = u.pathname.slice(5).replace(/[^a-zA-Z0-9._-]/g, "");
+        const file = join(HOME, ".dsh/onebot-bridge/workspace/pages", name);
+        try {
+          const buf = readFileSync(file);
+          const ext = (name.split(".").pop() || "jpg").toLowerCase();
+          const mime =
+            ext === "png" ? "image/png" : ext === "gif" ? "image/gif" : ext === "webp" ? "image/webp" : "image/jpeg";
+          res.writeHead(200, { "content-type": mime, "cache-control": "public, max-age=3600" });
+          res.end(buf);
+        } catch {
+          res.writeHead(404).end("no image");
+        }
+        return;
+      }
       // 她做的网页
       if (u.pathname.startsWith("/page/")) {
         const id = u.pathname.slice(6).replace(/[^a-z0-9]/gi, "");
@@ -8485,6 +8715,23 @@ inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDef
         }
         return;
       }
+      if (u.pathname === "/activities") {
+        let items = [];
+        try {
+          const rows = loadActivities(120);
+          items = rows.slice(-20).reverse().map((r) => ({
+            at: r.at,
+            kind: r.kind,
+            intent: String((r.think || {}).intent || "").slice(0, 80),
+            did: String(r.content || "").slice(0, 160),
+            reflect: String(r.reflect || "").slice(0, 120),
+          }));
+        } catch {
+          items = [];
+        }
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(items));
+        return;
+      }
       if (u.pathname === "/buttons") {
         let list = [];
         try {
@@ -8496,20 +8743,55 @@ inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDef
         return;
       }
       if (u.pathname === "/pages") {
+        let list = [];
         try {
           const dir = join(HOME, ".dsh/onebot-bridge/workspace/pages");
-          const list = readdirSync(dir)
+          list = readdirSync(dir)
             .filter((f) => f.endsWith(".html"))
             .map((f) => {
               const st = statSync(join(dir, f));
-              return { id: f.replace(/\.html$/, ""), at: st.mtimeMs };
+              let title = f.replace(/\.html$/, "");
+              try {
+                const head = readFileSync(join(dir, f), "utf8").slice(0, 600);
+                const mt = head.match(/<title>([^<]{1,80})<\/title>/i);
+                if (mt) title = mt[1].trim();
+              } catch {
+                // 忽略
+              }
+              return { id: f.replace(/\.html$/, ""), title, at: st.mtimeMs };
             })
             .sort((a, b) => b.at - a.at)
-            .slice(0, 50);
-          res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(list));
+            .slice(0, 100);
         } catch {
-          res.writeHead(200, { "content-type": "application/json" }).end("[]");
+          list = [];
         }
+        if (u.searchParams.get("format") === "json") {
+          res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(list));
+          return;
+        }
+        const rows = list
+          .map((p) => {
+            const d = new Date(p.at);
+            const when = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+            const safe = String(p.title).replace(/[<>&"]/g, "");
+            return `<li><a href="/page/${p.id}?token=${encodeURIComponent(token)}" target="_blank">${safe}</a><span class="t">${when}</span></li>`;
+          })
+          .join("");
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(`<!doctype html><html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>她的页面</title>
+<style>
+body{font:15px/1.7 -apple-system,"Segoe UI",sans-serif;max-width:760px;margin:0 auto;padding:24px 18px;background:#0f1115;color:#e6e6e6}
+h1{font-size:18px;margin-bottom:16px}
+ul{list-style:none;padding:0}
+li{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;border:1px solid #23262d;border-radius:10px;margin-bottom:8px;background:#1a1d24}
+a{color:#7cc4ff;text-decoration:none;font-weight:500}
+a:hover{text-decoration:underline}
+.t{color:#8b93a1;font-size:12px;white-space:nowrap}
+.empty{color:#8b93a1}
+</style></head><body>
+<h1>她的页面（${list.length}）</h1>
+${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做页面的时候会出现在这里。</p>'}
+</body></html>`);
         return;
       }
       if (u.pathname === "/send" && req.method === "POST") {
@@ -8520,8 +8802,9 @@ inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDef
         });
         req.on("end", () => {
           try {
-            const { text } = JSON.parse(body || "{}");
-            const t = String(text || "").trim();
+            const parsedBody = JSON.parse(body || "{}");
+            const t = String(parsedBody.text || "").trim();
+            const from = String(parsedBody.from || "").slice(0, 40);
             if (!t) {
               res.writeHead(400).end("empty");
               return;
@@ -8537,6 +8820,7 @@ inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDef
               message: [{ type: "text", data: { text: t } }],
               raw_message: t,
               __fromWebUI: true,
+              __fromButton: from || "",
             };
             res.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}');
             setTimeout(() => void client.onEvent(fakeEv).catch(() => {}), 10);
@@ -10594,6 +10878,8 @@ inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDef
   /** 完整的一轮：思考 → 行动 → 反思 */
   async function runThinkingCycle(opts = {}) {
     if (cfg.autoActionsEnabled === false) return;
+    // 主人点名/测试触发的活动：不占她的每日额度
+    const byOwner = opts.byOwner === true;
     if (!selfActivityHoursOk()) return;
     const offline = isOfflineMode();
     if (!offline && !client.connected) return;
@@ -10645,6 +10931,7 @@ inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDef
       think: plan,
       reflect: reflectOut,
       offline,
+      byOwner,
     });
     appendMem({
       kind: plan.action,
@@ -11043,6 +11330,16 @@ inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDef
         // 忽略
       }
       audit({ kind: "self_activity", act: kind, len: out.length });
+      // 让主人在 WebUI 里看到她在忙什么（内生驱动可见）
+      try {
+        webPush({
+          role: "activity",
+          kind,
+          text: `${actLabel(kind)}：${String(cleanOut).slice(0, 80)}`,
+        });
+      } catch {
+        // 忽略
+      }
       logger.info?.(`[onebot] ${kind} 完成：${out.slice(0, 50)}`);
     } catch (err) {
       logger.warn?.(`[onebot] ${kind} 失败：${err?.message ?? err}`);
@@ -11350,7 +11647,18 @@ inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDef
       }
       const cap = Number(cfg.selfActivityPerDay ?? 20);
       const today = new Date().toDateString();
-      const done = loadActivities(200).filter((a) => new Date(a.at).toDateString() === today).length;
+      // 只统计 9-23 点之间的活动：凌晨自己睡不着跑的那些不占白天额度
+      const hourFrom = Number(cfg.selfActivityCountFromHour ?? 9);
+      const hourTo = Number(cfg.selfActivityCountToHour ?? 23);
+      const resetAt = Number(loadSelfState().selfActivityResetAt) || 0;
+      const done = loadActivities(300).filter((a) => {
+        if (a.byOwner) return false; // 主人点名/测试触发的，不占额度
+        if (resetAt && a.at < resetAt) return false;
+        const d = new Date(a.at);
+        if (d.toDateString() !== today) return false;
+        const h = d.getHours();
+        return h >= hourFrom && h < hourTo;
+      }).length;
       if (cap > 0 && done >= cap) {
         logger.info?.(`[onebot] 今天活动 ${done} 次已满 ${cap}，明天继续`);
         scheduleNextSelfActivity(40);
@@ -11400,7 +11708,9 @@ inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDef
         logger.info?.(`[onebot] 手动触发 ${jobs.length} 轮：${jobs.map((j) => j.kind || "auto").join(",")}`);
         for (let i = 0; i < jobs.length; i++) {
           try {
-            await runThinkingCycle(jobs[i].kind ? { forceAction: jobs[i].kind } : {});
+            await runThinkingCycle(
+              jobs[i].kind ? { forceAction: jobs[i].kind, byOwner: true } : { byOwner: true },
+            );
           } catch (err) {
             logger.warn?.(`[onebot] 第 ${i + 1} 轮失败：${err?.message ?? err}`);
           }
