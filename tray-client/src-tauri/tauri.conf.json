@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "竹筒肥鱼",
+  "productName": "fish-tray",
   "version": "0.1.0",
   "identifier": "com.fish.tray",
   "build": {
@@ -20,15 +20,12 @@
         "skipTaskbar": true,
         "resizable": true,
         "alwaysOnTop": false,
-        "center": false
+        "center": false,
+        "additionalBrowserArgs": "--no-sandbox --disable-features=msWebOOUI,msPdfOOUI --disable-gpu-sandbox"
       }
     ],
     "security": {
       "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' http: https:"
-    },
-    "trayIcon": {
-      "iconPath": "icons/tray.png",
-      "iconAsTemplate": false
     }
   },
   "bundle": {

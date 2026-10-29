@@ -1,38 +1,63 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use serde::{Deserialize, Serialize};
-use tauri::{
-    menu::{Menu, MenuItem},
-    tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
-    Manager, PhysicalPosition, WebviewWindow,
-};
+use std::net::TcpStream;
+use std::process::Command;
+use tauri::{Manager, PhysicalPosition, WebviewWindow};
 
-/// 服务器地址和 token（首次运行由前端设置，存在这里）
-#[derive(Default, Serialize, Deserialize)]
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+#[derive(Default, Serialize, Deserialize, Clone)]
 struct Settings {
     base: String,
     token: String,
+    #[serde(default, rename = "sshKey")]
+    ssh_key: String,
+    #[serde(default, rename = "sshHost")]
+    ssh_host: String,
+    #[serde(default = "default_port")]
+    port: u16,
+}
+
+fn default_port() -> u16 {
+    3081
+}
+
+fn appdata() -> std::path::PathBuf {
+    std::env::var("APPDATA")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir())
 }
 
 fn settings_path() -> std::path::PathBuf {
-    let mut p = dirs_config();
+    let mut p = appdata();
     p.push("fish-tray");
     let _ = std::fs::create_dir_all(&p);
     p.push("settings.json");
     p
 }
 
-fn dirs_config() -> std::path::PathBuf {
-    std::env::var("APPDATA")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir())
+fn boot_log(msg: &str) {
+    let mut p = appdata();
+    p.push("fish-tray");
+    let _ = std::fs::create_dir_all(&p);
+    p.push("boot.log");
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+        let _ = writeln!(f, "{}", msg);
+    }
 }
 
 fn load_settings() -> Settings {
-    std::fs::read_to_string(settings_path())
+    let mut s: Settings = std::fs::read_to_string(settings_path())
         .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default();
+    if s.port == 0 {
+        s.port = 3081;
+    }
+    s
 }
 
 #[tauri::command]
@@ -41,8 +66,7 @@ fn get_settings() -> Settings {
 }
 
 #[tauri::command]
-fn save_settings(base: String, token: String) -> Result<(), String> {
-    let s = Settings { base, token };
+fn save_settings(s: Settings) -> Result<(), String> {
     let txt = serde_json::to_string_pretty(&s).map_err(|e| e.to_string())?;
     std::fs::write(settings_path(), txt).map_err(|e| e.to_string())
 }
@@ -54,7 +78,6 @@ struct ApiReply {
     body: String,
 }
 
-/// 统一请求：前端不用管 token，只发路径
 #[tauri::command]
 async fn api_get(path: String) -> Result<ApiReply, String> {
     let s = load_settings();
@@ -65,7 +88,7 @@ async fn api_get(path: String) -> Result<ApiReply, String> {
     let url = format!("{}{}{}token={}", s.base.trim_end_matches('/'), path, sep, s.token);
     let client = reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(20))
         .build()
         .map_err(|e| e.to_string())?;
     match client.get(&url).send().await {
@@ -74,7 +97,7 @@ async fn api_get(path: String) -> Result<ApiReply, String> {
             let body = r.text().await.unwrap_or_default();
             Ok(ApiReply { ok: st >= 200 && st < 300, status: st, body })
         }
-        Err(e) => Ok(ApiReply { ok: false, status: 0, body: format!("连不上：{e}") }),
+        Err(e) => Ok(ApiReply { ok: false, status: 0, body: format!("{e}") }),
     }
 }
 
@@ -104,11 +127,80 @@ async fn api_send(text: String, from: Option<String>) -> Result<ApiReply, String
             let body = r.text().await.unwrap_or_default();
             Ok(ApiReply { ok: st >= 200 && st < 300, status: st, body })
         }
-        Err(e) => Ok(ApiReply { ok: false, status: 0, body: format!("连不上：{e}") }),
+        Err(e) => Ok(ApiReply { ok: false, status: 0, body: format!("{e}") }),
     }
 }
 
-/// 把窗口摆到右下角
+fn port_open(port: u16) -> bool {
+    match format!("127.0.0.1:{port}").parse() {
+        Ok(addr) => TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(600)).is_ok(),
+        Err(_) => false,
+    }
+}
+
+fn kill_our_tunnels(port: u16) {
+    let script = format!(
+        "Get-CimInstance Win32_Process -Filter \"Name='ssh.exe'\" | Where-Object {{ $_.CommandLine -like '*-L {port}:*' }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}"
+    );
+    let mut cmd = Command::new("powershell");
+    cmd.args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &script]);
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000);
+    let _ = cmd.output();
+}
+
+#[tauri::command]
+fn ensure_tunnel() -> serde_json::Value {
+    let s = load_settings();
+    let port = s.port;
+
+    if port_open(port) {
+        return serde_json::json!({ "ok": true, "reused": true });
+    }
+    if s.ssh_key.is_empty() || s.ssh_host.is_empty() {
+        return serde_json::json!({ "ok": false, "error": "还没填 SSH 密钥路径和服务器地址" });
+    }
+
+    kill_our_tunnels(port);
+
+    let forward = format!("{port}:127.0.0.1:{port}");
+    let mut cmd = Command::new("ssh");
+    cmd.args([
+        "-i",
+        &s.ssh_key,
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=NUL",
+        "-o",
+        "ServerAliveInterval=20",
+        "-o",
+        "ServerAliveCountMax=2",
+        "-o",
+        "ExitOnForwardFailure=yes",
+        "-N",
+        "-L",
+        &forward,
+        &s.ssh_host,
+    ]);
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000);
+
+    match cmd.spawn() {
+        Ok(c) => {
+            for _ in 0..12 {
+                std::thread::sleep(std::time::Duration::from_millis(1000));
+                if port_open(port) {
+                    boot_log(&format!("tunnel up, pid={}", c.id()));
+                    return serde_json::json!({ "ok": true, "reused": false, "pid": c.id() });
+                }
+            }
+            serde_json::json!({ "ok": false, "error": "隧道进程起了但端口没通" })
+        }
+        Err(e) => serde_json::json!({ "ok": false, "error": format!("ssh 启动失败：{e}") }),
+    }
+}
+
 fn place_bottom_right(win: &WebviewWindow) {
     if let Ok(Some(mon)) = win.current_monitor() {
         let size = mon.size();
@@ -121,62 +213,34 @@ fn place_bottom_right(win: &WebviewWindow) {
     }
 }
 
-fn toggle_window(app: &tauri::AppHandle) {
-    if let Some(win) = app.get_webview_window("chat") {
-        let visible = win.is_visible().unwrap_or(false);
-        if visible {
-            let _ = win.hide();
-        } else {
-            place_bottom_right(&win);
-            let _ = win.show();
-            let _ = win.set_focus();
-        }
-    }
-}
-
 fn main() {
+    boot_log("main entered");
+
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             get_settings,
             save_settings,
             api_get,
-            api_send
+            api_send,
+            ensure_tunnel
         ])
         .setup(|app| {
-            let open = MenuItem::with_id(app, "open", "打开聊天", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &quit])?;
+            boot_log("setup entered");
 
-            let mut builder = TrayIconBuilder::with_id("main")
-                .tooltip("竹筒肥鱼")
-                .menu(&menu)
-                .show_menu_on_left_click(false)
-                .on_menu_event(|app, e| match e.id.as_ref() {
-                    "open" => toggle_window(app),
-                    "quit" => app.exit(0),
-                    _ => {}
-                })
-                .on_tray_icon_event(|tray, ev| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        ..
-                    } = ev
-                    {
-                        toggle_window(tray.app_handle());
-                    }
-                });
+            // 建隧道（失败不影响窗口）
+            let r = ensure_tunnel();
+            boot_log(&format!("ensure_tunnel -> {r}"));
 
-            if let Some(icon) = app.default_window_icon() {
-                builder = builder.icon(icon.clone());
+            // 窗口摆右下角
+            if let Some(win) = app.get_webview_window("chat") {
+                boot_log("window found");
+                place_bottom_right(&win);
+            } else {
+                boot_log("window NOT found");
             }
-            let _ = builder.build(app);
+
+            boot_log("setup done");
             Ok(())
-        })
-        .on_window_event(|win, ev| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = ev {
-                api.prevent_close();
-                let _ = win.hide();
-            }
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
