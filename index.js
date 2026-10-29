@@ -2188,6 +2188,7 @@ export function apply(ctx, _pluginConfig) {
     "my_activities",
     "my_capabilities",
     "my_schedule",
+    "owner_commands",
     "render_page",
     "add_webui_button",
     "remove_webui_button",
@@ -3941,6 +3942,10 @@ export function apply(ctx, _pluginConfig) {
               const d = new Date(r.at);
               const when = `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
               const plan = r.think || {};
+              const nextAt = Number(r.nextAt) || 0;
+              const nextStr = nextAt
+                ? `${String(new Date(nextAt).getHours()).padStart(2, "0")}:${String(new Date(nextAt).getMinutes()).padStart(2, "0")}`
+                : "";
               return {
                 when,
                 kind: r.kind,
@@ -3951,6 +3956,8 @@ export function apply(ctx, _pluginConfig) {
                 looked: Array.isArray(plan.looked) ? plan.looked : [],
                 did: cut(r.content, 300),
                 reflect: cut(r.reflect, 600),
+                nextAt: nextStr,
+                nextDelayMin: Number(r.nextDelayMin) || 0,
               };
             });
 
@@ -3967,6 +3974,7 @@ export function apply(ctx, _pluginConfig) {
                   if (it.looked.length) bits.push(`调取的记忆层：${it.looked.join(", ")}`);
                   if (it.did) bits.push(`做了什么：\n${it.did}`);
                   if (it.reflect) bits.push(`反思：\n${it.reflect}`);
+                  if (it.nextAt) bits.push(`下次活动：${it.nextAt}（${it.nextDelayMin} 分钟后）`);
                   return bits.join("\n\n");
                 })
                 .join("\n\n" + "─".repeat(20) + "\n\n");
@@ -4125,6 +4133,77 @@ export function apply(ctx, _pluginConfig) {
         }),
       );
       logger.info?.("[onebot] 排期表工具已注册（my_schedule）");
+
+      // 主人能发什么指令（她自己不知道这些，都是桥里写死的）
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "owner_commands",
+          description:
+            "查主人能对你发哪些指令。有人问「你能做什么」「有哪些指令」「怎么让你去探险」时用它，" +
+            "别凭印象乱说。",
+          parameters: {},
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async () => {
+            const groups = [
+              {
+                group: "让她动起来",
+                items: [
+                  "活动一下 / 活动活动 — 让她立刻跑一轮（自己挑做什么）",
+                  "去探险 / 探险一下 — 出门看点什么",
+                  "读点书 / 读一会儿 — 找点东西读",
+                  "玩会儿 — 自己造个小游戏玩",
+                  "想想事 — 安静想一件事",
+                  "回忆一下 — 翻自己的记忆",
+                  "憧憬一下 — 想以后",
+                  "研究代码 — 看她自己的源码",
+                  "连做 N 轮 — 连续做 N 轮（例：连做 3 轮）",
+                  "重置活动额度 — 把今天的活动次数清零",
+                ],
+              },
+              {
+                group: "查她的状态",
+                items: [
+                  "状态 — 在线情况、记忆存量、活动次数",
+                  "需求清单 — 她记下的「想要什么」",
+                  "各个群印象 — 她对每个群的印象",
+                  "全部想法 / 全部自省 — 她的观点和反思",
+                  "记忆查询 <关键词> — 搜记忆",
+                  "查看提醒 / 取消提醒",
+                ],
+              },
+              {
+                group: "管她的行为",
+                items: [
+                  "改配置 <项> <值> — 改运行参数",
+                  "以后叫我 <称呼> — 改她对你的称呼",
+                  "记住 <内容> — 让她记一条事实",
+                  "提醒我 <时间> <内容> — 定时提醒",
+                  "算了 N / 给她 N — 调整额度或次数",
+                  "同意 / 拒绝 — 回应她的申请",
+                  "申请加群 <群号> — 让她去加群",
+                  "发条说说 — 让她发一条空间说说",
+                  "代发言 / 定向搭话 — 让她替你说一句",
+                  "退群 — 让她退某个群",
+                ],
+              },
+              {
+                group: "和其他鱼有关",
+                items: ["帮助 — 列出这份指令清单"],
+              },
+            ];
+            return {
+              ok: true,
+              total: groups.reduce((n2, g) => n2 + g.items.length, 0),
+              groups,
+              note: "这些都是主人在 QQ 私聊或网页里直接发的；她不需要「听懂」某个指令，桥会自己拦截处理。",
+            };
+          },
+        }),
+      );
+      logger.info?.("[onebot] 指令清单工具已注册（owner_commands）");
 
       // ── 用网页展示内容：记录、记忆、统计、想法 ──
       const PAGES_DIR = join(HOME, ".dsh/onebot-bridge/workspace/pages");
@@ -6681,6 +6760,7 @@ ${html}
   }
 
   client.onEvent = async (ev) => {
+    if (ev?.__fromWebUI) logger.info?.(`[onebot] WebUI 事件进入 onEvent：${ev.message_id} type=${ev.post_type}/${ev.message_type}`);
     const trace = (m) => {
       if (ev.__fromPoll) logger.info?.(`[onebot] trace ${ev.message_id}: ${m}`);
     };
@@ -7483,6 +7563,15 @@ ${html}
     if (parsed.replyIds?.length && imagePayloads.length > 0 && !parsed.text) {
       msgText = "（@ 了你，并引用了上面那张图，没打字）";
     }
+    // 她自己该知道的事：主人能发什么指令（不然问起来只能瞎猜）
+    const cmdHint =
+      "\n（主人能直接发这些指令，桥会拦下来处理，你不用「听懂」：" +
+      "活动一下 / 去探险 / 读点书 / 玩会儿 / 想想事 / 回忆一下 / 憧憬一下 / 研究代码 / 连做 N 轮 / " +
+      "重置活动额度 / 状态 / 需求清单 / 各个群印象 / 全部想法 / 全部自省 / 记忆查询 xxx / " +
+      "记住 xxx / 提醒我 xxx / 查看提醒 / 取消提醒 / 改配置 xxx / 以后叫我 xxx / " +
+      "申请加群 xxx / 发条说说 / 代发言 / 定向搭话 / 退群 / 同意 / 拒绝 / 帮助。" +
+      "有人问「有哪些指令」就照着答，不懂细节就用 owner_commands 查。）\n";
+
     // 私聊：教她像真人那样把两句话分开发
     const splitHint =
       ev.message_type === "group"
@@ -7864,15 +7953,6 @@ ${html}
       const rendered = facts.render(6);
       if (rendered) factLine = `[你记得的事] ${rendered}\n`;
     }
-    // WebUI 发来的消息：写进独立的网页聊天记录（和 QQ 历史分开）
-    try {
-      if (ev.__fromWebUI) {
-        webPush({ role: "me", text: String(parsed.text || "").slice(0, 500) });
-      }
-    } catch {
-      // 忽略
-    }
-
     // ── 分层记忆注入（L0 自我 / L3 核心 / L2 摘要 / 相关记忆）──
     let memoryNote = "";
     try {
@@ -7954,6 +8034,7 @@ ${html}
     const body =
       vibeNote +
       memoryNote +
+      cmdHint +
       splitHint +
       slangNote +
       selfLine +
@@ -8588,27 +8669,29 @@ h1{font-size:15px;font-weight:600}
 #btns.on{display:flex}
 #btns button{background:var(--card2);border:1px solid var(--input-line);color:var(--fg);border-radius:14px;padding:4px 12px;font:13px inherit;cursor:pointer}
 #btns button:hover{background:var(--line);border-color:var(--muted)}
-#log{flex:1 1 0;min-height:140px;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px}
+#log{flex:1 1 0;min-height:140px;overflow-y:auto;padding:16px 16px 34px;display:flex;flex-direction:column;gap:10px}
 .msg{max-width:80%;padding:8px 12px;border-radius:12px;white-space:pre-wrap;word-break:break-word}
 .me{align-self:flex-end;background:var(--me);color:#fff;border-bottom-right-radius:4px}
 .her{align-self:flex-start;background:var(--her);color:var(--her-fg);border-bottom-left-radius:4px}
-.tool{align-self:flex-start;font-size:11px;padding:2px 9px;border-radius:10px;margin:1px 0 1px 4px;opacity:.9}
-.t-chat{background:#1f3346;color:#8fc8ff}
-.t-mem{background:#2b2436;color:#c7a8ff}
-.t-self{background:#1e3329;color:#7fd8a5}
-.t-code{background:#332a1e;color:#ffcb8a}
-.t-want{background:#3a2630;color:#ff9dbb}
-.t-net{background:#22303a;color:#8ad9d1}
-.t-draw{background:#2f2a3f;color:#b9a6ff}
-.t-other{background:#262b35;color:#9aa4b2}
-body.light .t-chat{background:#e3f0ff;color:#1a5fa8}
-body.light .t-mem{background:#f0e8ff;color:#6b3fa8}
-body.light .t-self{background:#e2f7ea;color:#1f7a4d}
-body.light .t-code{background:#fff0dd;color:#a15c00}
-body.light .t-want{background:#ffe4ec;color:#a8305e}
-body.light .t-net{background:#ddf2f0;color:#1a6b64}
-body.light .t-draw{background:#ece6ff;color:#5b3fa8}
-body.light .t-other{background:#eef0f3;color:#5b6470}
+.tool{align-self:flex-start;font-size:11px;padding:2px 10px;border-radius:10px;margin:1px 0 1px 4px;font-weight:500}
+/* 夜间：高饱和的深色底 + 亮色字，不要灰 */
+.t-chat{background:#1e4d7a;color:#a6dbff}
+.t-mem{background:#452a70;color:#d8bcff}
+.t-self{background:#1d5138;color:#96e8bb}
+.t-code{background:#5c3917;color:#ffd39a}
+.t-want{background:#5e2544;color:#ffb0cd}
+.t-net{background:#154e4e;color:#96e8e8}
+.t-draw{background:#3d2b70;color:#c9b4ff}
+.t-other{background:#2f3a5e;color:#b6c6f0}
+/* 日间：淡但依然有色相，不灰 */
+body.light .t-chat{background:#cfe8ff;color:#0a4d91}
+body.light .t-mem{background:#e8dbff;color:#5b2fa8}
+body.light .t-self{background:#cdf5dd;color:#15703f}
+body.light .t-code{background:#ffe6c4;color:#8a4b00}
+body.light .t-want{background:#ffd9e7;color:#a01d54}
+body.light .t-net{background:#c9f2f2;color:#0d6363}
+body.light .t-draw{background:#e0d4ff;color:#4a2fa8}
+body.light .t-other{background:#dde4f7;color:#3a4a75}
 footer{padding:12px;border-top:1px solid var(--line);display:flex;gap:8px;flex:none}
 #in{flex:1;background:var(--input);border:1px solid var(--input-line);color:var(--fg);border-radius:8px;padding:10px 12px;font:inherit;resize:none;height:44px}
 #send{background:var(--me);border:0;color:#fff;border-radius:8px;padding:0 18px;font:inherit;cursor:pointer}
@@ -8657,7 +8740,8 @@ const TOOL_ZH={
   exec_sandbox:"跑代码",read_source:"读源码",note_want:"记需求",my_wants:"看需求本",
   resolve_want:"标记需求完成",drop_want:"删需求",request_feature:"申请功能",
   render_page:"做网页",add_webui_button:"加按钮",remove_webui_button:"删按钮",
-  read_forward_more:"展开转发",refuse_person:"拒聊"
+  read_forward_more:"展开转发",refuse_person:"拒聊",owner_commands:"查指令清单",
+  remember:"记东西",memory:"查记忆",search:"搜索",read:"读东西",write:"写东西"
 };
 // 分类颜色
 const TOOL_KIND={
@@ -8670,11 +8754,20 @@ const TOOL_KIND={
   my_changelog:"self",my_source:"self",my_outages:"self",my_schedule:"self",
   exec_sandbox:"code",read_source:"code",
   note_want:"want",my_wants:"want",resolve_want:"want",drop_want:"want",request_feature:"want",
+  owner_commands:"self",
   web_search:"net",web_fetch:"net",hot_news:"net"
 };
 function addTool(name){
-  const raw=String(name||'').replace(/^\[|\]$/g,'');
-  const zh=TOOL_ZH[raw]||raw;
+  // 注意：这里在模板字符串里，正则的 \[ \] 会被吃掉，只能用字符串操作
+  let raw=String(name||'').trim();
+  if(raw.startsWith('[')) raw=raw.slice(1);
+  if(raw.endsWith(']')) raw=raw.slice(0,-1);
+  raw=raw.trim();
+  // 没配中文名的也别露出英文（界面里不该出现技术名词）
+  let zh=TOOL_ZH[raw];
+  if(!zh){
+    zh=/^[a-z0-9_]+$/i.test(raw) ? '某个操作' : raw;
+  }
   const kind=TOOL_KIND[raw]||'other';
   const d=document.createElement('div');
   d.className='tool t-'+kind;
@@ -8717,6 +8810,9 @@ fetch('/activities?token='+T).then(r=>r.json()).then(list=>{
   live.className='on';
   for(const a of list.slice(0,3).reverse()) addLive({kind:a.kind,text:a.intent||a.did,time:a.time});
 }).catch(()=>{});
+// 刚本地显示过的消息，等后端 SSE 回推同一句时跳过，避免显示两份
+let pendingMeText = "";
+
 // 快捷入口不放在聊天页（占地方），统一放到右上角「页面」里
 
 
@@ -8740,6 +8836,16 @@ es.onmessage=e=>{
   const d=JSON.parse(e.data);
   if(d.role==='tool'){addTool(d.text);return;}
   if(d.role==='activity'){addLive(d);return;}
+  if(d.role==='me'){
+    const t=String(d.text||'');
+    // 本地刚显示过的，跳过（否则会显示两份）
+    if(pendingMeText && (t===pendingMeText || t.includes(pendingMeText))){
+      pendingMeText='';
+      return;
+    }
+    add('me',t);
+    return;
+  }
   if(d.role==='typing'){setTyping(d.on);return;}
   setTyping(false);
   if(d.image){
@@ -8763,7 +8869,7 @@ async function send(from){
     tag.style.opacity='.65';tag.style.fontSize='12px';
     d.appendChild(tag);d.appendChild(document.createTextNode(t));
     log.appendChild(d);log.scrollTop=log.scrollHeight;
-  } else add('me',t);
+  } else { add('me',t); pendingMeText=t; }
   try{
     await fetch('/send?token='+T,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text:t,from:from||''})});
   }catch(e){addTool('发送失败：'+e.message);}
@@ -9127,6 +9233,12 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
               __fromWebUI: true,
               __fromButton: from || "",
             };
+            // 先把「你发的」记进网页聊天历史——不依赖 deliver 能不能跑通
+            try {
+              webPush({ role: "me", text: t.slice(0, 500) });
+            } catch (err) {
+              logger.warn?.(`[onebot] WebUI 消息未记入历史：${err?.message ?? err}`);
+            }
             res.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}');
             setTimeout(() => void client.onEvent(fakeEv).catch(() => {}), 10);
           } catch {
@@ -9552,6 +9664,9 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
           remove_webui_button: "删按钮",
           read_forward_more: "展开转发",
           refuse_person: "拒聊",
+          owner_commands: "查指令清单",
+          remember: "记东西",
+          memory: "查记忆",
         };
 
         // WebUI 里显示她调了什么工具
@@ -10344,10 +10459,12 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
 
   // 等预热完成后启动定时器（避免太早没有可用会话）
   setTimeout(() => {
-    if (!agentReady) {
+    // 不管 agentReady 是不是已经被别的路径置 true，暂存队列都必须清空
+    // （之前写成 if(!agentReady) 包住，预热快的机器上队列永远不放行，消息就卡死了）
+    {
       agentReady = true;
-      logger.warn?.("[onebot] 60 秒未成功回复，强制放行暂存消息");
       const queued = pendingWhileBooting.splice(0);
+      if (queued.length) logger.warn?.(`[onebot] 放行 ${queued.length} 条暂存消息`);
       for (const qev of queued) {
         const mid = String(qev.message_id ?? "");
         // 已经回复过的（seen 里有 id）就别再回一遍
@@ -10369,7 +10486,7 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
         void client.onEvent(qev).catch(() => {});
       }
     }
-  }, 60000).unref?.();
+  }, 20000).unref?.();
 
   setTimeout(() => {
     scheduleProactive();
@@ -11323,6 +11440,11 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
     const reflectOut = reflectRes.text;
 
     // ── 记录 ──
+    // 下次活动什么时候：她想的 vs 实际会被压到多少
+    const wantDelay = Number(reflectRes.delayMin) || 0;
+    const actualDelay = Math.max(1, Math.min(40, wantDelay || 10 + Math.random() * 20));
+    const nextAtMs = Date.now() + actualDelay * 60_000;
+
     appendActivity({
       at: Date.now(),
       kind: plan.action,
@@ -11331,6 +11453,9 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
       reflect: reflectOut,
       offline,
       byOwner,
+      nextDelayMin: Math.round(actualDelay),
+      nextWantMin: Math.round(wantDelay),
+      nextAt: nextAtMs,
     });
     appendMem({
       kind: plan.action,
@@ -12017,7 +12142,11 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
           ? Math.max(1, Math.min(40, delayMinutes))
           : Math.max(1, Math.min(40, 10 + Math.random() * 20));
       // 存盘：重启后不用重算，别把她自己定的时间丢了
-      patchSelfState({ selfActivityNextAt: Date.now() + clamped * 60_000 });
+      const targetAt = Date.now() + clamped * 60_000;
+      logger.info?.(
+        `[onebot] 调度：delayMinutes=${delayMinutes} clamped=${clamped} 目标=${new Date(targetAt).toLocaleTimeString("zh-CN", { hour12: false })}`,
+      );
+      patchSelfState({ selfActivityNextAt: targetAt });
       nextActivityTimer = setTimeout(() => void tickSelfActivity(), clamped * 60_000);
       nextActivityTimer.unref?.();
       if (delayMinutes > 0 && delayMinutes !== clamped) {
@@ -12137,7 +12266,7 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
       // 忽略
     }
     void tickSelfActivity();
-  }, 3 * 60_000).unref?.();
+  }, 30_000).unref?.(); // 启动后 30 秒就恢复，别等 3 分钟（重启多的话会明显推迟她的活动）
 
   // ── 说说：不按固定时间，而是问她「现在有没有想说的」──
   const QZONE_PLAN = join(HOME, ".dsh/onebot-bridge/qzone-plan.json");
