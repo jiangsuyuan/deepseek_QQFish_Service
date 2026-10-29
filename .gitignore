@@ -36,3 +36,8 @@ profiles/
 # 系统
 .DS_Store
 Thumbs.db
+
+# Rust / Tauri
+tray-client/src-tauri/target/
+tray-client/src-tauri/gen/
+tray-client/node_modules/
