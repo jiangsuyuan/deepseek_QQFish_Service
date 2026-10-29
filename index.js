@@ -5319,7 +5319,7 @@ ${html}
     const m1 = t.match(/\[消息内容\]\s*([\s\S]*?)(?:\n\[|$)/);
     if (m1 && m1[1].trim()) return m1[1].trim().slice(0, 400);
 
-    const m3 = t.match(/\[(?:QQ群消息|QQ私聊|网页聊天)\][^：:\n]*[：:]\s*([\s\S]*)/);
+    const m3 = t.match(/\[(?:QQ群消息|QQ私聊|网页聊天|网页聊天·助手代发)\][^：:\n]*[：:]\s*([\s\S]*)/);
     if (m3 && m3[1].trim()) return m3[1].trim().slice(0, 400);
 
     // DSH 自己注入的运行时说明，不是人说的话
@@ -8252,6 +8252,14 @@ async function handleOwnerNatural(ev, text) {
     if (parsed.replyIds?.length && imagePayloads.length > 0 && !parsed.text) {
       msgText = "（@ 了你，并引用了上面那张图，没打字）";
     }
+    // 分清是谁在说话：主人本人 还是 助手代发
+    const whoHint =
+      ev.__fromWebUI && ev.__viaAssistant
+        ? "\n（这条打着「助手代发」的标——是 AI 助手在替主人操作，**不是主人本人打的**。" +
+          "正常回答就行，但如果涉及「你决定」「你同意吗」这类要主人拍板的事，" +
+          "要说清楚「等主人本人确认」，别把助手的话当成主人的意思。）\n"
+        : "";
+
     // 她自己该知道的事：主人能发什么指令（不然问起来只能瞎猜）
     const cmdHint =
       "\n（主人能直接发这些指令，桥会拦下来处理，你不用「听懂」：" +
@@ -8274,7 +8282,12 @@ async function handleOwnerNatural(ev, text) {
           "\n写法：在两句之间写 [split]，第一句末尾的句号去掉。最多拆两条。\n）\n";
 
     // 网页聊天用单独的标签，历史才能按渠道分开
-    const channelTag = ev.__fromWebUI ? "[网页聊天]" : "[QQ私聊]";
+    // 网页聊天还要再分一层：主人本人 / 助手代发
+    const channelTag = ev.__fromWebUI
+      ? ev.__viaAssistant
+        ? "[网页聊天·助手代发]" // ← 这条不是主人打的，是 AI 助手在替他操作
+        : "[网页聊天]"
+      : "[QQ私聊]";
     const bodyBase =
       ev.message_type === "group"
         ? `[QQ群消息] 群号 ${ev.group_id}，发言人 ${nickname}（${ev.user_id}）${who}\n[消息内容] ${msgText}`
@@ -8724,6 +8737,7 @@ async function handleOwnerNatural(ev, text) {
       vibeNote +
       memoryNote +
       cmdHint +
+      whoHint +
       splitHint +
       slangNote +
       selfLine +
@@ -9937,6 +9951,8 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
               raw_message: t,
               __fromWebUI: true,
               __fromButton: from || "",
+              // via: "assistant" 表示这条是 AI 助手代主人发的，不是主人本人打的
+              __viaAssistant: /^assistant$/i.test(String(parsedBody.via || "")),
             };
             // 先把「你发的」记进网页聊天历史——不依赖 deliver 能不能跑通
             try {
