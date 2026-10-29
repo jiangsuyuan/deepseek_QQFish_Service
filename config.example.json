@@ -137,5 +137,8 @@
     "renderPagePerHour":  10,
     "selfActivityCountFromHour":  9,
     "selfActivityCountToHour":  23,
-    "selfActivityPerDay":  40
+    "selfActivityPerDay":  40,
+    "runCodeCpuSec":  900,
+    "notebookEnabled":  true,
+    "patchProposalEnabled":  true
 }

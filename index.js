@@ -544,6 +544,18 @@ class OneBotClient {
 
   /** 给指定 QQ 号发私聊（非当前会话） */
   sendPrivate(userId, text) {
+    // QQ 离线时不要抛错：调用方（比如主人指令）会整条崩掉，连普通对话都被吞。
+    // 改成把内容推给 WebUI，至少主人能看到。
+    if (!this.connected) {
+      const txt = String(text || "");
+      try {
+        this.onOfflineText?.(txt);
+      } catch {
+        // 忽略
+      }
+      this.logger?.warn?.(`[onebot] QQ 离线，这条没发出去（已转 WebUI）：${txt.slice(0, 40)}`);
+      return Promise.resolve({ message_id: `offline-${Date.now()}`, offline: true });
+    }
     return this.call("send_private_msg", {
       user_id: Number(userId),
       message: [{ type: "text", data: { text } }],
@@ -1793,7 +1805,7 @@ function sleep(ms) {
 function humanizePunct(input) {
   let t = String(input || "").trim();
   if (!t) return t;
-  if (!/[。.．]$/.test(t)) return t; // 本来就没句号，不动
+  if (!/[。．]$/.test(t)) return t; // 本来就没中文句号，不动
   const len = t.length;
   // 短句统一不写句号（人类 87% 如此），只给长段保留——规则简单，风格才统一
   if (len <= 40) {
@@ -1966,6 +1978,15 @@ export function apply(ctx, _pluginConfig) {
   client.readyFn = () => agentReady;
   client.onOutage = (kind, ts) => noteOutageFromClient(kind, ts);
   client.onWebReply = (text) => webPush({ role: "her", text });
+  // QQ 离线时，本该私聊发出的内容改成推到 WebUI
+  client.onOfflineText = (text) => {
+    try {
+      webPush({ role: "her", text: String(text || "").slice(0, 2000) });
+    } catch {
+      // 忽略
+    }
+  };
+
   client.onWebImage = (filePath) => {
     try {
       const id = `img-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
@@ -2189,6 +2210,15 @@ export function apply(ctx, _pluginConfig) {
     "my_capabilities",
     "my_schedule",
     "owner_commands",
+    "group_impressions",
+    "my_thoughts",
+    "run_activity",
+    "set_reminder",
+    "write_notebook",
+    "read_notebook",
+    "read_pdf",
+    "propose_patch",
+    "my_patch_proposals",
     "render_page",
     "add_webui_button",
     "remove_webui_button",
@@ -3129,10 +3159,15 @@ export function apply(ctx, _pluginConfig) {
           name: "my_memory",
           description:
             "翻自己的记忆。type 可选 people（人物）/ facts（事实）/ views（观点）/ reflections（反思）/" +
-            "learnings（学到的）；query 可选关键词，填了就只返回相关的。",
+            "learnings（学到的）/ all（全都搜，每条标来源）/ notebook（本子）。" +
+            "query 可选关键词；all 模式会跨所有存储搜并标注每条来自哪儿。",
           parameters: {
-            type: { type: "string", description: "people / facts / views / reflections / learnings" },
+            type: {
+              type: "string",
+              description: "people / facts / views / reflections / learnings / all / notebook",
+            },
             query: { type: "string", description: "关键词，可不填" },
+            limit: { type: "number", description: "all 模式下最多返回几条，默认 20" },
           },
           output: TOOL_OUT,
           execute: async (args) => {
@@ -3147,6 +3182,80 @@ export function apply(ctx, _pluginConfig) {
             } catch {
               // 忽略
             }
+            // 全都搜：跨 facts / views / reflections / learnings / notebook / 记忆流水
+            if (type === "all" || type === "search") {
+              const results = [];
+              const push = (source, text, at) => {
+                if (!text) return;
+                if (q && !String(text).includes(q)) return;
+                results.push({ source, text: String(text).slice(0, 300), at: at || 0 });
+              };
+              // 事实
+              try {
+                facts.load?.();
+                for (const f of facts.data || []) push("事实", f.text, f.at);
+              } catch {}
+              // 观点 + 反思
+              try {
+                selfViews.load?.();
+                for (const v of selfViews.data || []) push("观点", v.text, v.at);
+                for (const r of selfViews.reflections || []) push("反思", r.text, r.at);
+              } catch {}
+              // 学到的
+              try {
+                const arr = JSON.parse(readFileSync(join(HOME, ".dsh/onebot-bridge/learnings.json"), "utf8"));
+                for (const l of Array.isArray(arr) ? arr : [])
+                  push("见闻", `${l.topic || ""}：${l.summary || ""}`, l.at);
+              } catch {}
+              // 本子
+              try {
+                for (const f of readdirSync(NOTEBOOK_DIR).filter((x) => x.endsWith(".md"))) {
+                  const txt = readFileSync(join(NOTEBOOK_DIR, f), "utf8");
+                  if (!q || txt.includes(q)) push("本子", `${f}\n${txt}`, 0);
+                }
+              } catch {}
+              // 记忆流水（按行搜）
+              try {
+                const log = readFileSync(join(HOME, ".dsh/onebot-bridge/memory-log.jsonl"), "utf8");
+                for (const line of log.split("\n")) {
+                  if (!line.trim()) continue;
+                  if (q && !line.includes(q)) continue;
+                  try {
+                    const o = JSON.parse(line);
+                    push("记忆流水", o.text || o.summary || line.slice(0, 200), o.at);
+                  } catch {
+                    push("记忆流水", line.slice(0, 200), 0);
+                  }
+                }
+              } catch {}
+              results.sort((a, b) => (b.at || 0) - (a.at || 0));
+              const lim = Math.max(1, Math.min(40, Number(args?.limit) || 20));
+              return {
+                ok: true,
+                type: "all",
+                query: q,
+                count: results.length,
+                shown: Math.min(lim, results.length),
+                items: results.slice(0, lim),
+              };
+            }
+
+            // 只看本子
+            if (type === "notebook") {
+              try {
+                const files = readdirSync(NOTEBOOK_DIR)
+                  .filter((x) => x.endsWith(".md"))
+                  .sort()
+                  .slice(-7);
+                const items = files
+                  .map((f) => ({ file: f, text: readFileSync(join(NOTEBOOK_DIR, f), "utf8").slice(0, 2000) }))
+                  .filter((x) => !q || x.text.includes(q));
+                return { ok: true, type, count: items.length, items };
+              } catch {
+                return { ok: true, type, count: 0, items: [], note: "本子还是空的" };
+              }
+            }
+
             if (type === "people") {
               people.load();
               const list = Object.entries(people.data)
@@ -3584,8 +3693,9 @@ export function apply(ctx, _pluginConfig) {
         defineTool({
           name: "exec_sandbox",
           description:
-            "在自己的沙箱里跑一小段代码，看结果。可以算数、统计、处理文本、画图（matplotlib）、写个小游戏跑起来。" +
-            "沙箱是断网的、降权的、限时的，你碰不到自己的记忆和源码（那些是只读的）。" +
+            "在自己的沙箱里跑代码。可以算数、统计、处理文本、画图（matplotlib）、写小游戏、" +
+            "联网抓东西（curl / requests 都行）。" +
+            "沙箱是降权的（sandbox 用户），碰不到你的记忆和源码（那些是只读的）；不限时，但 CPU 时间有上限。" +
             "language 填 python 或 javascript；输出最多 4000 字。",
           parameters: {
             language: { type: "string", description: "python 或 javascript" },
@@ -3627,23 +3737,32 @@ export function apply(ctx, _pluginConfig) {
                 // 忽略
               }
               const runner = lang === "javascript" ? ["node", file] : ["python3", file];
-              // unshare -n 断网 + sudo 降权 + timeout 限时
-              const cmd = "unshare";
+              // 能联网了（去掉 unshare -n）、不限时（去掉 timeout）。
+              // 仍然降权到 sandbox 用户；用 ulimit 兜底，防止一个死循环把整台机器拖住。
+              const cpuSec = Math.max(60, Number(cfg.runCodeCpuSec) || 900);
+              const runnerCmd = runner.map((x) => JSON.stringify(x)).join(" ");
+              const cmd = "sudo";
               const cmdArgs = [
-                "-n",
-                "sudo",
                 "-u",
                 "sandbox",
                 "-n",
-                "timeout",
-                String(Math.min(30, Number(cfg.runCodeTimeoutSec) || 30)),
-                ...runner,
+                "bash",
+                "-c",
+                `ulimit -t ${cpuSec}; exec ${runnerCmd}`,
               ];
               const { stdout, stderr } = await promisify(execFile)(cmd, cmdArgs, {
                 cwd: dir,
-                timeout: 40_000,
-                maxBuffer: 2 * 1024 * 1024,
-                env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: dir, LANG: "C.UTF-8" },
+                timeout: 0, // 不限时；靠 ulimit -t 兜底
+                maxBuffer: 4 * 1024 * 1024,
+                env: {
+                  PATH: "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+                  HOME: dir,
+                  LANG: "C.UTF-8",
+                  // 给联网一点基本配置
+                  http_proxy: "",
+                  https_proxy: "",
+                  no_proxy: "127.0.0.1,localhost",
+                },
               });
               audit({ kind: "run_code", lang, ok: true, ms: Date.now() - now });
               return {
@@ -4204,6 +4323,452 @@ export function apply(ctx, _pluginConfig) {
         }),
       );
       logger.info?.("[onebot] 指令清单工具已注册（owner_commands）");
+
+      // 她对每个群的印象（原来是指令里的「各个群印象」，改成工具让她自己决定要不要答）
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "group_impressions",
+          description:
+            "查你对每个群的整体印象（这个群是干什么的、常聊什么、安静还是热闹）。" +
+            "有人问「你对哪个群印象深」「这些群都是干什么的」时用。",
+          parameters: {},
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async () => {
+            const meta = loadGroupMeta();
+            const lines = [];
+            for (const [gid, m] of Object.entries(meta)) {
+              if (!m || typeof m !== "object") continue;
+              lines.push({
+                group: m.name || groupLabel(gid) || gid,
+                id: gid,
+                purpose: String(m.purpose || "").slice(0, 120),
+                topics: String(m.topics || "").slice(0, 120),
+                messages: Number(m.count) || 0,
+                lastAt: Number(m.lastAt) || 0,
+              });
+            }
+            return { ok: true, count: lines.length, groups: lines.slice(-20) };
+          },
+        }),
+      );
+
+      // 她自己的想法和反思（原来是指令里的「全部想法 / 全部自省」）
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "my_thoughts",
+          description:
+            "查你自己写下的观点和自省。有人问「你都有什么想法」「你反省过什么」时用。" +
+            "which 填 views（观点，默认）或 reflections（自省）。",
+          parameters: {
+            which: { type: "string", description: "views（观点）/ reflections（自省），默认 views" },
+            limit: { type: "number", description: "看几条，默认 20" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            const which = String(args?.which ?? "views").toLowerCase();
+            const limit = Math.max(1, Math.min(50, Number(args?.limit) || 20));
+            try {
+              selfViews.load?.();
+            } catch {
+              // 忽略
+            }
+            const out = [];
+            if (which === "reflections") {
+              for (let i = 0; i < limit; i++) {
+                const r = selfViews.renderReflections?.(i + 1);
+                if (!r) break;
+                out.push(r);
+              }
+            } else {
+              const v = selfViews.render?.(limit);
+              if (v) out.push(v);
+            }
+            return { ok: true, which, count: out.length, items: out };
+          },
+        }),
+      );
+
+      logger.info?.("[onebot] 群印象/我的想法 工具已注册（group_impressions/my_thoughts）");
+
+      // 让她能自己决定开始一轮活动（主人说「活动一下」「去探险」时由她自己调）
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "run_activity",
+          description:
+            "开始一轮自己的活动。主人说「活动一下」「去探险」「读点书」「玩会儿」「想想事」" +
+            "「回忆一下」「憧憬一下」「研究代码」时，用这个开始，而不是嘴上答应。" +
+            "kind 不填就自己挑一个。",
+          parameters: {
+            kind: {
+              type: "string",
+              description: "explore/read/play/think/write/recall/dream/study，不填自己挑",
+            },
+            rounds: { type: "number", description: "做几轮，默认 1，最多 5" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            const kind = String(args?.kind ?? "").trim();
+            const rounds = Math.max(1, Math.min(5, Number(args?.rounds) || 1));
+            const VALID = ["explore", "read", "play", "think", "write", "recall", "dream", "study"];
+            const useKind = VALID.includes(kind) ? kind : "";
+            for (let i = 0; i < rounds; i++) {
+              if (useKind) {
+                await runThinkingCycle({ forceAction: useKind, byOwner: true });
+              } else {
+                await runThinkingCycle({ byOwner: true });
+              }
+            }
+            const st = loadSelfState();
+            const nextAt = Number(st.selfActivityNextAt) || 0;
+            return {
+              ok: true,
+              ran: rounds,
+              kind: useKind || "自己挑的",
+              nextActivity: nextAt
+                ? `${String(new Date(nextAt).getHours()).padStart(2, "0")}:${String(new Date(nextAt).getMinutes()).padStart(2, "0")}`
+                : "未定",
+              note: "这些轮次不算进你的每日额度",
+            };
+          },
+        }),
+      );
+
+      // 提醒（主人说「提醒我…」时由她自己设）
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "set_reminder",
+          description:
+            "给主人设一个提醒。他说「提醒我…」「到点告诉我…」时用。" +
+            "minutes 填多少分钟后提醒（最少 1 分钟）",
+          parameters: {
+            minutes: { type: "number", description: "多少分钟后提醒" },
+            what: { type: "string", description: "提醒什么事" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            const minutes = Math.max(1, Math.min(60 * 24 * 30, Number(args?.minutes) || 0));
+            const what = String(args?.what ?? "").trim().slice(0, 200);
+            if (!minutes || !what) return { ok: false, error: "需要 minutes 和 what" };
+            const until = Date.now() + minutes * 60_000;
+            const list = loadReminders();
+            list.push({ at: until, what, by: "self", createdAt: Date.now() });
+            saveReminders(list);
+            const d = new Date(until);
+            return {
+              ok: true,
+              at: `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`,
+              minutes,
+              what,
+            };
+          },
+        }),
+      );
+
+      logger.info?.("[onebot] 活动/提醒 工具已注册（run_activity/set_reminder）");
+
+      // ── 本子：一天一个文件，纯文本，她写什么存什么 ──
+      const NOTEBOOK_DIR = join(HOME, ".dsh/onebot-bridge/notebook");
+      function notebookPath(d = new Date()) {
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, "0");
+        const day = String(d.getDate()).padStart(2, "0");
+        return join(NOTEBOOK_DIR, `${y}-${m}-${day}.md`);
+      }
+
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "write_notebook",
+          description:
+            "往你的本子上写东西。这是你自己的本子：写什么、怎么写都由你，不会被人整理成别的格式。" +
+            "按天分文件，写进去就存住了，隔几晚翻回来还认得。",
+          parameters: {
+            text: { type: "string", description: "要写的内容（可以写很多）" },
+            title: { type: "string", description: "小标题，可省略" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            const text = String(args?.text ?? "").trim();
+            const title = String(args?.title ?? "").trim();
+            if (!text) return { ok: false, reason: "内容为空" };
+            try {
+              mkdirSync(NOTEBOOK_DIR, { recursive: true });
+              const p = notebookPath();
+              const d = new Date();
+              const hh = String(d.getHours()).padStart(2, "0");
+              const mm = String(d.getMinutes()).padStart(2, "0");
+              const head = title ? `\n## ${hh}:${mm} ${title}\n\n` : `\n### ${hh}:${mm}\n\n`;
+              appendFileSync(p, head + text + "\n", "utf8");
+              const size = statSync(p).size;
+              audit({ kind: "notebook_write", bytes: text.length });
+              return { ok: true, file: p.split("/").pop(), bytes: size, chars: text.length };
+            } catch (err) {
+              return { ok: false, reason: String(err?.message ?? err).slice(0, 200) };
+            }
+          },
+        }),
+      );
+
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "read_notebook",
+          description:
+            "翻自己的本子。参数 date 填某天（2026-10-29），不填就看最近几天；days 控制看几天，默认 3。",
+          parameters: {
+            date: { type: "string", description: "某一天，格式 2026-10-29" },
+            days: { type: "number", description: "看最近几天，默认 3" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            try {
+              const want = String(args?.date ?? "").trim();
+              let files = [];
+              if (want) {
+                files = [join(NOTEBOOK_DIR, `${want}.md`)];
+              } else {
+                const n = Math.max(1, Math.min(30, Number(args?.days) || 3));
+                try {
+                  const all = readdirSync(NOTEBOOK_DIR)
+                    .filter((f) => f.endsWith(".md"))
+                    .sort();
+                  files = all.slice(-n).map((f) => join(NOTEBOOK_DIR, f));
+                } catch {
+                  return { ok: true, count: 0, note: "本子还是空的" };
+                }
+              }
+              const out = [];
+              for (const f of files) {
+                try {
+                  out.push({ file: f.split("/").pop(), text: readFileSync(f, "utf8").slice(0, 6000) });
+                } catch {
+                  // 这天没写
+                }
+              }
+              return { ok: true, count: out.length, entries: out };
+            } catch (err) {
+              return { ok: false, reason: String(err?.message ?? err).slice(0, 200) };
+            }
+          },
+        }),
+      );
+
+      // ── 读 PDF ──
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "read_pdf",
+          description:
+            "读一个 PDF 的文字内容。path 填服务器上的路径；如果是网址，先用 exec_sandbox 下载下来再读。" +
+            "pages 可选，比如 \"1-5\"，不填读开头几页。",
+          parameters: {
+            path: { type: "string", description: "PDF 的文件路径" },
+            pages: { type: "string", description: "页码范围，例：1-5，可省略" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            const p = String(args?.path ?? "").trim();
+            if (!p) return { ok: false, reason: "要给我一个路径" };
+            if (!p.toLowerCase().endsWith(".pdf")) return { ok: false, reason: "这不是 PDF" };
+            if (!/^\/[\w./\-]+$/.test(p)) return { ok: false, reason: "路径不合法" };
+            try {
+              if (!existsSync(p)) return { ok: false, reason: "文件不存在" };
+              const pages = String(args?.pages ?? "").trim();
+              const a = ["-layout"];
+              if (pages) {
+                a.push("-f", pages.split("-")[0] || "1");
+                if (pages.includes("-")) a.push("-l", pages.split("-")[1]);
+              }
+              a.push(p, "-");
+              const out = execFileSync("pdftotext", a, {
+                timeout: 30_000,
+                maxBuffer: 8 * 1024 * 1024,
+                encoding: "utf8",
+              });
+              const txt = String(out || "")
+                .replace(/\n{3,}/g, "\n\n")
+                .trim();
+              audit({ kind: "read_pdf", file: p, chars: txt.length });
+              return {
+                ok: true,
+                chars: txt.length,
+                truncated: txt.length > 8000,
+                text: txt.slice(0, 8000),
+              };
+            } catch (err) {
+              return {
+                ok: false,
+                reason: String(err?.message ?? err).slice(0, 300),
+                hint: "如果提示找不到 pdftotext，需要先装 poppler-utils",
+              };
+            }
+          },
+        }),
+      );
+
+      logger.info?.("[onebot] 本子/PDF 工具已注册（write_notebook/read_notebook/read_pdf）");
+
+      // ── 改动申请：她想改代码时，写一份设计报告给主人，不自己动手 ──
+      const PROPOSAL_DIR = join(HOME, ".dsh/onebot-bridge/patch-proposals");
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "propose_patch",
+          description:
+            "你想改自己代码的时候用这个：写一份「改动申请」发给主人，由他来执行。" +
+            "你改不了代码，但可以把想法说清楚——改哪一行、为什么改、会有什么影响、怎么验证、怎么撤。" +
+            "写清楚原理，主人看了才敢动手。",
+          parameters: {
+            file: { type: "string", description: "要改哪个文件，比如 index.js / README.md" },
+            where: { type: "string", description: "大概位置：函数名或行号附近，方便主人找" },
+            oldCode: { type: "string", description: "原来的那一行（照抄）" },
+            newCode: { type: "string", description: "改成什么" },
+            why: { type: "string", description: "为什么要改：现在的写法有什么问题" },
+            principle: { type: "string", description: "原理：为什么这么改能解决，背后的道理" },
+            risk: { type: "string", description: "可能影响什么、什么情况下会出问题" },
+            verify: { type: "string", description: "改完怎么确认是对的" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            const file = String(args?.file ?? "").trim();
+            const where = String(args?.where ?? "").trim();
+            const oldCode = String(args?.oldCode ?? "").trim();
+            const newCode = String(args?.newCode ?? "").trim();
+            const why = String(args?.why ?? "").trim();
+            const principle = String(args?.principle ?? "").trim();
+            const risk = String(args?.risk ?? "").trim();
+            const verify = String(args?.verify ?? "").trim();
+
+            if (!file || !oldCode || !newCode || !why) {
+              return { ok: false, reason: "至少要填 file / oldCode / newCode / why" };
+            }
+
+            const d = new Date();
+            const stamp =
+              `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}` +
+              `-${String(d.getHours()).padStart(2, "0")}${String(d.getMinutes()).padStart(2, "0")}${String(d.getSeconds()).padStart(2, "0")}`;
+            const id = `patch-${stamp}`;
+
+            const doc = [
+              `# 改动申请 ${id}`,
+              "",
+              `**文件**：\`${file}\``,
+              where ? `**位置**：${where}` : "",
+              "",
+              "## 现在是这样",
+              "```js",
+              oldCode,
+              "```",
+              "",
+              "## 想改成这样",
+              "```js",
+              newCode,
+              "```",
+              "",
+              "## 为什么要改",
+              why,
+              "",
+              principle ? `## 原理\n${principle}` : "",
+              risk ? `## 可能的影响 / 风险\n${risk}` : "",
+              verify ? `## 改完怎么验证\n${verify}` : "",
+              "",
+              "---",
+              `由她于 ${d.toLocaleString("zh-CN")} 提出，等待主人执行。`,
+              "",
+            ]
+              .filter(Boolean)
+              .join("\n");
+
+            try {
+              mkdirSync(PROPOSAL_DIR, { recursive: true });
+              writeFileSync(join(PROPOSAL_DIR, `${id}.md`), doc, "utf8");
+              audit({ kind: "patch_proposal", id, file });
+              // 推给主人的 WebUI，让他第一时间看到
+              try {
+                webPush({
+                  role: "her",
+                  text: `我写了份改动申请（${id}），改的是 ${file}。\n\n${why.slice(0, 120)}`,
+                });
+              } catch {
+                // 忽略
+              }
+              return {
+                ok: true,
+                id,
+                saved: `~/.dsh/onebot-bridge/patch-proposals/${id}.md`,
+                note: "已发给主人。他执行完会告诉你。",
+              };
+            } catch (err) {
+              return { ok: false, reason: String(err?.message ?? err).slice(0, 200) };
+            }
+          },
+        }),
+      );
+
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "my_patch_proposals",
+          description: "看你提过哪些改动申请、主人执行了没有。",
+          parameters: {},
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async () => {
+            try {
+              const files = readdirSync(PROPOSAL_DIR)
+                .filter((f) => f.endsWith(".md"))
+                .sort()
+                .slice(-20);
+              const items = files.map((f) => {
+                const id = f.replace(/\.md$/, "");
+                let status = "pending";
+                try {
+                  const d = JSON.parse(readFileSync(join(PROPOSAL_DIR, `${id}.done.json`), "utf8"));
+                  if (d?.status === "done") status = "done";
+                } catch {
+                  // 没标记 = 还没执行
+                }
+                return { id, at: f.slice(6, 14), status };
+              });
+              const pending = items.filter((x) => x.status === "pending").length;
+              return {
+                ok: true,
+                count: items.length,
+                pending,
+                note: pending
+                  ? `有 ${pending} 份还在等主人执行`
+                  : "都处理完了",
+                items,
+              };
+            } catch {
+              return { ok: true, count: 0, pending: 0, items: [] };
+            }
+          },
+        }),
+      );
+
+      logger.info?.("[onebot] 改动申请工具已注册（propose_patch/my_patch_proposals）");
 
       // ── 用网页展示内容：记录、记忆、统计、想法 ──
       const PAGES_DIR = join(HOME, ".dsh/onebot-bridge/workspace/pages");
@@ -5339,7 +5904,18 @@ ${html}
     return false;
   }
 
-  async function handleOwnerNatural(ev, text) {
+  /**
+ * 只保留「危险或涉及主人身份」的指令给桥直接执行：
+ * 退群、加群、改配置、代发言、同意/拒绝、静音/风控、续聊参数。
+ * 其余（活动、提醒、记住、查询类）全部交给 agent 自己判断并调工具。
+ */
+function isSensitiveCommand(t) {
+  return /(退群|申请加群|同意|拒绝|改配置|以后叫我|代发言|定向搭话|别主动|可以主动|安静点|消停点|闭嘴|解除静音|不用安静了|风控|续聊|回复.{0,4}字|每分钟.{0,4}条|每小时.{0,4}条)/.test(
+    t,
+  );
+}
+
+async function handleOwnerNatural(ev, text) {
     if (!cfg.ownerId || String(ev.user_id) !== String(cfg.ownerId)) {
       // 非主人发来的「指令样」消息：不执行，但留个痕，方便排查
       if (
@@ -5353,6 +5929,10 @@ ${html}
     }
     if (ev.message_type === "group") return false;
     const t = String(text || "").trim();
+
+    // 非敏感指令交给 agent：她自己决定调 run_activity / set_reminder /
+    // remember_fact / my_status 等工具，也自己决定怎么呈现结果
+    if (!isSensitiveCommand(t)) return false;
 
     // ── 表情包清单 / 查看某张 ──
     if (await handleOwnerStickerCmd(ev, t)) return true;
@@ -6144,7 +6724,12 @@ ${html}
   }
 
   // ── 印象深刻的人 ──
-    if (/(印象深刻|都记得谁|记得哪些人|见过哪些人|认识谁)/.test(t) && t.length <= 20) {
+    // 注意：「印象深刻」单独出现时多半是在聊天（"今天有什么让你印象深刻的"），
+    // 只有当它紧跟着「人/谁」时才算查人指令
+    if (
+      /(印象深刻的?(?:人|是谁)|都记得谁|记得哪些人|见过哪些人|认识谁|印象深的?人)/.test(t) &&
+      t.length <= 20
+    ) {
       people.load();
       const all = Object.entries(people.data)
         .map(([id, r]) => ({
@@ -6824,6 +7409,11 @@ ${html}
     }
 
     const parsed = parseMessage(ev, cfg.selfId);
+    if (ev?.__fromWebUI) {
+      logger.info?.(
+        `[onebot] 解析结果：text=${JSON.stringify(String(parsed.text || "").slice(0, 40))} hasAt=${parsed.hasAt} len=${String(parsed.text || "").length}`,
+      );
+    }
     // 有人用纯文本打「@昵称」时 OneBot 不给 at 段，这里补上识别
     try {
       if (
@@ -6854,7 +7444,15 @@ ${html}
     const key = conversationKey(ev);
 
     // 主人的自然语言控制：状态/静音/打断/档位/代发言
-    if (await handleOwnerNatural(ev, parsed.text)) {
+    let ownerHandled = false;
+    try {
+      ownerHandled = await handleOwnerNatural(ev, parsed.text);
+    } catch (err) {
+      logger.warn?.(`[onebot] handleOwnerNatural 抛错：${err?.message ?? err}`);
+      logger.warn?.(`[onebot] 堆栈：${String(err?.stack ?? "").split("\n").slice(0, 4).join(" | ")}`);
+    }
+    if (ownerHandled) {
+      logger.info?.(`[onebot] 被「主人指令」拦截：${String(parsed.text || "").slice(0, 40)}`);
       // 指令类消息处理完必须标记「已处理」，
       // 否则私聊补回复（catchUpPrivate）会把同一条指令重新执行一遍，
       // 表现为「一个指令被反复执行」（定向搭话那次连发了 7 遍）。
@@ -8741,7 +9339,9 @@ const TOOL_ZH={
   resolve_want:"标记需求完成",drop_want:"删需求",request_feature:"申请功能",
   render_page:"做网页",add_webui_button:"加按钮",remove_webui_button:"删按钮",
   read_forward_more:"展开转发",refuse_person:"拒聊",owner_commands:"查指令清单",
-  remember:"记东西",memory:"查记忆",search:"搜索",read:"读东西",write:"写东西"
+  remember:"记东西",memory:"查记忆",search:"搜索",read:"读东西",write:"写东西",
+  run_activity:"开始活动",set_reminder:"设提醒",group_impressions:"看群印象",
+  my_thoughts:"看我的想法"
 };
 // 分类颜色
 const TOOL_KIND={
