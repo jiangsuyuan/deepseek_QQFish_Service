@@ -3888,7 +3888,8 @@ export function apply(ctx, _pluginConfig) {
           name: "my_activities",
           description:
             "翻你自己的活动日志：探险、读书、玩、思考、写点什么、回忆、憧憬未来、研究代码。" +
-            "每条都有「当时想做什么」「实际做了什么」「反思」。有人问「你最近在忙什么」「上次那个游戏叫什么」时用它。",
+            "每条都有「当时想做什么」「为什么」「实际做了什么」「反思」。" +
+            "要看全过程或贴给别人时用 format=\"text\" + full=true，会返回一段排版好的文字，可以直接发。",
           parameters: {
             limit: { type: "number", description: "看几条，默认 6" },
             kind: {
@@ -3896,6 +3897,14 @@ export function apply(ctx, _pluginConfig) {
               description: "只看某类：explore/read/play/think/write/recall/dream/study，不填看全部",
             },
             date: { type: "string", description: "只看某天，格式 2026-10-29" },
+            full: {
+              type: "boolean",
+              description: "要完整原文（不截断），想看全过程或贴给别人时用",
+            },
+            format: {
+              type: "string",
+              description: "text（排版好的文字，可直接发）/ json（默认，结构化）",
+            },
           },
           output: {
             schema: { type: "json" },
@@ -3915,6 +3924,19 @@ export function apply(ctx, _pluginConfig) {
                 return ymd === date;
               });
             }
+            const full = args?.full === true;
+            const wantText = String(args?.format ?? "").toLowerCase() === "text";
+            const KIND_LABEL = {
+              explore: "探险",
+              read: "读书",
+              play: "玩",
+              think: "思考",
+              write: "写点什么",
+              recall: "整理记忆",
+              dream: "憧憬未来",
+              study: "研究代码",
+            };
+            const cut = (x, n) => (full ? String(x || "") : String(x || "").slice(0, n));
             const items = picked.slice(-limit).reverse().map((r) => {
               const d = new Date(r.at);
               const when = `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
@@ -3922,12 +3944,33 @@ export function apply(ctx, _pluginConfig) {
               return {
                 when,
                 kind: r.kind,
-                wanted: String(plan.intent || "").slice(0, 100),
-                why: String(plan.why || "").slice(0, 100),
-                did: String(r.content || "").slice(0, 300),
-                reflect: String(r.reflect || "").slice(0, 300),
+                kindLabel: KIND_LABEL[r.kind] || r.kind,
+                wanted: cut(plan.intent, 100),
+                why: cut(plan.why, 200),
+                mood: String(plan.mood || ""),
+                looked: Array.isArray(plan.looked) ? plan.looked : [],
+                did: cut(r.content, 300),
+                reflect: cut(r.reflect, 600),
               };
             });
+
+            // 排版成可以直接发给别人的文字
+            let text = "";
+            if (wantText) {
+              text = items
+                .map((it) => {
+                  const head = `【${it.when} · ${it.kindLabel}】`;
+                  const bits = [head];
+                  if (it.wanted) bits.push(`想做：${it.wanted}`);
+                  if (it.why) bits.push(`为什么：${it.why}`);
+                  if (it.mood) bits.push(`心情：${it.mood}`);
+                  if (it.looked.length) bits.push(`调取的记忆层：${it.looked.join(", ")}`);
+                  if (it.did) bits.push(`做了什么：\n${it.did}`);
+                  if (it.reflect) bits.push(`反思：\n${it.reflect}`);
+                  return bits.join("\n\n");
+                })
+                .join("\n\n" + "─".repeat(20) + "\n\n");
+            }
             const today = new Date().toDateString();
             const todayCount = rows.filter((r) => new Date(r.at).toDateString() === today).length;
             const byKind = {};
@@ -3938,6 +3981,7 @@ export function apply(ctx, _pluginConfig) {
               today: todayCount,
               byKind,
               count: items.length,
+              ...(text ? { text, note: "这段可以直接发出去" } : {}),
               items,
             };
           },
@@ -4540,7 +4584,7 @@ ${html}
     const m1 = t.match(/\[消息内容\]\s*([\s\S]*?)(?:\n\[|$)/);
     if (m1 && m1[1].trim()) return m1[1].trim().slice(0, 400);
 
-    const m3 = t.match(/\[QQ(?:群消息|私聊)\][^：:\n]*[：:]\s*([\s\S]*)/);
+    const m3 = t.match(/\[(?:QQ群消息|QQ私聊|网页聊天)\][^：:\n]*[：:]\s*([\s\S]*)/);
     if (m3 && m3[1].trim()) return m3[1].trim().slice(0, 400);
 
     // DSH 自己注入的运行时说明，不是人说的话
@@ -7451,10 +7495,12 @@ ${html}
           "\n· 反过来，如果两句话其实是同一件事的两个部分（「我查了[split]是 2.52 米」这种）→ 别拆，用逗号连起来" +
           "\n写法：在两句之间写 [split]，第一句末尾的句号去掉。最多拆两条。\n）\n";
 
+    // 网页聊天用单独的标签，历史才能按渠道分开
+    const channelTag = ev.__fromWebUI ? "[网页聊天]" : "[QQ私聊]";
     const bodyBase =
       ev.message_type === "group"
         ? `[QQ群消息] 群号 ${ev.group_id}，发言人 ${nickname}（${ev.user_id}）${who}\n[消息内容] ${msgText}`
-        : `[QQ私聊] ${nickname}（${ev.user_id}）${who}\n[消息内容] ${msgText}`;
+        : `${channelTag} ${nickname}（${ev.user_id}）${who}\n[消息内容] ${msgText}`;
     let observed = "";
     if (ev.message_type === "group" && cfg.groupObserve) {
       try {
@@ -7818,6 +7864,15 @@ ${html}
       const rendered = facts.render(6);
       if (rendered) factLine = `[你记得的事] ${rendered}\n`;
     }
+    // WebUI 发来的消息：写进独立的网页聊天记录（和 QQ 历史分开）
+    try {
+      if (ev.__fromWebUI) {
+        webPush({ role: "me", text: String(parsed.text || "").slice(0, 500) });
+      }
+    } catch {
+      // 忽略
+    }
+
     // ── 分层记忆注入（L0 自我 / L3 核心 / L2 摘要 / 相关记忆）──
     let memoryNote = "";
     try {
@@ -8537,14 +8592,29 @@ h1{font-size:15px;font-weight:600}
 .msg{max-width:80%;padding:8px 12px;border-radius:12px;white-space:pre-wrap;word-break:break-word}
 .me{align-self:flex-end;background:var(--me);color:#fff;border-bottom-right-radius:4px}
 .her{align-self:flex-start;background:var(--her);color:var(--her-fg);border-bottom-left-radius:4px}
-.tool{align-self:flex-start;font-size:12px;color:var(--muted);padding:2px 8px}
+.tool{align-self:flex-start;font-size:11px;padding:2px 9px;border-radius:10px;margin:1px 0 1px 4px;opacity:.9}
+.t-chat{background:#1f3346;color:#8fc8ff}
+.t-mem{background:#2b2436;color:#c7a8ff}
+.t-self{background:#1e3329;color:#7fd8a5}
+.t-code{background:#332a1e;color:#ffcb8a}
+.t-want{background:#3a2630;color:#ff9dbb}
+.t-net{background:#22303a;color:#8ad9d1}
+.t-draw{background:#2f2a3f;color:#b9a6ff}
+.t-other{background:#262b35;color:#9aa4b2}
+body.light .t-chat{background:#e3f0ff;color:#1a5fa8}
+body.light .t-mem{background:#f0e8ff;color:#6b3fa8}
+body.light .t-self{background:#e2f7ea;color:#1f7a4d}
+body.light .t-code{background:#fff0dd;color:#a15c00}
+body.light .t-want{background:#ffe4ec;color:#a8305e}
+body.light .t-net{background:#ddf2f0;color:#1a6b64}
+body.light .t-draw{background:#ece6ff;color:#5b3fa8}
+body.light .t-other{background:#eef0f3;color:#5b6470}
 footer{padding:12px;border-top:1px solid var(--line);display:flex;gap:8px;flex:none}
 #in{flex:1;background:var(--input);border:1px solid var(--input-line);color:var(--fg);border-radius:8px;padding:10px 12px;font:inherit;resize:none;height:44px}
 #send{background:var(--me);border:0;color:#fff;border-radius:8px;padding:0 18px;font:inherit;cursor:pointer}
 #send:disabled{opacity:.5}
 </style></head><body>
 <header><span class="dot" id="dot"></span><h1>QQ 助手</h1><span id="st" style="font-size:12px;color:#8b93a1"></span><a id="pg" href="/pages?token=${encodeURIComponent(token)}" target="_blank">页面</a><button id="theme" title="切换日夜">☾</button></header>
-<div id="btns"></div>
 <div id="live"></div>
 <div id="log"></div>
 <footer><textarea id="in" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）"></textarea><button id="send">发送</button></footer>
@@ -8574,7 +8644,43 @@ function add(cls,text){
   if(cls==='her'&&new RegExp('[/]page[/][a-z0-9]+','i').test(text)) linkify(d,text); else d.textContent=text;
   log.appendChild(d);log.scrollTop=log.scrollHeight;return d
 }
-function addTool(text){const d=document.createElement('div');d.className='tool';d.textContent=text;log.appendChild(d);log.scrollTop=log.scrollHeight}
+// 工具中文名（后端也会带，这里兜底）
+const TOOL_ZH={
+  send_sticker:"发表情",list_stickers:"看表情库",save_sticker:"存表情",send_face:"发小黄脸",
+  at_person:"艾特别人",draw_image:"画图",draw_svg:"画SVG",web_search:"搜网",web_fetch:"读网页",
+  hot_news:"查热点",recall:"翻旧对话",remember_fact:"记事实",remember_person:"记人物",
+  remember_self:"记想法",revise_self:"改想法",forget_self:"忘想法",my_memory:"查记忆",
+  memory_index:"看记忆目录",my_digest:"看近期摘要",person_dossier:"查人物档案",
+  group_recap:"看群记录",who_said:"查谁说的",view_avatar:"看头像",my_status:"看状态",
+  my_activities:"看活动记录",my_adventures:"看探险记录",my_capabilities:"看能力清单",
+  my_changelog:"看更新日志",my_source:"看源码片段",my_outages:"看掉线记录",my_schedule:"看排期",
+  exec_sandbox:"跑代码",read_source:"读源码",note_want:"记需求",my_wants:"看需求本",
+  resolve_want:"标记需求完成",drop_want:"删需求",request_feature:"申请功能",
+  render_page:"做网页",add_webui_button:"加按钮",remove_webui_button:"删按钮",
+  read_forward_more:"展开转发",refuse_person:"拒聊"
+};
+// 分类颜色
+const TOOL_KIND={
+  send_sticker:"chat",list_stickers:"chat",save_sticker:"chat",send_face:"chat",at_person:"chat",
+  draw_image:"draw",draw_svg:"draw",render_page:"draw",
+  my_memory:"mem",memory_index:"mem",my_digest:"mem",recall:"mem",remember_fact:"mem",
+  remember_person:"mem",remember_self:"mem",revise_self:"mem",forget_self:"mem",
+  person_dossier:"mem",group_recap:"mem",who_said:"mem",view_avatar:"mem",
+  my_status:"self",my_activities:"self",my_adventures:"self",my_capabilities:"self",
+  my_changelog:"self",my_source:"self",my_outages:"self",my_schedule:"self",
+  exec_sandbox:"code",read_source:"code",
+  note_want:"want",my_wants:"want",resolve_want:"want",drop_want:"want",request_feature:"want",
+  web_search:"net",web_fetch:"net",hot_news:"net"
+};
+function addTool(name){
+  const raw=String(name||'').replace(/^\[|\]$/g,'');
+  const zh=TOOL_ZH[raw]||raw;
+  const kind=TOOL_KIND[raw]||'other';
+  const d=document.createElement('div');
+  d.className='tool t-'+kind;
+  d.textContent=zh;
+  log.appendChild(d);log.scrollTop=log.scrollHeight;
+}
 let typing=null;
 function setTyping(on){if(on&&!typing){typing=add('her','…');}else if(!on&&typing){typing.remove();typing=null;}}
 // 日夜切换（记在 localStorage）
@@ -8594,31 +8700,25 @@ const live=document.getElementById('live');
 function addLive(d){
   live.className='on';
   const el=document.createElement('div');el.className='l';
+  if(d.time){
+    const t=document.createElement('span');
+    t.textContent=d.time+' ';
+    t.style.color='var(--muted)';t.style.fontVariantNumeric='tabular-nums';
+    el.appendChild(t);
+  }
   const b=document.createElement('b');b.textContent=(d.kind?({explore:'出门',read:'读书',play:'玩',think:'想事',write:'写',recall:'整理记忆',dream:'想以后',study:'研究代码'}[d.kind]||d.kind):'')+' ';
   el.appendChild(b);el.appendChild(document.createTextNode(d.text||''));
   live.appendChild(el);
-  while(live.children.length>6) live.removeChild(live.firstChild);
+  while(live.children.length>3) live.removeChild(live.firstChild);
   live.scrollTop=live.scrollHeight;
 }
 fetch('/activities?token='+T).then(r=>r.json()).then(list=>{
   if(!Array.isArray(list)||!list.length) return;
   live.className='on';
-  for(const a of list.slice(0,4).reverse()) addLive({kind:a.kind,text:a.intent||a.did});
+  for(const a of list.slice(0,3).reverse()) addLive({kind:a.kind,text:a.intent||a.did,time:a.time});
 }).catch(()=>{});
-const btnBar=document.getElementById('btns');
-fetch('/buttons?token='+T).then(r=>r.json()).then(list=>{
-  if(!Array.isArray(list)||!list.length) return;
-  btnBar.className='on';
-  for(const b of list){
-    const el=document.createElement('button');
-    el.textContent=b.label;
-    el.onclick=()=>{
-      if(b.pageId){ window.open('/page/'+b.pageId+'?token='+T,'_blank'); return; }
-      if(b.prompt){ inp.value=b.prompt; send('button:'+b.label); }
-    };
-    btnBar.appendChild(el);
-  }
-}).catch(()=>{});
+// 快捷入口不放在聊天页（占地方），统一放到右上角「页面」里
+
 
 fetch('/history?token='+T).then(r=>r.json()).then(list=>{
   for(const m of list){
@@ -8679,6 +8779,9 @@ inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDef
     try {
       const raw = zstdDecompressSync(readFileSync(file)).toString("utf8");
       const out = [];
+      // 活动是 runSilent 跑的：它的 prompt 有固定特征，紧跟其后的回复是活动产出，不是对话
+      let afterActivityPrompt = false;
+      let lastSource = "qq"; // qq / webui / group
       for (const line of raw.split("\n")) {
         if (!line) continue;
         let ev;
@@ -8687,12 +8790,45 @@ inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDef
         } catch {
           continue;
         }
+
+        // 先看这条 user/message 是不是活动 prompt
+        if (ev.type === "user/message") {
+          const rawText = (ev.data?.content ?? [])
+            .filter((b) => b?.type === "text")
+            .map((b) => b.text ?? "")
+            .join("")
+            .trim();
+          if (
+            /（这是你自己的时间|（内部|（你的时间|（现在研究代码|（内部探索|（内部回顾|（内部反思|（内部整理|（内部思考|（这是给你的|（下面的这些是/.test(
+              rawText,
+            )
+          ) {
+            afterActivityPrompt = true;
+            continue; // 活动 prompt 本身也不进历史
+          }
+          afterActivityPrompt = false;
+          // 只有带渠道标签的「真实消息」才更新来源；
+          // DSH 注入的运行时说明（Time sampled 等）不含标签，不能让它把标记冲掉
+          if (rawText.includes("[网页聊天]")) lastSource = "webui";
+          else if (rawText.includes("[QQ群消息]")) lastSource = "group";
+          else if (rawText.includes("[QQ私聊]")) lastSource = "qq";
+        }
+        // 活动 prompt 之后的回复：是活动产出，跳过
+        if (afterActivityPrompt && ev.type === "assistant/message") {
+          continue;
+        }
+
         const got = textOfEvent(ev);
         if (!got.text || got.text.length < 2) continue;
         // 活动产出（思考计划的 JSON、反思草稿）不算对话
         const tx = got.text.trim();
         // 兜底：明显是 prompt 模板的整条丢掉
         if (/（QQ 聊天[:：]|像真人发消息|长度要有变化|点了智慧会发|不要复述我的问题/.test(tx)) continue;
+        // 自主活动的产出（凌晨那波还没隔离会话时混进来的反思/见闻）不算对话
+        if (/^(做到了|没做到|算做到|半做到|验了|核了|又空一栏|探险记录反而是|串起来是一条|翻出来了|想明白了)/.test(tx))
+          continue;
+        if (/^\{\s*"(summary|looked|core)"/.test(tx)) continue;
+        if (/^(这条比记性差|这一层比|差别在于我原先)/.test(tx)) continue;
         if (/^\{.*"looked"/.test(tx)) continue;
         if (/^\[\[?(next|game|book)\s*[:：]/.test(tx)) continue;
         if (tx.startsWith("（内部") || tx.startsWith("（这是你自己")) continue;
@@ -8711,6 +8847,7 @@ inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDef
               role: got.role === "对方" ? "me" : "her",
               text: piece.slice(0, 500),
               at: (ts || 0) + k,
+              source: got.role === "对方" ? lastSource : lastSource || "qq",
             });
           }
         } else {
@@ -8792,28 +8929,11 @@ inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDef
         return;
       }
       if (u.pathname === "/history") {
-        // 优先从会话文件读（跨重启保留）；没有绑定会话也能兜底
-        let list = [];
-        try {
-          const key = `private:${cfg.ownerId}`;
-          const ent = sessions.entries.get(key);
-          list = sessionHistory(ent?.sessionId || "", 80);
-        } catch (err) {
-          logger.warn?.(`[onebot] WebUI 历史读取失败：${err?.message ?? err}`);
-        }
+        // 网页聊天有自己独立的一份记录，不和 QQ/群/活动混
+        let list = loadWebHistory(300);
         if (!list.length) list = webHistory.slice(-50);
-        // 补上持久化的图片/工具记录（会话文件里没有这些）
-        try {
-          const saved = loadWebHistory(200).filter((m) => m.image || m.role === "tool");
-          if (saved.length) {
-            // 会话记录里那些没有时间戳的（旧数据），排在最前面，别跟图片混在末尾
-            const noTime = list.filter((m) => !m.at);
-            const timed = list.filter((m) => m.at);
-            list = [...noTime, ...[...timed, ...saved].sort((a, b) => (a.at || 0) - (b.at || 0))].slice(-150);
-          }
-        } catch {
-          // 忽略
-        }
+        // 按时间排（回填过的旧记录会被追加到文件末尾，必须排序）
+        list = list.slice().sort((a, b) => (a.at || 0) - (b.at || 0));
         res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(list));
         return;
       }
@@ -8877,13 +8997,19 @@ inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDef
         let items = [];
         try {
           const rows = loadActivities(120);
-          items = rows.slice(-20).reverse().map((r) => ({
-            at: r.at,
-            kind: r.kind,
-            intent: String((r.think || {}).intent || "").slice(0, 80),
-            did: String(r.content || "").slice(0, 160),
-            reflect: String(r.reflect || "").slice(0, 120),
-          }));
+          items = rows.slice(-20).reverse().map((r) => {
+            const d = new Date(r.at);
+            const hh = String(d.getHours()).padStart(2, "0");
+            const mm = String(d.getMinutes()).padStart(2, "0");
+            return {
+              at: r.at,
+              time: `${hh}:${mm}`,
+              kind: r.kind,
+              intent: String((r.think || {}).intent || "").slice(0, 80),
+              did: String(r.content || "").slice(0, 160),
+              reflect: String(r.reflect || "").slice(0, 120),
+            };
+          });
         } catch {
           items = [];
         }
@@ -8946,8 +9072,29 @@ a{color:#7cc4ff;text-decoration:none;font-weight:500}
 a:hover{text-decoration:underline}
 .t{color:#8b93a1;font-size:12px;white-space:nowrap}
 .empty{color:#8b93a1}
+.bm{margin-bottom:20px;padding:12px 14px;border:1px solid #23262d;border-radius:10px;background:#171a20}
+.bm-t{font-size:12px;color:#8b93a1;margin-bottom:8px}
+.bm-l{display:flex;flex-wrap:wrap;gap:8px}
+.bm .btn{display:inline-block;padding:5px 14px;border-radius:14px;background:#1e222a;border:1px solid #2a2e38;color:#c9d1d9;text-decoration:none;font-size:13px}
+.bm .btn:hover{background:#262b35;border-color:#3a4150;text-decoration:none}
 </style></head><body>
 <h1>她的页面（${list.length}）</h1>
+${(() => {
+  let btns = [];
+  try {
+    btns = JSON.parse(readFileSync(join(HOME, ".dsh/onebot-bridge/webui-buttons.json"), "utf8"));
+  } catch {
+    btns = [];
+  }
+  if (!Array.isArray(btns) || !btns.length) return "";
+  const items = btns
+    .map(
+      (b) =>
+        `<a class="btn" href="${b.pageId ? `/page/${b.pageId}?token=${encodeURIComponent(token)}` : `/?token=${encodeURIComponent(token)}&prefill=${encodeURIComponent(b.label)}`}">${String(b.label).replace(/[<>&"]/g, "")}</a>`,
+    )
+    .join("");
+  return `<div class="bm"><div class="bm-t">快捷入口</div><div class="bm-l">${items}</div></div>`;
+})()}
 ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做页面的时候会出现在这里。</p>'}
 </body></html>`);
         return;
@@ -9360,12 +9507,60 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
       try {
         const toolName = String(exec?.name ?? "");
         if (!toolName || TOOL_LOG_SKIP.has(toolName)) return decision;
+        // 工具中文名（前端展示用）
+        const TOOL_ZH = {
+          send_sticker: "发表情",
+          list_stickers: "看表情库",
+          save_sticker: "存表情",
+          send_face: "发小黄脸",
+          at_person: "艾特别人",
+          draw_image: "画图",
+          draw_svg: "画 SVG",
+          web_search: "搜网",
+          web_fetch: "读网页",
+          hot_news: "查热点",
+          recall: "翻旧对话",
+          remember_fact: "记事实",
+          remember_person: "记人物",
+          remember_self: "记想法",
+          revise_self: "改想法",
+          forget_self: "忘想法",
+          my_memory: "查记忆",
+          memory_index: "看记忆目录",
+          my_digest: "看近期摘要",
+          person_dossier: "查人物档案",
+          group_recap: "看群记录",
+          who_said: "查谁说的",
+          view_avatar: "看头像",
+          my_status: "看状态",
+          my_activities: "看活动记录",
+          my_adventures: "看探险记录",
+          my_capabilities: "看能力清单",
+          my_changelog: "看更新日志",
+          my_source: "看源码片段",
+          my_outages: "看掉线记录",
+          my_schedule: "看排期",
+          exec_sandbox: "跑代码",
+          read_source: "读源码",
+          note_want: "记需求",
+          my_wants: "看需求本",
+          resolve_want: "标记需求完成",
+          drop_want: "删需求",
+          request_feature: "申请功能",
+          render_page: "做网页",
+          add_webui_button: "加按钮",
+          remove_webui_button: "删按钮",
+          read_forward_more: "展开转发",
+          refuse_person: "拒聊",
+        };
+
         // WebUI 里显示她调了什么工具
         try {
           const sid = String(exec?.agent?.session?.id ?? "");
           const ent = sid ? sessions.bySessionId(sid) : null;
           if (ent?.lastTarget?.__fromWebUI) {
-            webPush({ role: "tool", text: `[${toolName}]` });
+            const zh = TOOL_ZH[toolName] || toolName;
+            webPush({ role: "tool", tool: toolName, text: zh });
           }
         } catch {
           // 忽略
@@ -10763,6 +10958,52 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
 
   // 自主活动用独立会话：不污染聊天上下文，也不会让活动记录混进对话历史
   const SELF_ACTIVITY_KEY = "self:activity";
+
+  /** 还没有自我认知时，生成初版（启动后 3 分钟跑一次） */
+  setTimeout(() => {
+    void (async () => {
+      try {
+        const m = loadSelfModel();
+        if (m.fact?.text) return; // 已经有了
+        logger.info?.("[onebot] 还没有自我认知，生成初版");
+        const out = String(
+          (await sessions.runSilent(
+            SELF_ACTIVITY_KEY,
+            "（内部，不要发消息。写一下你对自己的认识。）\n" +
+              "根据你记得的东西、你说过的话、别人对你的评价，写三条：\n" +
+              "1. fact：我是什么样的（客观：我是什么、每天在做什么）\n" +
+              "2. inner：我觉得我是什么样的（内在感受，可以和上一条不一样）\n" +
+              "3. mirror：在别人眼里我好像是什么样的\n" +
+              "每条不超过 100 字，用第一人称。\n" +
+              '只输出 JSON：{"fact":"...","inner":"...","mirror":"...","tensions":[]}',
+          )) ?? "",
+        ).trim();
+        const mm = out.match(/\{[\s\S]*\}/);
+        if (!mm) {
+          logger.warn?.("[onebot] 自我认知初版：没解析出 JSON");
+          return;
+        }
+        const obj = JSON.parse(mm[0]);
+        const now = Date.now();
+        saveSelfModel({
+          fact: { text: String(obj.fact || "").slice(0, 200), updatedAt: now },
+          inner: {
+            text: String(obj.inner || "").slice(0, 200),
+            tensions: Array.isArray(obj.tensions)
+              ? obj.tensions.map((x) => String(x).slice(0, 100)).slice(0, 3)
+              : [],
+            updatedAt: now,
+          },
+          mirror: { text: String(obj.mirror || "").slice(0, 200), sources: [], updatedAt: now },
+        });
+        audit({ kind: "self_model_init" });
+        logger.info?.(`[onebot] 自我认知初版已生成：${String(obj.fact || "").slice(0, 50)}`);
+      } catch (err) {
+        logger.warn?.(`[onebot] 自我认知初版生成失败：${err?.message ?? err}`);
+      }
+    })();
+  }, 3 * 60_000).unref?.();
+
 
   // ── 自主活动：探险 / 思考 / 写点什么 / 回忆 / 憧憬未来 ──
   // 五种活动各自沉淀到不同地方，长期下来塑造核心记忆和性格
