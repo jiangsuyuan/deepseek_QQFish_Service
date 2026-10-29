@@ -1,79 +1,101 @@
-# 桌面聊天客户端（Tauri）
+# 桌面客户端（WinForms，单文件，无依赖）
 
-一个 4 MB 的 Windows 托盘程序：缩在右下角，点一下弹出 400×800 的窄高聊天框。
-纯聊天，不含网页端的管理功能。
+一个 **136 KB** 的 Windows 聊天窗口，自带 SSH 隧道，贴屏幕右边常驻。
 
-## 体积
+不依赖系统托盘 —— 因为 Win11 对**未签名程序**的托盘图标有限制（实测微信/QQ 有图标，自编译的 exe 没有）。
+
+## 形态
 
 ```
-fish-tray.exe   4.27 MB
-依赖            无（用系统自带的 WebView2）
+启动
+  ↓
+屏幕右侧中间出现一个 56×56 的圆角小方块（贴边球）
+  ↓
+点一下 → 展开成 400×800 的聊天窗口
+  ↓
+点 ×  → 缩回小球
 ```
 
-对比 Electron 方案（150 MB+），只有 1/35。
+**拖动**：按住小球拖到任何位置，松手不会展开。
+**点 × 之外的退出方式**：右键 → 退出。
 
-## 功能
+## 特性
 
-- 托盘图标，左键点开 / 右键菜单（打开、退出）
-- 窗口贴右下角，可拖动、可缩放
-- 点关闭按钮 = 缩回托盘（不退出）
-- 聊天气泡（复用网页端样式）
-- 工具调用的彩色中文气泡
-- 日夜切换（记住偏好）
-- 首次运行弹配置窗（服务器地址 + token）
-- token 存在 Rust 侧，前端 JS 拿不到
-- 每 2 秒轮询新消息
+| 项 | 说明 |
+|---|---|
+| **自带 SSH 隧道** | 启动时自动建，端口通了就复用 |
+| **隧道重连** | 标题栏「重连」按钮；轮询连续失败 3 次也会自动重建 |
+| **只杀自己建的隧道** | 靠 `tunnel.pid` 记录，不动你在别处开的 ssh |
+| **token 不出 Rust** | 存在 `%APPDATA%\fish-tray\settings.json`，由 C# 读出来拼 URL，界面上任何地方都看不到 |
+| **聊天记录** | 2 秒轮询 `/history`，本地乐观显示 + 去重 |
+| **气泡样式** | 左灰右蓝、圆角、工具调用是彩色中文小标签 |
+| **日夜切换** | 标题栏月亮/太阳按钮，记住偏好 |
+| **窗口圆角** | 12px；气泡 10px；工具标签 8px；输入框 8px；按钮 6-8px |
 
 ## 编译
 
-需要：Rust 工具链、Node.js、WebView2（Win10 1803+ / Win11 自带）。
+只需要 Windows 自带的 .NET Framework 4.8 编译器，**不用装任何 SDK**：
 
-```bash
-npm install
-npx tauri build
+```powershell
+$csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+
+& $csc /nologo /target:winexe `
+    /win32icon:app.ico `
+    /resource:fish.jpg,FishTray.fish.jpg `
+    /out:FishTray.exe `
+    /r:System.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll `
+    /r:System.Web.Extensions.dll /r:System.Net.Http.dll /r:System.Core.dll `
+    AssemblyInfo.cs Main.cs
 ```
 
-产物：
-```
-src-tauri/target/release/fish-tray.exe
-```
+产物 **136 KB**（含 91 KB 的图标图片）。
 
-首次编译约 3 分钟（依赖下载另算）。国内建议配置镜像：
+## 首次运行
 
-```toml
-# ~/.cargo/config.toml
-[source.crates-io]
-replace-with = 'rsproxy-sparse'
+会弹一个配置窗，填四项：
 
-[source.rsproxy-sparse]
-registry = "sparse+https://rsproxy.cn/index/"
-```
-
-```bash
-export RUSTUP_DIST_SERVER=https://mirrors.tuna.tsinghua.edu.cn/rustup
-```
-
-## 使用
-
-1. 双击 `fish-tray.exe`
-2. 首次运行填服务器地址和 token：
-   - 地址形如 `http://1.2.3.4:3081` 或 `https://xxx.trycloudflare.com`
-3. 点「保存并连接」
-4. 之后点托盘图标就能聊天
-
-## 服务器端要求
-
-网页端默认绑 `127.0.0.1`，客户端从外部连不上。三种办法：
-
-| 方式 | 说明 |
+| 字段 | 例子 |
 |---|---|
-| **Cloudflare Tunnel**（推荐） | 不用开放端口，自带 HTTPS，不会断 |
-| **公网直连** | 把 `webuiBind` 改成 `0.0.0.0`，开放端口，建议加 HTTPS |
-| **SSH 隧道** | `ssh -L 3081:127.0.0.1:3081`，客户端填 `http://127.0.0.1:3081` |
+| 服务器地址 | `http://127.0.0.1:3081` |
+| token | （服务端 WebUI 的 token） |
+| SSH 密钥 | `D:\keys\id_ed25519_xxx` |
+| SSH 服务器 | `root@1.2.3.4` |
+
+保存在 `%APPDATA%\fish-tray\settings.json`。
+
+## 代码结构
+
+`Main.cs` 约 1200 行，一个文件：
+
+| 类 | 作用 |
+|---|---|
+| `Settings` | 读写 `%APPDATA%\fish-tray\settings.json` |
+| `Palette` | 日间/夜间两套配色 |
+| `Log` | 写 `exe 同目录\run.log`（`%APPDATA%` 可能被安全软件拦） |
+| `Tunnel` | SSH 隧道管理（建、复用、只杀自己的） |
+| `Api` | HTTP（`/history` GET、`/send` POST） |
+| `Msg` | 消息模型 |
+| `Bubble` | 自绘气泡（圆角、工具中文名+分类配色） |
+| `R` | 圆角路径/裁剪工具 |
+| `IconBtn` | 自绘图标按钮（叉 / 月牙 / 太阳），不走字体 |
+| `ChatForm` | 主窗口（贴边常驻、拖动、主题切换、轮询） |
+| `SetupForm` | 首次配置窗 |
+
+## 踩过的坑
+
+1. **托盘图标在 Win11 不显示**：`NotifyIcon` 设了 `Visible=true` 也看不到。对比发现微信/QQ 的 exe **有数字签名**，自编译的 `NotSigned`。`ShowBalloonTip` 能弹（说明 `Shell_NotifyIcon` 通），但图标不出现。最后改成贴边常驻绕开。
+2. **`BackColor = Color.Transparent` 会崩**：`Control` 默认不支持，必须先 `SetStyle(ControlStyles.SupportsTransparentBackColor, true)`。
+3. **`Region` 设了不生效**：`Size` 是在构造函数里赋的，那时 `OnResize` 可能已经跑过。要在构造末尾显式调一次。
+4. **`MinimumSize` 会卡住收起**：收起时 `Width = 7` 被 `MinimumSize(380,600)` 拦住，实际还是 380。收起前要 `MinimumSize = Size.Empty`。
+5. **`Icon.ToBitmap()` 有时返回全透明图**：`MakeFishIcon(...).ToBitmap()` 画出来是空的。改用 `Graphics.DrawImage` 直接画。
+6. **`FillMode.Alternate` 是异或不是减法**：画月牙时两个圆会变成"一个圆 + 一个月牙"。要用 `Region.Exclude`。
+7. **雅黑没有 `☾` 字形**：会显示成 `(`。图标按钮一律自绘。
+8. **消息双份**：本地乐观显示 + 轮询回推会画两遍。记住刚发的原文，回来时比对吞掉。
+9. **主题切换气泡不变色**：气泡颜色在构造时定死，`Invalidate()` 只重绘不换色。要 `ApplyPalette()` 重新赋值。
 
 ## 已知限制
 
-- 只做聊天，没有网页端的「页面 / 动态区 / 快捷入口」
-- 用轮询而不是 SSE（2 秒延迟）
-- 没有开机自启（可以自己加个快捷方式到启动目录）
-- 打包成 NSIS 安装包需要从 GitHub 下载工具，网络差时可能失败（exe 本身不受影响）
+- 图片消息只显示 `［图片］路径`，没真正加载缩略图
+- 只有 Windows 版（`System.Windows.Forms`）
+- 没做开机自启
+- 收起小球的位置不会记忆，重启回到屏幕右侧中间
