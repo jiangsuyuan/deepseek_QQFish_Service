@@ -2219,6 +2219,7 @@ export function apply(ctx, _pluginConfig) {
     "read_pdf",
     "propose_patch",
     "my_patch_proposals",
+    "patch_guide",
     "render_page",
     "add_webui_button",
     "remove_webui_button",
@@ -4632,9 +4633,38 @@ export function apply(ctx, _pluginConfig) {
         defineTool({
           name: "propose_patch",
           description:
-            "你想改自己代码的时候用这个：写一份「改动申请」发给主人，由他来执行。" +
-            "你改不了代码，但可以把想法说清楚——改哪一行、为什么改、会有什么影响、怎么验证、怎么撤。" +
-            "写清楚原理，主人看了才敢动手。",
+            "你想改自己代码的时候用这个：写一份「改动申请」发给主人，由他来执行。你改不了代码，但可以把想法说清楚。\n" +
+            "\n" +
+            "【写之前先做三件事】\n" +
+            "1. 用 read_source 或 my_source 把那一段**原文照抄下来**（oldCode 要能精确定位，不能凭印象）\n" +
+            "2. 用 exec_sandbox 跑一下，**证明问题真的存在**（比如「2.52. 会不会被切」）\n" +
+            "3. 想清楚**改完会不会弄坏别的**（给出反例）\n" +
+            "\n" +
+            "【六个字段，每个都要写实】\n" +
+            "· file    —— 哪个文件（通常 index.js）\n" +
+            "· where   —— 大概位置（函数名 + 行号），方便主人找\n" +
+            "· oldCode —— **原文照抄**，必须唯一（出现两次以上主人没法改）\n" +
+            "· newCode —— 改成什么（只改一行，别整段重写）\n" +
+            "· why     —— **举具体反例**：「输入 X 会变成 Y，应该是 Z」，不要写「这样更合理」\n" +
+            "· principle —— **原理**：为什么这么改能解决，背后的道理是什么\n" +
+            "· risk    —— **主动说副作用**：什么情况下会出问题，影响面多大\n" +
+            "· verify  —— **给可执行的样例**：输入 → 期望输出，主人照着跑就能验\n" +
+            "\n" +
+            "【反面例子（会被主人退回）】\n" +
+            "✗ why: 「这样更规范」\n" +
+            "✗ verify: 「测试一下看对不对」\n" +
+            "✗ risk: 「应该没影响」\n" +
+            "✗ oldCode: 凭印象写的、和源码对不上的\n" +
+            "\n" +
+            "【正面例子（真实提交过的）】\n" +
+            "why: 「40 字以内的消息，只要以英文句点结尾就会被切掉——「今天读数 2.52.」\n" +
+            "    变成「今天读数 2.52」，缩写「Dr.」「e.g.」尾巴上的点一并吃掉」\n" +
+            "risk: 「如果有人真的用英文句点收尾（整句英文 Hello there.），那句会保留\n" +
+            "    句号，不再被拟人化。影响面很小，而且正好符合只处理中文句号的初衷」\n" +
+            "verify: 「①「今天读数 2.52.」应原样返回 ②「短句测试。」应变成「短句测试」\n" +
+            "    ③「Hello there.」应保留句号 ④ 超 40 字长段句号保留」\n" +
+            "\n" +
+            "写得好，主人看一遍就敢动手；写得含糊，他只能来问你，白等一轮。",
           parameters: {
             file: { type: "string", description: "要改哪个文件，比如 index.js / README.md" },
             where: { type: "string", description: "大概位置：函数名或行号附近，方便主人找" },
@@ -4769,6 +4799,53 @@ export function apply(ctx, _pluginConfig) {
       );
 
       logger.info?.("[onebot] 改动申请工具已注册（propose_patch/my_patch_proposals）");
+
+      // 改动申请的写法指南（她想不起格式时随时查）
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "patch_guide",
+          description:
+            "看「怎么写改动申请」的完整指南：模板、检查清单、正面例子、会被退回的写法。" +
+            "准备提 propose_patch 之前先看一遍，能少被退几次。",
+          parameters: {},
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async () => ({
+            ok: true,
+            steps: [
+              "① 用 read_source 把那一段原文照抄下来（oldCode 必须和源码一字不差）",
+              "② 用 exec_sandbox 跑一下，证明问题真的存在",
+              "③ 想清楚改完会不会弄坏别的，给出反例",
+            ],
+            fields: [
+              { key: "file", what: "哪个文件，通常 index.js" },
+              { key: "where", what: "函数名 + 行号，方便主人找" },
+              { key: "oldCode", what: "原文照抄，必须唯一（出现两次以上没法改）" },
+              { key: "newCode", what: "改成什么，只改一行" },
+              { key: "why", what: "举具体反例：输入 X 变成 Y，应该是 Z" },
+              { key: "principle", what: "原理：为什么这么改能解决" },
+              { key: "risk", what: "主动说副作用，什么情况下会出问题" },
+              { key: "verify", what: "给可执行样例：输入 → 期望输出" },
+            ],
+            bad: [
+              "why 写「这样更规范」——没有具体反例",
+              "verify 写「测试一下看对不对」——主人没法跑",
+              "risk 写「应该没影响」——说明你没想过",
+              "oldCode 凭印象写的——和源码对不上就没法改",
+            ],
+            good: {
+              why: "40 字以内的消息，只要以英文句点结尾就会被切掉——「今天读数 2.52.」变成「今天读数 2.52」",
+              risk: "整句英文（Hello there.）会保留句号，不再被拟人化。影响面很小",
+              verify: "①「2.52.」原样 ②「短句测试。」去点 ③「Hello there.」保留 ④ 超 40 字长段保留",
+            },
+            note: "写得好，主人看一遍就敢动手；写得含糊，他只能来问你，白等一轮。",
+          }),
+        }),
+      );
+
+      logger.info?.("[onebot] 改动申请指南工具已注册（patch_guide）");
 
       // ── 用网页展示内容：记录、记忆、统计、想法 ──
       const PAGES_DIR = join(HOME, ".dsh/onebot-bridge/workspace/pages");
@@ -9341,7 +9418,12 @@ const TOOL_ZH={
   read_forward_more:"展开转发",refuse_person:"拒聊",owner_commands:"查指令清单",
   remember:"记东西",memory:"查记忆",search:"搜索",read:"读东西",write:"写东西",
   run_activity:"开始活动",set_reminder:"设提醒",group_impressions:"看群印象",
-  my_thoughts:"看我的想法"
+  my_thoughts:"看我的想法",
+  write_notebook:"写本子",
+  read_notebook:"翻本子",
+  read_pdf:"读PDF",
+  propose_patch:"提改动申请",
+  my_patch_proposals:"看改动申请",patch_guide:"看申请写法"
 };
 // 分类颜色
 const TOOL_KIND={
@@ -9355,7 +9437,16 @@ const TOOL_KIND={
   exec_sandbox:"code",read_source:"code",
   note_want:"want",my_wants:"want",resolve_want:"want",drop_want:"want",request_feature:"want",
   owner_commands:"self",
-  web_search:"net",web_fetch:"net",hot_news:"net"
+  web_search:"net",web_fetch:"net",hot_news:"net",
+  write_notebook:"mem",
+  read_notebook:"mem",
+  read_pdf:"mem",
+  propose_patch:"code",patch_guide:"code",
+  my_patch_proposals:"code",
+  run_activity:"self",
+  set_reminder:"self",
+  group_impressions:"mem",
+  my_thoughts:"mem"
 };
 function addTool(name){
   // 注意：这里在模板字符串里，正则的 \[ \] 会被吃掉，只能用字符串操作
@@ -10267,6 +10358,16 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
           owner_commands: "查指令清单",
           remember: "记东西",
           memory: "查记忆",
+          write_notebook: "写本子",
+          read_notebook: "翻本子",
+          read_pdf: "读PDF",
+          propose_patch: "提改动申请",
+          my_patch_proposals: "看改动申请",
+          patch_guide: "看申请写法",
+          run_activity: "开始活动",
+          set_reminder: "设提醒",
+          group_impressions: "看群印象",
+          my_thoughts: "看我的想法",
         };
 
         // WebUI 里显示她调了什么工具
@@ -11979,7 +12080,7 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
         else if (/m|分/.test(t) && !Number.isNaN(num)) delayMin = num;
         else if (/明天|明早/.test(t)) delayMin = 8 * 60;
         else if (/下午|晚上/.test(t)) delayMin = 4 * 60;
-        else if (!Number.isNaN(num)) delayMin = num;
+        else if (!Number.isNaN(num) && !/^\d{4}\s*[-/.年]/.test(t)) delayMin = num; // 带年份日期不硬猜
       }
       const text = raw
         .replace(/\[\[?\s*next\s*[:：][^\]\n]*\]\]?/gi, "")
@@ -12379,7 +12480,7 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
           else if (/m|分/.test(raw) && !Number.isNaN(num)) delayMin = num;
           else if (/明天|明早/.test(raw)) delayMin = 8 * 60;
           else if (/下午|晚上/.test(raw)) delayMin = 4 * 60;
-          else if (!Number.isNaN(num)) delayMin = num; // 裸数字当分钟
+          else if (!Number.isNaN(num) && !/^\d{4}\s*[-/.年]/.test(raw)) delayMin = num; // 裸数字当分钟；带年份日期的写法认不了，别硬猜
         }
       } catch {
         // 忽略
@@ -12734,13 +12835,49 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
     try {
       if (nextActivityTimer) clearTimeout(nextActivityTimer);
       if (cfg.selfActivityEnabled === false || cfg.autoActionsEnabled === false) return;
-      // 她主动说了多久 → 尊重她（1 分钟 ~ 8 小时）
-      // 没说 → 默认 10-30 分钟，上限 40 分钟
-      // 她可以定 1-40 分钟；超过 40 就按 40（她自己说的也能被压到 40）
+      // 她主动说了多久 → 尊重她（1 分钟 ~ 12 小时，但受每天保底次数约束）
+      // 没说 → 默认 10-30 分钟
+      // 她可以定 1-720 分钟（最长 12 小时）
+      // 但有个「每天最低次数」保底：如果今天还没跑够，就把上限压短，保证能跑够
+      const minPerDay = Number(cfg.selfActivityMinPerDay ?? 10);
+      const todayStr = new Date().toDateString();
+      const hourFrom = Number(cfg.selfActivityCountFromHour ?? 9);
+      const hourTo = Number(cfg.selfActivityCountToHour ?? 23);
+      const resetAt = Number(loadSelfState().selfActivityResetAt) || 0;
+      const doneToday = loadActivities(300).filter((a) => {
+        if (a.byOwner) return false;
+        if (resetAt && a.at < resetAt) return false;
+        const d = new Date(a.at);
+        if (d.toDateString() !== todayStr) return false;
+        const h = d.getHours();
+        return h >= hourFrom && h < hourTo;
+      }).length;
+
+      const leftCount = Math.max(0, minPerDay - doneToday);
+      const nowH = new Date().getHours();
+      // 注意：如果现在不在统计窗口内（比如凌晨 2 点，窗口是 9-23），
+      // 不能按 (hourTo - nowH) 算，那会算出 21 小时这种离谱的值
+      let leftMinToday;
+      if (nowH < hourFrom) {
+        leftMinToday = (hourTo - hourFrom) * 60; // 还没开始，按整天算
+      } else if (nowH >= hourTo) {
+        leftMinToday = 0; // 窗口过了，今天不再安排
+      } else {
+        leftMinToday = (hourTo - nowH) * 60;
+      }
+      let maxGap = 720; // 12 小时
+      if (leftCount > 0 && leftMinToday > 0) {
+        // 还差 N 次，今天还剩 M 分钟 → 每次最多间隔 M/N
+        maxGap = Math.min(maxGap, Math.max(1, Math.floor(leftMinToday / leftCount)));
+        logger.info?.(
+          `[onebot] 今天还差 ${leftCount} 次，剩 ${Math.round(leftMinToday / 60)} 小时，间隔上限收到 ${maxGap} 分钟`,
+        );
+      }
+
       const clamped =
         delayMinutes > 0
-          ? Math.max(1, Math.min(40, delayMinutes))
-          : Math.max(1, Math.min(40, 10 + Math.random() * 20));
+          ? Math.max(1, Math.min(maxGap, delayMinutes))
+          : Math.max(1, Math.min(maxGap, 10 + Math.random() * 20));
       // 存盘：重启后不用重算，别把她自己定的时间丢了
       const targetAt = Date.now() + clamped * 60_000;
       logger.info?.(

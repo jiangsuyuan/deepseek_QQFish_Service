@@ -140,5 +140,6 @@
     "selfActivityPerDay":  40,
     "runCodeCpuSec":  900,
     "notebookEnabled":  true,
-    "patchProposalEnabled":  true
+    "patchProposalEnabled":  true,
+    "selfActivityMinPerDay":  10
 }
