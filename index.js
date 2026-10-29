@@ -982,7 +982,6 @@ const selfViews = {
   loaded: false,
   load() {
     if (this.loaded) return;
-    this.loaded = true;
     try {
       const raw = JSON.parse(readFileSync(SELF_PATH, "utf8"));
       if (Array.isArray(raw)) {
@@ -992,21 +991,32 @@ const selfViews = {
         this.data = Array.isArray(raw?.views) ? raw.views : [];
         this.reflections = Array.isArray(raw?.reflections) ? raw.reflections : [];
       }
+      // 只有真读到才置位：读失败时保持 loaded=false，下次再试
+      this.loaded = true;
     } catch {
-      this.data = [];
-      this.reflections = [];
+      // 读失败：不清空内存（可能已经有数据）、不缓存「空」状态。
+      // 之前这里是 this.loaded = true 在前 + 清空数组，
+      // 结果一次临时读失败就把「我没有观点」缓存住，紧接着 save() 还会把文件写空。
     }
   },
   save() {
+    // 写之前确保真的加载过。没加载成功就宁可不写，也别把文件冲成空。
+    if (!this.loaded) this.load();
+    if (!this.loaded) {
+      logger.warn?.("[onebot] 观点没能加载，这次不写盘（避免把原文件清空）");
+      return;
+    }
     try {
       mkdirSync(join(HOME, ".dsh/onebot-bridge"), { recursive: true });
+      const tmp = `${SELF_PATH}.tmp`;
       writeFileSync(
-        SELF_PATH,
+        tmp,
         JSON.stringify({ views: this.data, reflections: this.reflections }, null, 2),
         "utf8",
       );
-    } catch {
-      // 忽略
+      renameSync(tmp, SELF_PATH); // 原子替换，写到一半挂了也不会毁原文件
+    } catch (err) {
+      logger.warn?.(`[onebot] 观点写盘失败：${err?.message ?? err}`);
     }
   },
   addReflection(text) {
@@ -2161,6 +2171,10 @@ export function apply(ctx, _pluginConfig) {
   const rateUser = new Map();
   function allowRate(key, userId) {
     const now = Date.now();
+    // 主人不受限流：他在一小时内发 10 条是正常交流，不是刷屏
+    if (cfg.ownerId && String(userId) === String(cfg.ownerId)) {
+      return { ok: true };
+    }
     const perMin = Math.max(1, Number(cfg.ratePerMinute) || 6);
     const perHour = Math.max(1, Number(cfg.ratePerUserHour) || 30);
     const k = (rateKey.get(key) ?? []).filter((t) => now - t < 60000);
