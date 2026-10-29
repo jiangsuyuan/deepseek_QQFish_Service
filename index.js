@@ -583,7 +583,14 @@ class OneBotClient {
     // WebUI 来的消息：不发给 QQ，推给浏览器（类方法访问不到外层，用回调）
     if (ev?.__fromWebUI) {
       try {
-        this.onWebReply?.(String(text || ""));
+        const raw = String(text || "");
+        const pieces = raw
+          .split(/\[split\]/i)
+          .map((x) => x.trim())
+          .filter(Boolean);
+        for (const p of pieces.length ? pieces : [raw]) {
+          this.onWebReply?.(p);
+        }
       } catch {
         // 忽略
       }
@@ -7436,9 +7443,13 @@ ${html}
     const splitHint =
       ev.message_type === "group"
         ? ""
-        : "\n（私聊时可以像真人那样分两条发：如果话里有两句独立的，比如「正版源我读不到。要不你讲两段，我听着」，" +
-          "在两句之间写 [split]，就会分成两条发出。分开时第一句末尾的句号去掉。" +
-          "最多拆两条，一句话能说完就别拆。）\n";
+        : "\n（私聊时，**两句在说不同的事**就分两条发——像真人那样。判断标准：" +
+          "\n· 一句在报状态/给结论，另一句在补充、认错、反问、换角度 → 拆" +
+          "\n· 例：「变 15:11 了，正好四十分钟后。[split]你说的对，是我刚才看到旧值」" +
+          "\n· 例：「正版源我读不到。[split]要不你讲两段，我听着」" +
+          "\n· 例：「是吧。[split]好心要靠烧车才证明，这就不叫好意了」" +
+          "\n· 反过来，如果两句话其实是同一件事的两个部分（「我查了[split]是 2.52 米」这种）→ 别拆，用逗号连起来" +
+          "\n写法：在两句之间写 [split]，第一句末尾的句号去掉。最多拆两条。\n）\n";
 
     const bodyBase =
       ev.message_type === "group"
@@ -8493,32 +8504,46 @@ ${html}
 <title>QQ 助手</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font:15px/1.6 -apple-system,"Segoe UI",sans-serif;background:#0f1115;color:#e6e6e6;height:100vh;display:flex;flex-direction:column}
-header{padding:12px 16px;border-bottom:1px solid #23262d;display:flex;align-items:center;gap:8px;flex:none}
+:root{
+  --bg:#0f1115; --fg:#e6e6e6; --muted:#8b93a1;
+  --line:#23262d; --card:#1a1d24; --card2:#1e222a;
+  --me:#2563eb; --her:#1e222a; --her-fg:#e6e6e6;
+  --accent:#7cc4ff; --input:#1a1d24; --input-line:#2a2e38;
+}
+body.light{
+  --bg:#f6f7f9; --fg:#1f2328; --muted:#6b7280;
+  --line:#e3e6ea; --card:#ffffff; --card2:#ffffff;
+  --me:#2563eb; --her:#ffffff; --her-fg:#1f2328;
+  --accent:#0969da; --input:#ffffff; --input-line:#d6dae0;
+}
+body{font:15px/1.6 -apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--fg);height:100vh;display:flex;flex-direction:column}
+header{padding:12px 16px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px;flex:none}
 h1{font-size:15px;font-weight:600}
-#pg{margin-left:auto;font-size:13px;color:#7cc4ff;text-decoration:none;border:1px solid #2a3340;border-radius:12px;padding:3px 10px}
-#pg:hover{background:#1a2330}
+#pg{margin-left:auto;font-size:13px;color:var(--accent);text-decoration:none;border:1px solid var(--input-line);border-radius:12px;padding:3px 10px}
+#pg:hover{background:var(--card)}
+#theme{font-size:15px;background:none;border:0;cursor:pointer;color:var(--muted);padding:2px 6px;line-height:1}
+#theme:hover{color:var(--fg)}
 .dot{width:8px;height:8px;border-radius:50%;background:#4ade80}
 .dot.off{background:#f87171}
-#live{display:none;flex:none;padding:8px 12px;font-size:12px;color:#8b93a1;border-bottom:1px solid #23262d;max-height:110px;overflow-y:auto;line-height:1.6}
+#live{display:none;flex:none;padding:8px 12px;font-size:12px;color:var(--muted);border-bottom:1px solid var(--line);max-height:110px;overflow-y:auto;line-height:1.6}
 #live.on{display:block}
 #live .l{opacity:.85}
-#live .l b{color:#7cc4ff;font-weight:500}
-#btns{display:none;flex:none;flex-wrap:wrap;gap:6px;padding:8px 12px;border-bottom:1px solid #23262d}
+#live .l b{color:var(--accent);font-weight:500}
+#btns{display:none;flex:none;flex-wrap:wrap;gap:6px;padding:8px 12px;border-bottom:1px solid var(--line)}
 #btns.on{display:flex}
-#btns button{background:#1e222a;border:1px solid #2a2e38;color:#c9d1d9;border-radius:14px;padding:4px 12px;font:13px inherit;cursor:pointer}
-#btns button:hover{background:#262b35;border-color:#3a4150}
+#btns button{background:var(--card2);border:1px solid var(--input-line);color:var(--fg);border-radius:14px;padding:4px 12px;font:13px inherit;cursor:pointer}
+#btns button:hover{background:var(--line);border-color:var(--muted)}
 #log{flex:1 1 0;min-height:140px;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px}
 .msg{max-width:80%;padding:8px 12px;border-radius:12px;white-space:pre-wrap;word-break:break-word}
-.me{align-self:flex-end;background:#2563eb;color:#fff;border-bottom-right-radius:4px}
-.her{align-self:flex-start;background:#1e222a;border-bottom-left-radius:4px}
-.tool{align-self:flex-start;font-size:12px;color:#8b93a1;padding:2px 8px}
-footer{padding:12px;border-top:1px solid #23262d;display:flex;gap:8px;flex:none}
-#in{flex:1;background:#1a1d24;border:1px solid #2a2e38;color:#e6e6e6;border-radius:8px;padding:10px 12px;font:inherit;resize:none;height:44px}
-#send{background:#2563eb;border:0;color:#fff;border-radius:8px;padding:0 18px;font:inherit;cursor:pointer}
+.me{align-self:flex-end;background:var(--me);color:#fff;border-bottom-right-radius:4px}
+.her{align-self:flex-start;background:var(--her);color:var(--her-fg);border-bottom-left-radius:4px}
+.tool{align-self:flex-start;font-size:12px;color:var(--muted);padding:2px 8px}
+footer{padding:12px;border-top:1px solid var(--line);display:flex;gap:8px;flex:none}
+#in{flex:1;background:var(--input);border:1px solid var(--input-line);color:var(--fg);border-radius:8px;padding:10px 12px;font:inherit;resize:none;height:44px}
+#send{background:var(--me);border:0;color:#fff;border-radius:8px;padding:0 18px;font:inherit;cursor:pointer}
 #send:disabled{opacity:.5}
 </style></head><body>
-<header><span class="dot" id="dot"></span><h1>QQ 助手</h1><span id="st" style="font-size:12px;color:#8b93a1"></span><a id="pg" href="/pages?token=${encodeURIComponent(token)}" target="_blank">页面</a></header>
+<header><span class="dot" id="dot"></span><h1>QQ 助手</h1><span id="st" style="font-size:12px;color:#8b93a1"></span><a id="pg" href="/pages?token=${encodeURIComponent(token)}" target="_blank">页面</a><button id="theme" title="切换日夜">☾</button></header>
 <div id="btns"></div>
 <div id="live"></div>
 <div id="log"></div>
@@ -8552,6 +8577,19 @@ function add(cls,text){
 function addTool(text){const d=document.createElement('div');d.className='tool';d.textContent=text;log.appendChild(d);log.scrollTop=log.scrollHeight}
 let typing=null;
 function setTyping(on){if(on&&!typing){typing=add('her','…');}else if(!on&&typing){typing.remove();typing=null;}}
+// 日夜切换（记在 localStorage）
+const themeBtn=document.getElementById('theme');
+function applyTheme(t){
+  if(t==='light'){document.body.classList.add('light');themeBtn.textContent='☀';}
+  else{document.body.classList.remove('light');themeBtn.textContent='☾';}
+}
+try{applyTheme(localStorage.getItem('fish-theme')||'dark');}catch(e){applyTheme('dark');}
+themeBtn.onclick=()=>{
+  const now=document.body.classList.contains('light')?'dark':'light';
+  applyTheme(now);
+  try{localStorage.setItem('fish-theme',now);}catch(e){}
+};
+
 const live=document.getElementById('live');
 function addLive(d){
   live.className='on';
@@ -8661,11 +8699,27 @@ inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDef
         // 统一成毫秒时间戳，否则和图片记录排在一起会错位
         let ts = Number(ev.time) || Number(ev.ts) || 0;
         if (ts > 0 && ts < 1e12) ts *= 1000; // 秒 -> 毫秒
-        out.push({
-          role: got.role === "对方" ? "me" : "her",
-          text: tx.slice(0, 500),
-          at: ts || 0,
-        });
+        // 她的输出里可能带 [split]（她自己要求分两条发的记号），读历史时也要拆
+        const bits = tx
+          .split(/\[split\]/i)
+          .map((x) => x.trim())
+          .filter(Boolean);
+        if (bits.length > 1) {
+          for (let k = 0; k < bits.length; k++) {
+            const piece = got.role === "对方" ? bits[k] : humanizePunct(bits[k]);
+            out.push({
+              role: got.role === "对方" ? "me" : "her",
+              text: piece.slice(0, 500),
+              at: (ts || 0) + k,
+            });
+          }
+        } else {
+          out.push({
+            role: got.role === "对方" ? "me" : "her",
+            text: bits[0] ? bits[0].slice(0, 500) : tx.slice(0, 500),
+            at: ts || 0,
+          });
+        }
       }
       return out.slice(-limit);
     } catch {
