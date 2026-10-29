@@ -201,7 +201,8 @@ namespace FishTray
 
     public static class Api
     {
-        static readonly HttpClient H = Make();
+        public static readonly HttpClient Http = Make();
+        static readonly HttpClient H = Http;
 
         static HttpClient Make()
         {
@@ -255,6 +256,7 @@ namespace FishTray
     {
         public string Role = "her";
         public string Body = "";
+        public Image Pic;              // 有图就画图，不画文字气泡
         public Color BgCol, FgCol;
         public int Radius = 10;
         public int PadX = 11;
@@ -374,20 +376,21 @@ namespace FishTray
         /// <summary>换主题时重新套调色板（气泡颜色在构造时定死，必须重设）</summary>
         public void ApplyPalette(Palette p)
         {
-            if (Role == "tool") return;
+            if (Parent != null) BackColor = Parent.BackColor;
+            if (Role == "tool") { Invalidate(); return; }
             BgCol = Role == "me" ? p.MeBg : p.HerBg;
             FgCol = Role == "me" ? p.MeFg : p.HerFg;
             Invalidate();
         }
 
-        /// <summary>把控件本身裁成圆角（只靠 OnPaint 画圆角是不够的）</summary>
+        /// <summary>不再用 Region 裁（那是二值掩码，圆角必然锯齿）。
+        /// 改成把控件底色刷成父容器颜色，再由 OnPaint 抗锯齿画圆角。</summary>
         void ApplyRegion()
         {
             try
             {
-                if (Width < 4 || Height < 4) return;
-                using (var path = Round(ClientRectangle, Radius))
-                    Region = new Region(path);
+                Region = null;
+                if (Parent != null) BackColor = Parent.BackColor;
             }
             catch { }
         }
@@ -402,7 +405,22 @@ namespace FishTray
         {
             var g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.Clear(Parent != null ? Parent.BackColor : Color.Transparent);
+            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            g.Clear(Parent != null ? Parent.BackColor : BackColor);
+
+            if (Pic != null)
+            {
+                // 图片消息：按圆角裁剪后直接铺图
+                using (var path = Round(ClientRectangle, Radius))
+                {
+                    var old = g.Clip;
+                    g.SetClip(path);
+                    g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                    g.DrawImage(Pic, ClientRectangle);
+                    g.Clip = old;
+                }
+                return;
+            }
 
             using (var path = Round(ClientRectangle, Radius))
             using (var b = new SolidBrush(BgCol))
@@ -465,14 +483,22 @@ namespace FishTray
             }
             else if (Kind == "moon")
             {
-                // 月牙：大圆挖掉偏右上的一块（Region.Exclude 是真正的减法，
-                // FillMode.Alternate 是异或，会把右边多画一个圆）
-                var big = new Region(new RectangleF(w * 0.14f, h * 0.12f, w * 0.70f, h * 0.76f));
-                var cut = new Region(new RectangleF(w * 0.46f, h * 0.02f, w * 0.64f, h * 0.76f));
-                big.Exclude(cut);
-                using (var b = new SolidBrush(Ink)) g.FillRegion(b, big);
-                big.Dispose();
-                cut.Dispose();
+                // 月牙 = 椭圆 减去 另一个偏右上的椭圆
+                // 注意：Region(RectangleF) 是矩形区域，不是椭圆，必须用 GraphicsPath.AddEllipse
+                var bigPath = new GraphicsPath();
+                bigPath.AddEllipse(w * 0.14f, h * 0.14f, w * 0.72f, h * 0.72f);
+                var cutPath = new GraphicsPath();
+                cutPath.AddEllipse(w * 0.46f, h * 0.06f, w * 0.70f, h * 0.72f);
+
+                using (var big = new Region(bigPath))
+                using (var cut = new Region(cutPath))
+                using (var b = new SolidBrush(Ink))
+                {
+                    big.Exclude(cut);
+                    g.FillRegion(b, big);
+                }
+                bigPath.Dispose();
+                cutPath.Dispose();
             }
             else // sun
             {
@@ -539,8 +565,24 @@ namespace FishTray
         PictureBox fishStrip;     // 收起时显示的鱼图标条
         Button sendBtn;
 
+        [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
+        static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int val, int size);
+
+        /// <summary>让 Win11 自己给窗口做圆角（系统级抗锯齿，比自己 Region 裁干净得多）</summary>
+        void UseSystemRoundCorner()
+        {
+            try
+            {
+                int pref = 2;   // DWMWCP_ROUND
+                int r = DwmSetWindowAttribute(Handle, 33 /*DWMWA_WINDOW_CORNER_PREFERENCE*/, ref pref, sizeof(int));
+                Log.W("DWM 圆角: " + (r == 0 ? "成功" : "hr=" + r));
+            }
+            catch (Exception ex) { Log.W("DWM 圆角失败 " + ex.Message); }
+        }
+
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         static extern bool ReleaseCapture();
+
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         static extern IntPtr SendMessage(IntPtr hWnd, int msg, int wParam, int lParam);
 
@@ -938,16 +980,16 @@ namespace FishTray
         {
             try
             {
-                if (WindowState != FormWindowState.Maximized && Width > 8 && Height > 8)
+                if (collapsed && Width > 8 && Height > 8)
                 {
-                    int rad = collapsed ? 11 : 12;
-                    using (var p = R.Path(ClientRectangle, rad))
+                    // 收起的小方块只能靠 Region（DWM 不会给 56x56 做圆角）
+                    using (var p = R.Path(ClientRectangle, 11))
                         Region = new Region(p);
                 }
-                R.Round(reconnectBtn, 6);
-                R.Round(themeBtn, 8);
-                R.Round(closeBtn, 8);
-                R.Round(sendBtn, 7);
+                else
+                {
+                    Region = null;      // 展开时交给 DWM 圆角
+                }
             }
             catch { }
         }
@@ -988,7 +1030,7 @@ namespace FishTray
             input.Location = new Point(8, (h - ih) / 2 + 1);
             input.Size = new Size(inputHost.Width - 16, ih);
 
-            R.Round(inputHost, 8);
+            // inputHost 也不裁 Region，靠它自己的 Paint 画圆角
         }
 
         void ApplyPal()
@@ -1080,6 +1122,7 @@ namespace FishTray
         void OnShown(object sender, EventArgs e)
         {
             Log.W("OnShown");
+            UseSystemRoundCorner();
             var wa = Screen.PrimaryScreen.WorkingArea;
             Location = new Point(wa.Right - Width - 12, wa.Bottom - Height - 8);
 
@@ -1220,14 +1263,71 @@ namespace FishTray
         void AddBubble(Msg m, int maxW)
         {
             string role = m.role == "me" ? "me" : (m.role == "tool" ? "tool" : "her");
-            string body = m.text;
-            if (!string.IsNullOrEmpty(m.image)) body = "［图片］" + m.image;
-            if (string.IsNullOrEmpty(body)) body = "";
 
+            // 图片消息：先放占位方块，图下载回来再填
+            if (!string.IsNullOrEmpty(m.image))
+            {
+                AddImageBubble(m.image, role, maxW);
+                return;
+            }
+
+            string body = m.text ?? "";
             var b = new Bubble(role, body, pal, maxW);
             b.Parent = canvas;
             bubbles.Add(b);
             canvas.Controls.Add(b);
+        }
+
+        void AddImageBubble(string imgPath, string role, int maxW)
+        {
+            string url = imgPath;
+            if (url.IndexOf("http", StringComparison.OrdinalIgnoreCase) != 0)
+                url = cfg.base_url.TrimEnd('/') + url;
+
+            var ph = new Bubble(role, "", pal, maxW);
+            ph.Size = new Size(120, 120);
+            ph.BgCol = pal.Card;
+            ph.Parent = canvas;
+            bubbles.Add(ph);
+            canvas.Controls.Add(ph);
+
+            string u = url;
+            string label = imgPath;
+            Task.Run(delegate
+            {
+                try
+                {
+                    string sep = u.IndexOf('?') >= 0 ? "&" : "?";
+                    string full = u + sep + "token=" + Uri.EscapeDataString(cfg.token);
+                    var resp = Api.Http.GetAsync(full).GetAwaiter().GetResult();
+                    if (!resp.IsSuccessStatusCode) { Log.W("图片 404 " + label); return; }
+
+                    byte[] bytes = resp.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult();
+                    if (bytes == null || bytes.Length < 100) { Log.W("图片太小 " + label); return; }
+
+                    var ms = new MemoryStream(bytes);
+                    var img = Image.FromStream(ms);
+
+                    int mw = img.Width, mh = img.Height;
+                    float k = Math.Min(1f, 200f / Math.Max(mw, mh));
+                    int nw = Math.Max(32, (int)(mw * k));
+                    int nh = Math.Max(32, (int)(mh * k));
+
+                    try
+                    {
+                        BeginInvoke((Action)delegate
+                        {
+                            ph.Pic = img;
+                            ph.Size = new Size(nw, nh);
+                            Relayout();
+                            ScrollEnd();
+                            Log.W("图片已加载 " + label + " " + nw + "x" + nh);
+                        });
+                    }
+                    catch { }
+                }
+                catch (Exception ex) { Log.W("图片失败 " + label + " " + ex.Message); }
+            });
         }
 
         void OnInputKey(object sender, KeyEventArgs e)
