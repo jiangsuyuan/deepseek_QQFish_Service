@@ -482,7 +482,25 @@ class OneBotClient {
       if (base <= 400) this.logger?.debug?.(`[onebot] 空闲期快速回（${Math.round(delay)}ms）`);
     }
     if (delay > 0) await sleep(delay);
-    const parts = splitMessage(text, this.cfg).map((p) => humanizePunct(p));
+    // 她自己写的 [split]：拆成两条发（群里忽略，群里连发是风控红线）
+    let segs = [String(text || "")];
+    if (/\[split\]/i.test(segs[0]) && ev?.message_type !== "group") {
+      segs = segs[0]
+        .split(/\[split\]/i)
+        .map((x) => x.trim())
+        .filter(Boolean)
+        .slice(0, 2);
+      this.logger?.info?.(`[onebot] 她自己拆成 ${segs.length} 条发`);
+    } else {
+      segs[0] = segs[0].replace(/\[split\]/gi, " ");
+    }
+
+    const parts = [];
+    for (const seg of segs) {
+      for (const piece of splitMessage(seg, this.cfg)) {
+        parts.push(humanizePunct(piece));
+      }
+    }
     await this.typing(ev);
     try {
       const k0 = conversationKey(ev);
@@ -492,7 +510,9 @@ class OneBotClient {
       // 忽略
     }
     for (let i = 0; i < parts.length; i++) {
-      if (i > 0) await sleep(500 + Math.random() * 900);
+      // 她自己拆的段落之间多等一会儿（像打完一条想一下），机器切的多等少
+      const isSelfSplit = Array.isArray(segs) && segs.length > 1;
+      if (i > 0) await sleep(isSelfSplit ? 1000 + Math.random() * 2000 : 500 + Math.random() * 900);
       const sent = await this.sendText(ev, parts[i], {
         quote:
           !!this.cfg.quoteInGroup &&
@@ -2160,6 +2180,7 @@ export function apply(ctx, _pluginConfig) {
     "drop_want",
     "my_activities",
     "my_capabilities",
+    "my_schedule",
     "render_page",
     "add_webui_button",
     "remove_webui_button",
@@ -3063,9 +3084,13 @@ export function apply(ctx, _pluginConfig) {
               .map(([id, r]) => ({ id, name: r.name || id, count: Number(r.count ?? 0) }))
               .sort((a, b) => b.count - a.count)
               .slice(0, 5);
+            const st = loadSelfState();
+            const nextAt = Number(st.selfActivityNextAt) || 0;
             return {
               ok: true,
               uptimeMinutes: Math.round((now - health.restartedAt) / 60000),
+              nextActivity:
+                nextAt > now ? `约 ${Math.round((nextAt - now) / 60000)} 分钟后` : "时间已过，下次唤醒会动",
               outagesToday: outages.filter((o) => new Date(o.upAt).toDateString() === today).length,
               todayReplies,
               memory: {
@@ -3979,6 +4004,76 @@ export function apply(ctx, _pluginConfig) {
         }),
       );
       logger.info?.("[onebot] 能力清单工具已注册（my_capabilities）");
+
+      // 她自己的排期表：下次活动什么时候、每天的固定事项
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "my_schedule",
+          description:
+            "查你自己的排期表：下次自主活动是什么时候、今天还剩多少额度、每天有哪些固定的事。" +
+            "有人问「你下次什么时候动」「你的计划是什么」时用它，别凭印象说。",
+          parameters: {},
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async () => {
+            const st = loadSelfState();
+            const nextAt = Number(st.selfActivityNextAt) || 0;
+            const now = Date.now();
+            const fmt = (t) => {
+              const d = new Date(t);
+              return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+            };
+            let nextActivity = "还没安排（等下一次唤醒）";
+            let nextIn = "";
+            if (nextAt > now) {
+              const mins = Math.round((nextAt - now) / 60000);
+              nextActivity = `${fmt(nextAt)}（约 ${mins} 分钟后）`;
+              nextIn = `${mins} 分钟`;
+            } else if (nextAt > 0) {
+              nextActivity = "时间已过，下次唤醒时就会动";
+            }
+
+            // 额度
+            const today = new Date().toDateString();
+            const hourFrom = Number(cfg.selfActivityCountFromHour ?? 9);
+            const hourTo = Number(cfg.selfActivityCountToHour ?? 23);
+            const resetAt = Number(st.selfActivityResetAt) || 0;
+            const done = loadActivities(300).filter((a) => {
+              if (a.byOwner) return false;
+              if (resetAt && a.at < resetAt) return false;
+              const d = new Date(a.at);
+              if (d.toDateString() !== today) return false;
+              const h = d.getHours();
+              return h >= hourFrom && h < hourTo;
+            }).length;
+            const cap = Number(cfg.selfActivityPerDay ?? 40);
+
+            // 每天的固定事项
+            const daily = [
+              { what: "早上补回（昨晚错过的消息）", at: `${String(cfg.morningCatchupHour ?? 7).padStart(2, "0")}:${String(cfg.morningCatchupMinute ?? 30).padStart(2, "0")}` },
+              { what: "每日简讯", at: "09:00" },
+              { what: "自我反思", at: `${String(cfg.reflectHour ?? 22).padStart(2, "0")}:00` },
+              { what: "今日日记", at: "23:00" },
+            ];
+
+            return {
+              ok: true,
+              nextActivity,
+              nextIn,
+              quota: { used: done, cap, left: Math.max(0, cap - done) },
+              canActNow: done < cap,
+              quietHours: {
+                speak: `${cfg.activeStartHour ?? 9}-${cfg.activeEndHour ?? 23} 点`,
+                activity: `${cfg.selfActivityStartHour ?? 0}-${cfg.selfActivityEndHour ?? 24} 点`,
+              },
+              daily,
+            };
+          },
+        }),
+      );
+      logger.info?.("[onebot] 排期表工具已注册（my_schedule）");
 
       // ── 用网页展示内容：记录、记忆、统计、想法 ──
       const PAGES_DIR = join(HOME, ".dsh/onebot-bridge/workspace/pages");
@@ -7337,6 +7432,14 @@ ${html}
     if (parsed.replyIds?.length && imagePayloads.length > 0 && !parsed.text) {
       msgText = "（@ 了你，并引用了上面那张图，没打字）";
     }
+    // 私聊：教她像真人那样把两句话分开发
+    const splitHint =
+      ev.message_type === "group"
+        ? ""
+        : "\n（私聊时可以像真人那样分两条发：如果话里有两句独立的，比如「正版源我读不到。要不你讲两段，我听着」，" +
+          "在两句之间写 [split]，就会分成两条发出。分开时第一句末尾的句号去掉。" +
+          "最多拆两条，一句话能说完就别拆。）\n";
+
     const bodyBase =
       ev.message_type === "group"
         ? `[QQ群消息] 群号 ${ev.group_id}，发言人 ${nickname}（${ev.user_id}）${who}\n[消息内容] ${msgText}`
@@ -7785,6 +7888,7 @@ ${html}
     const body =
       vibeNote +
       memoryNote +
+      splitHint +
       slangNote +
       selfLine +
       emptyAtNote +
@@ -11612,9 +11716,10 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
       if (cfg.selfActivityEnabled === false || cfg.autoActionsEnabled === false) return;
       // 她主动说了多久 → 尊重她（1 分钟 ~ 8 小时）
       // 没说 → 默认 10-30 分钟，上限 40 分钟
+      // 她可以定 1-40 分钟；超过 40 就按 40（她自己说的也能被压到 40）
       const clamped =
         delayMinutes > 0
-          ? Math.max(1, Math.min(480, delayMinutes))
+          ? Math.max(1, Math.min(40, delayMinutes))
           : Math.max(1, Math.min(40, 10 + Math.random() * 20));
       // 存盘：重启后不用重算，别把她自己定的时间丢了
       patchSelfState({ selfActivityNextAt: Date.now() + clamped * 60_000 });
