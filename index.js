@@ -2234,6 +2234,7 @@ export function apply(ctx, _pluginConfig) {
     "propose_patch",
     "my_patch_proposals",
     "patch_guide",
+    "zhihu_daily",
     "render_page",
     "add_webui_button",
     "remove_webui_button",
@@ -4860,6 +4861,60 @@ export function apply(ctx, _pluginConfig) {
       );
 
       logger.info?.("[onebot] 改动申请指南工具已注册（patch_guide）");
+
+      // 知乎日报：知乎唯一不需要签名、不需要登录的接口
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "zhihu_daily",
+          description:
+            "读知乎日报（每天 4-5 篇精选文章）。date 填 20261029 这种八位数字看那天的，不填看今天。",
+          parameters: {
+            date: { type: "string", description: "八位日期，例 20261029；不填看今天" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            const date = String(args?.date ?? "").trim();
+            const url = /^\d{8}$/.test(date)
+              ? `https://news-at.zhihu.com/api/4/news/before/${date}`
+              : "https://news-at.zhihu.com/api/4/news/latest";
+            try {
+              const ctrl = new AbortController();
+              const timer = setTimeout(() => ctrl.abort(), 15000);
+              const r = await fetch(url, {
+                signal: ctrl.signal,
+                headers: {
+                  "user-agent":
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                  referer: "https://daily.zhihu.com/",
+                },
+              });
+              clearTimeout(timer);
+              if (!r.ok) return { ok: false, reason: `HTTP ${r.status}` };
+              const j = await r.json();
+              const stories = Array.isArray(j?.stories) ? j.stories : [];
+              return {
+                ok: true,
+                date: j?.date || date || "今天",
+                count: stories.length,
+                items: stories.slice(0, 10).map((x) => ({
+                  title: String(x.title || "").slice(0, 80),
+                  id: x.id,
+                  url: x.url || `https://daily.zhihu.com/story/${x.id}`,
+                  hint: x.hint ? String(x.hint).slice(0, 40) : "",
+                })),
+                note: "要读正文就用 web_fetch 打开 url，或者跟我说哪篇",
+              };
+            } catch (err) {
+              return { ok: false, reason: String(err?.message ?? err).slice(0, 200) };
+            }
+          },
+        }),
+      );
+
+      logger.info?.("[onebot] 知乎日报工具已注册（zhihu_daily）");
 
       // ── 用网页展示内容：记录、记忆、统计、想法 ──
       const PAGES_DIR = join(HOME, ".dsh/onebot-bridge/workspace/pages");
@@ -9451,7 +9506,7 @@ const TOOL_ZH={
   read_notebook:"翻本子",
   read_pdf:"读PDF",
   propose_patch:"提改动申请",
-  my_patch_proposals:"看改动申请",patch_guide:"看申请写法"
+  my_patch_proposals:"看改动申请",patch_guide:"看申请写法",zhihu_daily:"看知乎日报"
 };
 // 分类颜色
 const TOOL_KIND={
@@ -9469,7 +9524,7 @@ const TOOL_KIND={
   write_notebook:"mem",
   read_notebook:"mem",
   read_pdf:"mem",
-  propose_patch:"code",patch_guide:"code",
+  propose_patch:"code",patch_guide:"code",zhihu_daily:"net",
   my_patch_proposals:"code",
   run_activity:"self",
   set_reminder:"self",
@@ -10394,6 +10449,7 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
           propose_patch: "提改动申请",
           my_patch_proposals: "看改动申请",
           patch_guide: "看申请写法",
+          zhihu_daily: "看知乎日报",
           run_activity: "开始活动",
           set_reminder: "设提醒",
           group_impressions: "看群印象",
