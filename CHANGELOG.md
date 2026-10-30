@@ -1,5 +1,30 @@
 # 更新日志
 
+## 1.1.22 · 2026-10-30
+
+她能看各平台热榜了。
+
+### 新增
+
+- **`news_now`：各平台热榜**（微博 / 知乎 / 百度 / 头条 / 抖音 / B站 / 少数派 / IT之家 / 澎湃 / 财联社 / GitHub / Hacker News / V2EX / 掘金 / 36氪 / 参考消息）。
+  - 一次一个源，`limit` 控制条数（默认 15，最多 40）。
+  - 返回 `rank / title / url / hot`。
+
+### 为什么不用 `web_fetch` 直接读那个页面
+
+`https://newsnow.busiyi.world/c/hottest` 打不开，有两层原因，记下来免得重复排查：
+
+1. **Cloudflare 拦 curl**：裸 `curl`（或任何爬虫特征的请求）返回 **403 `Attention Required! | Cloudflare`**。换浏览器 UA 立刻 200。
+2. **它是 SPA**：换 UA 后拿到 HTML，但里面**只有 `<head>`，一条新闻都没有**——所有内容靠 JS 渲染，`web_fetch` 从原理上读不到。
+
+**解法**：NewsNow 是开源项目，前端调的是 `/api/s?id=<源名>`，返回标准 JSON。直接打这个接口，两个问题都绕开。
+
+实测各源条数：weibo 30 / zhihu 20 / baidu 30 / toutiao 30 / douyin 30 / bilibili 30 / sspai 30 / ithome 30 / thepaper 20 / cls 30（`wsj` 500，源本身挂了）。
+
+### 说明
+
+- 页面上那个「综合热榜」（`/c/hottest`）是**前端把多个源拼起来**显示的，API 层没有对应实现。要用的话得自己合并几个源。
+
 ## 1.1.21 · 2026-10-30
 
 给她的需求本加一条：**能读知乎了**。

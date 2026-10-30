@@ -2235,6 +2235,7 @@ export function apply(ctx, _pluginConfig) {
     "my_patch_proposals",
     "patch_guide",
     "zhihu_daily",
+    "news_now",
     "render_page",
     "add_webui_button",
     "remove_webui_button",
@@ -4915,6 +4916,93 @@ export function apply(ctx, _pluginConfig) {
       );
 
       logger.info?.("[onebot] 知乎日报工具已注册（zhihu_daily）");
+
+      // NewsNow 热榜：它的网页是 SPA + Cloudflare，直接抓页面拿不到内容，
+      // 但它有一个公开 API /api/s?id=<源>，返回 JSON。
+      const NEWS_SOURCES = {
+        weibo: "微博热搜",
+        zhihu: "知乎热榜",
+        baidu: "百度热搜",
+        toutiao: "今日头条",
+        douyin: "抖音热点",
+        bilibili: "B站热门",
+        sspai: "少数派",
+        ithome: "IT之家",
+        thepaper: "澎湃新闻",
+        cls: "财联社",
+        github: "GitHub Trending",
+        hackernews: "Hacker News",
+        v2ex: "V2EX",
+        juejin: "稀土掘金",
+        "36kr": "36氪",
+        cankaoxiaoxi: "参考消息",
+      };
+
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "news_now",
+          description:
+            "看各平台的热榜（微博/知乎/百度/头条/抖音/B站/IT之家/澎湃/财联社/GitHub等）。" +
+            "source 填源名，一次一个；不填默认微博。" +
+            "source 可选：" +
+            Object.keys(NEWS_SOURCES).join(" / "),
+          parameters: {
+            source: { type: "string", description: "源名，默认 weibo" },
+            limit: { type: "number", description: "看几条，默认 15，最多 40" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            const src = String(args?.source ?? "weibo").trim().toLowerCase();
+            const limit = Math.max(1, Math.min(40, Number(args?.limit) || 15));
+            if (!NEWS_SOURCES[src]) {
+              return {
+                ok: false,
+                reason: `不认识的源「${src}」，可选：${Object.keys(NEWS_SOURCES).join(" / ")}`,
+              };
+            }
+            try {
+              const ctrl = new AbortController();
+              const timer = setTimeout(() => ctrl.abort(), 15000);
+              const r = await fetch(`https://newsnow.busiyi.world/api/s?id=${encodeURIComponent(src)}`, {
+                signal: ctrl.signal,
+                headers: {
+                  // 这个站挂了 Cloudflare，必须带浏览器 UA，否则 403
+                  "user-agent":
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                  accept: "application/json, text/plain, */*",
+                  referer: "https://newsnow.busiyi.world/",
+                },
+              });
+              clearTimeout(timer);
+              if (!r.ok) return { ok: false, reason: `HTTP ${r.status}` };
+              const j = await r.json();
+              const items = Array.isArray(j?.items) ? j.items : [];
+              return {
+                ok: true,
+                source: src,
+                sourceName: NEWS_SOURCES[src],
+                count: items.length,
+                updatedAt: j?.updatedTime
+                  ? new Date(j.updatedTime).toLocaleString("zh-CN", { hour12: false })
+                  : "",
+                items: items.slice(0, limit).map((x, i) => ({
+                  rank: i + 1,
+                  title: String(x.title || x.id || "").slice(0, 100),
+                  url: x.url || "",
+                  hot: x.extra?.info || x.extra?.hover || "",
+                })),
+              };
+            } catch (err) {
+              return { ok: false, reason: String(err?.message ?? err).slice(0, 200) };
+            }
+          },
+        }),
+      );
+
+      logger.info?.("[onebot] 热榜工具已注册（news_now）");
 
       // ── 用网页展示内容：记录、记忆、统计、想法 ──
       const PAGES_DIR = join(HOME, ".dsh/onebot-bridge/workspace/pages");
@@ -9506,7 +9594,7 @@ const TOOL_ZH={
   read_notebook:"翻本子",
   read_pdf:"读PDF",
   propose_patch:"提改动申请",
-  my_patch_proposals:"看改动申请",patch_guide:"看申请写法",zhihu_daily:"看知乎日报"
+  my_patch_proposals:"看改动申请",patch_guide:"看申请写法",zhihu_daily:"看知乎日报",news_now:"看热榜"
 };
 // 分类颜色
 const TOOL_KIND={
@@ -9524,7 +9612,7 @@ const TOOL_KIND={
   write_notebook:"mem",
   read_notebook:"mem",
   read_pdf:"mem",
-  propose_patch:"code",patch_guide:"code",zhihu_daily:"net",
+  propose_patch:"code",patch_guide:"code",zhihu_daily:"net",news_now:"net",
   my_patch_proposals:"code",
   run_activity:"self",
   set_reminder:"self",
@@ -10450,6 +10538,7 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
           my_patch_proposals: "看改动申请",
           patch_guide: "看申请写法",
           zhihu_daily: "看知乎日报",
+          news_now: "看热榜",
           run_activity: "开始活动",
           set_reminder: "设提醒",
           group_impressions: "看群印象",
