@@ -10748,7 +10748,13 @@ body.light{
   --me:#2563eb; --her:#ffffff; --her-fg:#1f2328;
   --accent:#0969da; --input:#ffffff; --input-line:#d6dae0;
 }
-body{font:15px/1.6 -apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--fg);height:100vh;display:flex;flex-direction:column}
+body{font:15px/1.6 -apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--fg);
+  /* 手机：100vh 含地址栏高度会溢出，用 dvh；再用 --app-h 兜底（键盘弹起时由 JS 改写） */
+  height:100vh;height:100dvh;height:var(--app-h,100dvh);
+  display:flex;flex-direction:column;overscroll-behavior-y:contain}
+/* 关掉移动端点击高亮和长按选择（气泡/按钮更像原生） */
+*{-webkit-tap-highlight-color:transparent}
+#log,#live{-webkit-overflow-scrolling:touch}
 header{padding:12px 16px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px;flex:none}
 h1{font-size:15px;font-weight:600}
 #pg{margin-left:auto;font-size:13px;color:var(--accent);text-decoration:none;border:1px solid var(--input-line);border-radius:12px;padding:3px 10px}
@@ -10788,10 +10794,32 @@ body.light .t-want{background:#ffd9e7;color:#a01d54}
 body.light .t-net{background:#c9f2f2;color:#0d6363}
 body.light .t-draw{background:#e0d4ff;color:#4a2fa8}
 body.light .t-other{background:#dde4f7;color:#3a4a75}
-footer{padding:12px;border-top:1px solid var(--line);display:flex;gap:8px;flex:none}
+footer{padding:12px;padding-bottom:calc(12px + env(safe-area-inset-bottom,0px));
+  border-top:1px solid var(--line);display:flex;gap:8px;flex:none;
+  padding-left:calc(12px + env(safe-area-inset-left,0px));
+  padding-right:calc(12px + env(safe-area-inset-right,0px))}
+/* 窄屏（手机竖屏）：缩间距、按钮矮一点、输入框字号 ≥16px 防 iOS 聚焦放大 */
+@media (max-width:480px){
+  body{font-size:15px}
+  #log{padding:12px 12px 24px;gap:8px}
+  footer{padding:8px;gap:6px;padding-bottom:calc(8px + env(safe-area-inset-bottom,0px))}
+  footer textarea{padding:8px 10px !important;font-size:16px !important}
+  #send,#imgBtn{padding:0 12px !important;font-size:14px !important;height:38px !important}
+  #imgBtn{margin-right:2px !important}
+  header{padding:8px 12px !important}
+  header h1{font-size:14px !important}
+  .msg{font-size:15px;padding:8px 11px !important}
+}
+/* 横屏/平板：别把气泡拉太宽 */
+@media (min-width:768px){ .msg{max-width:80%} }
 #in{flex:1;background:var(--input);border:1px solid var(--input-line);color:var(--fg);border-radius:8px;padding:10px 12px;font:inherit;resize:none;height:44px}
 #send{background:var(--me);border:0;color:#fff;border-radius:8px;padding:0 18px;font:inherit;cursor:pointer}
 #send:disabled{opacity:.5}
+.mk{display:inline-block;font-size:10px;line-height:1;padding:3px 5px;border-radius:4px;
+  background:#ffc747;color:#5c3a00;margin:0 6px 4px 0;vertical-align:middle;font-weight:600}
+.imgov{position:fixed;inset:0;background:rgba(0,0,0,.88);display:flex;align-items:center;
+  justify-content:center;z-index:99;padding:16px;cursor:zoom-out}
+.imgov img{max-width:100%;max-height:100%;border-radius:8px;box-shadow:0 8px 40px rgba(0,0,0,.6)}
 #imgBtn{background:var(--card);border:1px solid var(--line);color:var(--fg);border-radius:8px;padding:0 12px;font:inherit;cursor:pointer;margin-right:6px}
 #imgBtn:hover{border-color:var(--me)}
 </style></head><body>
@@ -10952,27 +10980,57 @@ es.onmessage=e=>{
   const d=JSON.parse(e.data);
   if(d.role==='tool'){addTool(d.text);return;}
   if(d.role==='activity'){addLive(d);return;}
-  if(d.role==='me'){
-    const t=String(d.text||'');
-    // 本地刚显示过的，跳过（否则会显示两份）
-    if(pendingMeText && (t===pendingMeText || t.includes(pendingMeText))){
-      pendingMeText='';
-      return;
-    }
-    add('me',t);
-    return;
-  }
   if(d.role==='typing'){setTyping(d.on);return;}
   setTyping(false);
+
+  const isMe = d.role==='me';
+  const t = String(d.text||'');
+
+  // 本地刚显示过的文本跳过（否则显示两份）—— 但有图时不能整条丢掉
+  if(isMe && t && pendingMeText && (t===pendingMeText || t.includes(pendingMeText))){
+    pendingMeText='';
+    if(!d.image) return;
+  }
+
+  // 有图：图和文字一起渲染（以前只在 her 分支画图，主人的图直接不显示）
   if(d.image){
-    const wrap=document.createElement('div');wrap.className='msg her';
+    const wrap=document.createElement('div');
+    wrap.className='msg '+(isMe?'me':'her');
+    if(d.via==='assistant'){
+      const mk=document.createElement('span');mk.className='mk';mk.textContent='助手';
+      wrap.appendChild(mk);
+    }
     const img=document.createElement('img');
     img.src=d.image+'?token='+T;
     img.style.maxWidth='200px';img.style.borderRadius='8px';img.style.display='block';
-    wrap.appendChild(img);log.appendChild(wrap);log.scrollTop=log.scrollHeight;
+    img.loading='lazy';
+    img.onclick=function(){
+      const ov=document.createElement('div');ov.className='imgov';
+      const big=document.createElement('img');big.src=img.src;
+      ov.appendChild(big);
+      ov.onclick=function(){ document.body.removeChild(ov); };
+      document.body.appendChild(ov);
+    };
+    wrap.appendChild(img);
+    if(t.trim()){
+      const tx=document.createElement('div');
+      tx.style.marginTop='6px';
+      tx.textContent=t;
+      wrap.appendChild(tx);
+    }
+    log.appendChild(wrap);log.scrollTop=log.scrollHeight;
     return;
   }
-  add(d.role==='me'?'me':'her',d.text||'');
+
+  if(isMe){
+    const el=add('me',t);
+    if(d.via==='assistant' && el){
+      const mk=document.createElement('span');mk.className='mk';mk.textContent='助手';
+      el.insertBefore(mk, el.firstChild);
+    }
+    return;
+  }
+  add('her',t);
 };
 // 发图：读文件转 base64（也支持粘贴）
 async function sendImage(fileOrBlob, name){
@@ -11020,6 +11078,34 @@ async function send(from){
   setTimeout(()=>btn.disabled=false,600);
 }
 btn.onclick=()=>send();
+
+// ── 手机键盘适配：键盘弹起时 visualViewport 变矮，把页面高度跟着改，
+//    输入框才不会被顶出屏幕（安卓 Chrome 尤其明显）──
+(function fitMobile(){
+  var vv = window.visualViewport;
+  function apply(){
+    var h = vv ? vv.height : window.innerHeight;
+    document.documentElement.style.setProperty('--app-h', h + 'px');
+    // 键盘开着时把聊天区滚到底，免得看不到刚发的
+    if (vv && vv.height < window.innerHeight - 120) {
+      var logEl = document.getElementById('log');
+      if (logEl) logEl.scrollTop = logEl.scrollHeight;
+    }
+  }
+  if (vv) {
+    vv.addEventListener('resize', apply);
+    vv.addEventListener('scroll', apply);
+  }
+  window.addEventListener('resize', apply);
+  window.addEventListener('orientationchange', function(){ setTimeout(apply, 220); });
+  apply();
+})();
+
+// ── Service Worker：只在 HTTPS 下注册（HTTP 下浏览器不允许，静默跳过）──
+if ('serviceWorker' in navigator && location.protocol === 'https:') {
+  navigator.serviceWorker.register('/sw.js?token='+encodeURIComponent(T), { scope: '/' })
+    .catch(function(){ /* 没 sw.js 或注册失败都不影响用 */ });
+}
 
 const imgBtnEl=document.getElementById('imgBtn');
 const pickImgEl=document.getElementById('pickImg');
@@ -11234,6 +11320,64 @@ inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDef
         return;
       }
       // 她发的图片（表情包等）
+      // PWA：manifest（start_url 带 token，否则从桌面图标打开会 401）
+      if (u.pathname === "/manifest.json") {
+        const iconDir = "/root/dev/dsh-onebot-bridge/icons";
+        const has = (f) => {
+          try {
+            return existsSync(join(iconDir, f));
+          } catch {
+            return false;
+          }
+        };
+        const icons = [];
+        if (has("icon-192.png"))
+          icons.push({ src: "/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" });
+        if (has("icon-512.png"))
+          icons.push({ src: "/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" });
+        if (has("icon-maskable-512.png"))
+          icons.push({
+            src: "/icon-maskable-512.png",
+            sizes: "512x512",
+            type: "image/png",
+            purpose: "maskable",
+          });
+        const manifest = {
+          name: "QQ 助手",
+          short_name: "助手",
+          description: "一个跑在服务器上的 QQ 助手",
+          start_url: `/?token=${encodeURIComponent(String(cfg.webuiToken || ""))}`,
+          scope: "/",
+          display: "standalone",
+          orientation: "portrait",
+          background_color: "#12141a",
+          theme_color: "#12141a",
+          lang: "zh-CN",
+          icons,
+        };
+        res.writeHead(200, {
+          "content-type": "application/manifest+json; charset=utf-8",
+          "cache-control": "no-store",
+        });
+        res.end(JSON.stringify(manifest));
+        return;
+      }
+      if (u.pathname.startsWith("/icon-")) {
+        const name = u.pathname.slice(1).replace(/[^a-zA-Z0-9._-]/g, "");
+        const file = join("/root/dev/dsh-onebot-bridge/icons", name);
+        try {
+          const buf = readFileSync(file);
+          res.writeHead(200, {
+            "content-type": "image/png",
+            "cache-control": "public, max-age=86400",
+          });
+          res.end(buf);
+        } catch {
+          res.writeHead(404).end("no icon");
+        }
+        return;
+      }
+
       // 主人从 WebUI 发来的图片（存在 uploads/，带 token 校验）
       if (u.pathname.startsWith("/uploads/")) {
         const name = u.pathname.slice(9).replace(/[^a-zA-Z0-9._-]/g, "");
@@ -11508,10 +11652,14 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
             // 两次的 at 在同一毫秒，客户端的去重逻辑只认第一条，图就被丢了，
             // 界面上只剩一个空蓝条。
             try {
+              const isAssistant = /^assistant$/i.test(String(parsedBody.via || ""));
               webPush({
                 role: "me",
                 text: t.slice(0, 500),
                 ...(savedName ? { image: `/uploads/${savedName}` } : {}),
+                // via=assistant 时前端/客户端要在气泡上标「助手」——
+                // 图片消息同样要标，不然分不出是主人发的还是助手代发的
+                ...(isAssistant ? { via: "assistant" } : {}),
               });
             } catch (err) {
               logger.warn?.(`[onebot] WebUI 消息未记入历史：${err?.message ?? err}`);

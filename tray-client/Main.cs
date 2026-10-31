@@ -283,6 +283,7 @@ namespace FishTray
         public string text { get; set; }
         public string image { get; set; }
         public string tool { get; set; }
+        public string via { get; set; }      // "assistant" = 助手代发
         public long at { get; set; }
     }
 
@@ -291,6 +292,7 @@ namespace FishTray
         public string Role = "her";
         public string Body = "";
         public Image Pic;              // 有图就画图，不画文字气泡
+        public string Mark = "";       // 角标：非空就画在左上角（如「助手」）
         public event Action<Image> PicClicked;      // 点图看大图
         public string PicLabel = "";               // 原图路径/说明，给大图窗口当标题用
         public Color BgCol, FgCol;
@@ -437,6 +439,28 @@ namespace FishTray
             ApplyRegion();
         }
 
+        /// <summary>左上角小角标（「助手」之类）。画在最上层，图片上也能看见。</summary>
+        void DrawMark(Graphics g)
+        {
+            if (string.IsNullOrEmpty(Mark)) return;
+            try
+            {
+                var sz = TextRenderer.MeasureText(Mark, ToolFont);
+                int w = sz.Width + 12, h = sz.Height + 2;
+                var r = new Rectangle(6, 5, w, h);
+                using (var path = Round(r, 6))
+                using (var b = new SolidBrush(Color.FromArgb(226, 255, 199, 71)))
+                {
+                    g.FillPath(b, path);
+                    using (var pen = new Pen(Color.FromArgb(70, 150, 100, 0), 1f))
+                        g.DrawPath(pen, path);
+                }
+                TextRenderer.DrawText(g, Mark, ToolFont, r, Color.FromArgb(92, 58, 0),
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+            }
+            catch { }
+        }
+
         protected override void OnMouseClick(MouseEventArgs e)
         {
             if (Pic != null && e.Button == MouseButtons.Left && PicClicked != null)
@@ -472,6 +496,7 @@ namespace FishTray
                     g.DrawImage(Pic, ClientRectangle);
                     g.Clip = old;
                 }
+                DrawMark(g);
                 return;
             }
 
@@ -479,6 +504,7 @@ namespace FishTray
             using (var b = new SolidBrush(BgCol))
                 g.FillPath(b, path);
 
+            DrawMark(g);
             string txt = Role == "tool" ? ZhName(Body) : Body;
             var rect = new Rectangle(PadX, PadY - 1, Width - PadX * 2, Height - PadY * 2 + 2);
             TextRenderer.DrawText(g, txt, Role == "tool" ? ToolFont : BodyFont, rect, FgCol,
@@ -1521,6 +1547,7 @@ namespace FishTray
 
             string body = m.text ?? "";
             bool hasImg = !string.IsNullOrEmpty(m.image);
+            string mark = (m.via == "assistant") ? "助手" : "";
 
             // 完全没有内容的条目直接跳过 —— 以前纯发图会推一条 text="" 的空记录，
             // 界面上就只剩一个空蓝条
@@ -1529,9 +1556,10 @@ namespace FishTray
             // 图片消息：先放占位方块，图下载回来再填；有配文的话下面再补一个文字气泡
             if (hasImg)
             {
-                AddImageBubble(m.image, role, maxW);
+                AddImageBubble(m.image, role, maxW, mark);
                 if (body.Trim().Length == 0) return;
                 var textBubble = new Bubble(role, body, pal, maxW);
+                textBubble.Mark = mark;
                 textBubble.Copied += delegate (string t) { FlashCopied(t); };
                 textBubble.Parent = canvas;
                 bubbles.Add(textBubble);
@@ -1541,6 +1569,7 @@ namespace FishTray
                 return;
             }
             var b = new Bubble(role, body, pal, maxW);
+            b.Mark = mark;
             b.Copied += delegate (string t) { FlashCopied(t); };
             b.Parent = canvas;
             bubbles.Add(b);
@@ -1566,13 +1595,14 @@ namespace FishTray
             catch { }
         }
 
-        void AddImageBubble(string imgPath, string role, int maxW)
+        void AddImageBubble(string imgPath, string role, int maxW, string mark = "")
         {
             string url = imgPath;
             if (url.IndexOf("http", StringComparison.OrdinalIgnoreCase) != 0)
                 url = cfg.base_url.TrimEnd('/') + url;
 
             var ph = new Bubble(role, "", pal, maxW);
+            ph.Mark = mark ?? "";
             ph.Size = new Size(120, 120);
             ph.BgCol = pal.Card;
             ph.Parent = canvas;
