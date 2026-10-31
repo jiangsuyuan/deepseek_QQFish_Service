@@ -29,7 +29,7 @@ namespace FishTray
             sshKey = "";
             sshHost = "";
             port = 3081;
-            theme = "dark";
+            theme = "light";
         }
 
         public static string Dir
@@ -56,7 +56,7 @@ namespace FishTray
                     {
                         if (s.port == 0) s.port = 3081;
                         if (string.IsNullOrEmpty(s.base_url)) s.base_url = "http://127.0.0.1:3081";
-                        if (string.IsNullOrEmpty(s.theme)) s.theme = "dark";
+                        if (string.IsNullOrEmpty(s.theme)) s.theme = "light";
                         return s;
                     }
                 }
