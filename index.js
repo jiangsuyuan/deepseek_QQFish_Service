@@ -13,7 +13,7 @@ import http from "node:http";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync, copyFileSync, chmodSync } from "node:fs";
 import { join, join as pathJoin } from "node:path";
 import { homedir } from "node:os";
 import { SessionId } from "@deepseek-ai/dsh-session";
@@ -11103,6 +11103,23 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
     logger.info?.("[onebot] 工具调用日志已启用");
   } catch (err) {
     logger.warn?.(`[onebot] 工具日志注册失败：${err?.message ?? err}`);
+  }
+
+  // ── 同步只读源码副本 ──
+  // read_source / audit_self 读的是 /opt/fish-src/index.js。之前没有任何同步机制，
+  // 副本停在 10-29（10919 行），真实文件已经 14037 行 —— 她照抄「原文」时抄的是
+  // 两天前的代码，改动申请里的 oldCode 对不上。现在每次启动都覆盖一次。
+  try {
+    const liveSrc = "/root/dev/dsh-onebot-bridge/index.js";
+    const copySrc = "/opt/fish-src/index.js";
+    mkdirSync("/opt/fish-src", { recursive: true });
+    copyFileSync(liveSrc, copySrc);
+    chmodSync(copySrc, 0o444); // 只读：她只能看不能改
+    logger.info?.(
+      `[onebot] 源码副本已同步：${Math.round(statSync(copySrc).size / 1024)} KB`,
+    );
+  } catch (err) {
+    logger.warn?.(`[onebot] 源码副本同步失败：${err?.message ?? err}`);
   }
 
   // ── 自发消息转发：agent 自己开口（speak-up 等）时把话发到 QQ ──
