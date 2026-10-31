@@ -2230,12 +2230,16 @@ export function apply(ctx, _pluginConfig) {
     "set_reminder",
     "write_notebook",
     "read_notebook",
+    "note_file",
+    "read_note",
+    "list_notes",
     "read_pdf",
     "propose_patch",
     "my_patch_proposals",
     "patch_guide",
     "zhihu_daily",
     "news_now",
+    "sandbox_files",
     "render_page",
     "add_webui_button",
     "remove_webui_button",
@@ -3698,12 +3702,11 @@ export function apply(ctx, _pluginConfig) {
       // ── 沙箱代码能力：能在里面折腾，威胁不到本体和记忆 ──
       const runCodeTimes = [];
       const BANNED_CODE = [
-        /\/root\/\.dsh/,
-        /\/root\/dev/,
-        /subprocess|os\.system|os\.popen/,
-        /socket|requests|urllib|http\.client|fetch\(/,
-        /\.\.\/\.\.\//,
+        /\/root\//,
+        /\.\.\//,
         /chmod|chown|rm\s+-rf/,
+        /import\s+socket|from\s+socket/,
+        /subprocess|os\.system|os\.popen/,
       ];
 
       ctx.get?.("tools")?.register?.(
@@ -3712,7 +3715,8 @@ export function apply(ctx, _pluginConfig) {
           description:
             "在自己的沙箱里跑代码。可以算数、统计、处理文本、画图（matplotlib）、写小游戏、" +
             "联网抓东西（curl / requests 都行）。" +
-            "沙箱是降权的（sandbox 用户），碰不到你的记忆和源码（那些是只读的）；不限时，但 CPU 时间有上限。" +
+            "沙箱是降权的（sandbox 用户），碰不到你的记忆和源码（那些是只读的）；" +
+            "书桌（desk）里的文件和目录会一直留着，重启也不清；不限时，但 CPU 时间有上限。" +
             "language 填 python 或 javascript；输出最多 4000 字。",
           parameters: {
             language: { type: "string", description: "python 或 javascript" },
@@ -3742,11 +3746,13 @@ export function apply(ctx, _pluginConfig) {
             }
             runCodeTimes.push(now);
 
-            const dir = `/tmp/sbx-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+            const dir = "/var/lib/fish-desk";
+            let runFile = "";
             try {
               mkdirSync(dir, { recursive: true });
-              const file = lang === "javascript" ? "main.js" : "main.py";
-              writeFileSync(join(dir, file), code);
+              runFile = join(dir, `.run-${Date.now()}.${lang === "javascript" ? "js" : "py"}`);
+              const file = runFile.split("/").pop();
+              writeFileSync(runFile, code);
               // 让 sandbox 用户能读
               try {
                 execFileSync("chown", ["-R", "sandbox:sandbox", dir], { timeout: 5000 });
@@ -3797,7 +3803,7 @@ export function apply(ctx, _pluginConfig) {
               };
             } finally {
               try {
-                execFileSync("rm", ["-rf", dir], { timeout: 5000 });
+                if (runFile) execFileSync("rm", ["-f", runFile], { timeout: 5000 });
               } catch {
                 // 忽略
               }
@@ -4586,6 +4592,132 @@ export function apply(ctx, _pluginConfig) {
         }),
       );
 
+      // ── 多文件本子：能自己建文件、写草稿（只在 notebook/files 下） ──
+      const NOTE_FILES_DIR = join(NOTEBOOK_DIR, "files");
+      const NOTE_NAME_RE = /^[A-Za-z0-9_\u4e00-\u9fa5-]{1,48}\.(?:md|txt|py|js|json|csv|svg)$/i;
+      const NOTE_MAX_FILE = 64 * 1024;
+      const NOTE_MAX_TOTAL = 20 * 1024 * 1024;
+      function noteFilesTotal() {
+        let n = 0;
+        try {
+          for (const f of readdirSync(NOTE_FILES_DIR)) {
+            try {
+              n += statSync(join(NOTE_FILES_DIR, f)).size;
+            } catch {
+              // 忽略
+            }
+          }
+        } catch {
+          // 目录还不存在
+        }
+        return n;
+      }
+      function noteSafeName(raw) {
+        const name = String(raw || "").trim();
+        if (!NOTE_NAME_RE.test(name)) return null;
+        return name;
+      }
+
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "note_file",
+          description:
+            "在自己的文件区建一个文件、往里写东西。可以放笔记、草稿、小脚本。\n" +
+            "只允许 md / txt / py / js / json / csv / svg，单个文件最多 64KB，总共 20MB。\n" +
+            "文件会一直留着，隔几天还在、重启也在；要跑里面的脚本，把代码贴给 exec_sandbox。",
+          parameters: {
+            name: { type: "string", description: "文件名，例如 读书笔记.md、潮汐.js（不能带路径）" },
+            text: { type: "string", description: "要写的内容" },
+            mode: { type: "string", description: "replace 覆盖（默认）/ append 追加" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            const name = noteSafeName(args?.name);
+            if (!name) return { ok: false, reason: "文件名不合规：只能字母数字下划线中文，后缀 md/txt/py/js/json/csv/svg" };
+            const text = String(args?.text ?? "");
+            if (!text) return { ok: false, reason: "内容为空" };
+            if (text.length > NOTE_MAX_FILE) return { ok: false, reason: "一段写太长了（最多 64KB）" };
+            const append = String(args?.mode ?? "").toLowerCase() === "append";
+            try {
+              mkdirSync(NOTE_FILES_DIR, { recursive: true });
+              const p = join(NOTE_FILES_DIR, name);
+              let base = 0;
+              try {
+                base = statSync(p).size;
+              } catch {
+                // 新文件
+              }
+              if (!append && noteFilesTotal() - base + text.length > NOTE_MAX_TOTAL) {
+                return { ok: false, reason: "文件区满了（20MB），先删几个旧的" };
+              }
+              if (base + text.length > NOTE_MAX_FILE) return { ok: false, reason: "这个文件到 64KB 上限了" };
+              writeFileSync(p, text, { flag: append ? "a" : "w" });
+              const size = statSync(p).size;
+              audit({ kind: "note_file", name, bytes: text.length, append });
+              return { ok: true, name, size, totalKB: Math.round(noteFilesTotal() / 1024) };
+            } catch (err) {
+              return { ok: false, reason: String(err?.message ?? err).slice(0, 200) };
+            }
+          },
+        }),
+      );
+
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "read_note",
+          description: "读自己文件区里的某个文件。name 填文件名；不填就列清单。",
+          parameters: {
+            name: { type: "string", description: "文件名，可省略" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            const name = noteSafeName(args?.name);
+            if (!name) return { ok: false, reason: "文件名不合规" };
+            try {
+              const p = join(NOTE_FILES_DIR, name);
+              const text = readFileSync(p, "utf8");
+              return { ok: true, name, size: text.length, text: text.slice(0, 12000) };
+            } catch {
+              return { ok: false, reason: "没这个文件（先用 list_notes 看看有什么）" };
+            }
+          },
+        }),
+      );
+
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "list_notes",
+          description: "列出自己文件区里所有文件（名字、大小、最后改动时间）。",
+          parameters: {},
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async () => {
+            try {
+              const files = readdirSync(NOTE_FILES_DIR).map((f) => {
+                try {
+                  const st = statSync(join(NOTE_FILES_DIR, f));
+                  return { name: f, bytes: st.size, at: new Date(st.mtimeMs).toISOString().slice(0, 16) };
+                } catch {
+                  return { name: f, bytes: 0, at: "" };
+                }
+              });
+              files.sort((a, b) => (a.at < b.at ? 1 : -1));
+              return { ok: true, count: files.length, files, totalKB: Math.round(noteFilesTotal() / 1024) };
+            } catch {
+              return { ok: true, count: 0, files: [], note: "文件区还是空的" };
+            }
+          },
+        }),
+      );
+
       // ── 读 PDF ──
       ctx.get?.("tools")?.register?.(
         defineTool({
@@ -4791,7 +4923,8 @@ export function apply(ctx, _pluginConfig) {
                 let status = "pending";
                 try {
                   const d = JSON.parse(readFileSync(join(PROPOSAL_DIR, `${id}.done.json`), "utf8"));
-                  if (d?.status === "done") status = "done";
+                  // done / duplicate / rejected 都算「处理过了」，只有没有 done.json 才是 pending
+                  if (d?.status) status = String(d.status);
                 } catch {
                   // 没标记 = 还没执行
                 }
@@ -5003,6 +5136,85 @@ export function apply(ctx, _pluginConfig) {
       );
 
       logger.info?.("[onebot] 热榜工具已注册（news_now）");
+
+      // 沙箱目录：列文件、删文件，由她自己决定留哪些
+      const SBX_DIR = "/var/lib/fish-desk";
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "sandbox_files",
+          description:
+            "看/清理你沙箱目录里的文件。不传 delete 就列出所有文件（名字、大小、时间）；" +
+            "传 delete: [\"a.py\", \"b.png\"] 就删掉指定的。" +
+            "留哪些删哪些你自己定——空间是你的，别攒成垃圾堆就行。",
+          parameters: {
+            delete: {
+              type: "array",
+              items: { type: "string" },
+              description: "要删的文件名数组，不传就是只看",
+            },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            try {
+              mkdirSync(SBX_DIR, { recursive: true });
+              const list = readdirSync(SBX_DIR)
+                .filter((f) => !f.startsWith(".") || f.startsWith(".run-"))
+                .map((f) => {
+                  try {
+                    const st = statSync(join(SBX_DIR, f));
+                    return { name: f, size: st.size, at: st.mtimeMs };
+                  } catch {
+                    return null;
+                  }
+                })
+                .filter(Boolean)
+                .sort((a, b) => b.at - a.at);
+
+              const want = Array.isArray(args?.delete) ? args.delete.map(String) : [];
+              if (!want.length) {
+                const total = list.reduce((n, x) => n + x.size, 0);
+                return {
+                  ok: true,
+                  dir: SBX_DIR,
+                  count: list.length,
+                  totalKB: Math.round(total / 1024),
+                  files: list.slice(0, 60).map((x) => ({
+                    name: x.name,
+                    kb: Math.round((x.size / 1024) * 10) / 10,
+                    at: new Date(x.at).toLocaleString("zh-CN", { hour12: false }),
+                  })),
+                  hint: "要删就传 delete: [\"文件名\"]",
+                };
+              }
+
+              const deleted = [];
+              const failed = [];
+              for (const name of want.slice(0, 50)) {
+                // 只允许删这个目录里的普通文件名，不让它跑出去
+                if (!/^[\w.\-]+$/.test(name) || name.includes("..")) {
+                  failed.push({ name, why: "文件名不合法" });
+                  continue;
+                }
+                try {
+                  unlinkSync(join(SBX_DIR, name));
+                  deleted.push(name);
+                } catch (err) {
+                  failed.push({ name, why: String(err?.message ?? err).slice(0, 60) });
+                }
+              }
+              audit({ kind: "sandbox_clean", deleted: deleted.length, failed: failed.length });
+              return { ok: true, deleted, failed, note: deleted.length ? "删掉了" : "一个都没删" };
+            } catch (err) {
+              return { ok: false, reason: String(err?.message ?? err).slice(0, 200) };
+            }
+          },
+        }),
+      );
+
+      logger.info?.("[onebot] 沙箱文件管理工具已注册（sandbox_files）");
 
       // ── 用网页展示内容：记录、记忆、统计、想法 ──
       const PAGES_DIR = join(HOME, ".dsh/onebot-bridge/workspace/pages");
@@ -9594,7 +9806,7 @@ const TOOL_ZH={
   read_notebook:"翻本子",
   read_pdf:"读PDF",
   propose_patch:"提改动申请",
-  my_patch_proposals:"看改动申请",patch_guide:"看申请写法",zhihu_daily:"看知乎日报",news_now:"看热榜"
+  my_patch_proposals:"看改动申请",patch_guide:"看申请写法",zhihu_daily:"看知乎日报",news_now:"看热榜",sandbox_files:"管沙箱文件"
 };
 // 分类颜色
 const TOOL_KIND={
@@ -9612,7 +9824,7 @@ const TOOL_KIND={
   write_notebook:"mem",
   read_notebook:"mem",
   read_pdf:"mem",
-  propose_patch:"code",patch_guide:"code",zhihu_daily:"net",news_now:"net",
+  propose_patch:"code",patch_guide:"code",zhihu_daily:"net",news_now:"net",sandbox_files:"code",
   my_patch_proposals:"code",
   run_activity:"self",
   set_reminder:"self",
@@ -10539,6 +10751,7 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
           patch_guide: "看申请写法",
           zhihu_daily: "看知乎日报",
           news_now: "看热榜",
+          sandbox_files: "管沙箱文件",
           run_activity: "开始活动",
           set_reminder: "设提醒",
           group_impressions: "看群印象",
