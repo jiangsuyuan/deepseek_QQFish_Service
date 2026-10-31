@@ -78,7 +78,7 @@ const DEFAULTS = {
   allowGroups: [],
   groupRequireAt: true,
   workspace: join(HOME, ".dsh/onebot-bridge/workspace"),
-  maxReplyChars: 3500,
+  maxReplyChars: 1000,
   replyOnError: true,
   /** 允许主动说话的群（预热群会话，speak-up 开口时能落到这里） */
   prewarmGroups: [],
@@ -1108,7 +1108,7 @@ const selfViews = {
     }
   },
   addReflection(text) {
-    const t = String(text || "").trim().slice(0, 300);
+    const t = String(text || "").trim().slice(0, 2000);
     if (!t) return null;
     this.load();
     this.reflections.push({ text: t, at: Date.now() });
@@ -3363,7 +3363,7 @@ export function apply(ctx, _pluginConfig) {
                   .sort()
                   .slice(-7);
                 const items = files
-                  .map((f) => ({ file: f, text: readFileSync(join(NOTEBOOK_DIR, f), "utf8").slice(0, 2000) }))
+                  .map((f) => ({ file: f, text: readFileSync(join(NOTEBOOK_DIR, f), "utf8") }))
                   .filter((x) => !q || x.text.includes(q));
                 return { ok: true, type, count: items.length, items };
               } catch {
@@ -3656,7 +3656,7 @@ export function apply(ctx, _pluginConfig) {
             if (!idxs.length) return { ok: false, reason: `源码里没找到「${kw}」` };
             const snippets = idxs.slice(0, 3).map((i) => ({
               line: i + 1,
-              code: lines.slice(Math.max(0, i - 3), i + 12).join("\n").slice(0, 900),
+              code: lines.slice(Math.max(0, i - 3), i + 12).join("\n").slice(0, 4000),
             }));
             audit({ kind: "read_source", keyword: kw, hits: idxs.length });
             return { ok: true, keyword: kw, totalHits: idxs.length, snippets };
@@ -3887,16 +3887,16 @@ export function apply(ctx, _pluginConfig) {
               audit({ kind: "run_code", lang, ok: true, ms: Date.now() - now });
               return {
                 ok: true,
-                stdout: String(stdout || "").slice(0, 4000),
-                stderr: String(stderr || "").slice(0, 1000),
+                stdout: String(stdout || "").slice(0, 20000),
+                  stderr: String(stderr || "").slice(0, 5000),
               };
             } catch (err) {
               audit({ kind: "run_code", lang, ok: false, ms: Date.now() - now });
               return {
                 ok: false,
                 reason: String(err?.message ?? err).slice(0, 300),
-                stdout: String(err?.stdout ?? "").slice(0, 2000),
-                stderr: String(err?.stderr ?? "").slice(0, 1500),
+                stdout: String(err?.stdout ?? "").slice(0, 20000),
+                  stderr: String(err?.stderr ?? "").slice(0, 5000),
               };
             } finally {
               try {
@@ -3955,7 +3955,7 @@ export function apply(ctx, _pluginConfig) {
               ok: true,
               totalLines: lines.length,
               from: start,
-              code: lines.slice(start - 1, start - 1 + count).join("\n").slice(0, 6000),
+              code: lines.slice(start - 1, start - 1 + count).join("\n").slice(0, 40000),
             };
           },
         }),
@@ -3983,7 +3983,7 @@ export function apply(ctx, _pluginConfig) {
           execute: async (args) => {
             const kind = String(args?.kind ?? "other").toLowerCase();
             const what = String(args?.what ?? "").trim().slice(0, 150);
-            const why = String(args?.why ?? "").trim().slice(0, 250);
+            const why = String(args?.why ?? "").trim().slice(0, 1500);
             if (!what) return { ok: false, reason: "得先说想要什么" };
             const wants = loadWants();
             // 同一件事别重复记
@@ -4195,7 +4195,7 @@ export function apply(ctx, _pluginConfig) {
                 why: cut(plan.why, 200),
                 mood: String(plan.mood || ""),
                 looked: Array.isArray(plan.looked) ? plan.looked : [],
-                did: cut(r.content, 300),
+                did: cut(r.content, 3000),
                 reflect: cut(r.reflect, 3000),
                 nextAt: nextStr,
                 nextDelayMin: Number(r.nextDelayMin) || 0,
@@ -4682,7 +4682,7 @@ export function apply(ctx, _pluginConfig) {
               const out = [];
               for (const f of files) {
                 try {
-                  out.push({ file: f.split("/").pop(), text: readFileSync(f, "utf8").slice(0, 6000) });
+                  out.push({ file: f.split("/").pop(), text: readFileSync(f, "utf8") });
                 } catch {
                   // 这天没写
                 }
@@ -4788,7 +4788,7 @@ export function apply(ctx, _pluginConfig) {
             try {
               const p = join(NOTE_FILES_DIR, name);
               const text = readFileSync(p, "utf8");
-              return { ok: true, name, size: text.length, text: text.slice(0, 12000) };
+              return { ok: true, name, size: text.length, text };
             } catch {
               return { ok: false, reason: "没这个文件（先用 list_notes 看看有什么）" };
             }
@@ -4865,8 +4865,8 @@ export function apply(ctx, _pluginConfig) {
               return {
                 ok: true,
                 chars: txt.length,
-                truncated: txt.length > 8000,
-                text: txt.slice(0, 8000),
+                truncated: false,
+                  text: txt,
               };
             } catch (err) {
               return {
@@ -5156,8 +5156,8 @@ export function apply(ctx, _pluginConfig) {
                   author: String(j0.author || ""),
                   url: j0.share_url || j0.url || `https://daily.zhihu.com/story/${artId}`,
                   chars: plain.length,
-                  truncated: plain.length > 6000,
-                  text: plain.slice(0, 6000),
+                  truncated: false,
+                    text: plain,
                 };
               } catch (err) {
                 return { ok: false, reason: String(err?.message ?? err).slice(0, 200) };
@@ -5671,8 +5671,8 @@ export function apply(ctx, _pluginConfig) {
                   area: areaKey,
                   name,
                   chars: t.length,
-                  truncated: t.length > 8000,
-                  text: t.slice(0, 8000),
+                  truncated: false,
+                  text: t,
                 };
               }
 
@@ -5954,7 +5954,7 @@ export function apply(ctx, _pluginConfig) {
               }
               let snippet = "";
               if (line && srcLines) {
-                snippet = srcLines.slice(Math.max(0, line - 3), line + 40).join("\n").slice(0, 2500);
+                snippet = srcLines.slice(Math.max(0, line - 3), line + 40).join("\n").slice(0, 8000);
               }
               return {
                 ok: true,
@@ -6468,10 +6468,10 @@ ${html}
     //   [QQ私聊] 竹叶不知秋：你好
     // 开头是「（QQ 聊天」，但里面确实有真人说的话。
     const m1 = t.match(/\[消息内容\]\s*([\s\S]*?)(?:\n\[|$)/);
-    if (m1 && m1[1].trim()) return m1[1].trim().slice(0, 400);
+    if (m1 && m1[1].trim()) return m1[1].trim().slice(0, 8000);
 
     const m3 = t.match(/\[(?:QQ群消息|QQ私聊|网页聊天|网页聊天·助手代发)\][^：:\n]*[：:]\s*([\s\S]*)/);
-    if (m3 && m3[1].trim()) return m3[1].trim().slice(0, 400);
+    if (m3 && m3[1].trim()) return m3[1].trim().slice(0, 8000);
 
     // DSH 自己注入的运行时说明，不是人说的话
     if (/^(Time sampled while preparing|Browser time zone for this request|Elapsed since the preceding|Current runtime context|Current DSH file policy|Approval prompts are disabled|Current DeepSeek Harness implementation checkout|Current working directory)/i.test(t)) {
@@ -12674,7 +12674,7 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
       if (pending.length < (Number(cfg.digestEvery) || 20)) return;
       const text = pending
         .slice(-30)
-        .map((m) => `[${m.kind}] ${m.topic ? `(${m.topic}) ` : ""}${String(m.text || "").slice(0, 90)}`)
+        .map((m) => `[${m.kind}] ${m.topic ? `(${m.topic}) ` : ""}${String(m.text || "").slice(0, 800)}`)
         .join("\n");
       const runKey = SELF_ACTIVITY_KEY;
       const out = String(
@@ -12694,7 +12694,7 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
       digests.push({
         from: pending[0].at,
         to: pending[pending.length - 1].at,
-        text: out.slice(0, 400),
+        text: out.slice(0, 2000),
         count: pending.length,
       });
       saveDigests(digests);
@@ -12845,7 +12845,7 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
         topic: Array.isArray(rec.topic) ? rec.topic.filter(Boolean).slice(0, 6) : [],
         who: Array.isArray(rec.who) ? rec.who.filter(Boolean).slice(0, 4) : [],
         mood: rec.mood || "",
-        text: String(rec.text || "").slice(0, 400),
+        text: String(rec.text || "").slice(0, 3000),
         links: [],
         ref: rec.ref || "",
       };
@@ -13024,9 +13024,9 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
         const obj = JSON.parse(mm[0]);
         const now = Date.now();
         saveSelfModel({
-          fact: { text: String(obj.fact || "").slice(0, 200), updatedAt: now },
+          fact: { text: String(obj.fact || "").slice(0, 2000), updatedAt: now },
           inner: {
-            text: String(obj.inner || "").slice(0, 200),
+            text: String(obj.inner || "").slice(0, 2000),
             tensions: Array.isArray(obj.tensions)
               ? obj.tensions.map((x) => String(x).slice(0, 100)).slice(0, 3)
               : [],
@@ -13172,7 +13172,7 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
         return "";
       }
       const obj = JSON.parse(m[0]);
-      const summary = String(obj.summary || "").trim().slice(0, 400);
+      const summary = String(obj.summary || "").trim().slice(0, 2000);
       if (summary.length < 10) return "";
       const pathArr = Array.isArray(obj.path)
         ? obj.path.slice(0, 6).map((x) =>
@@ -13273,7 +13273,7 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
       "（内部反思，不要发消息。你刚做完一件事。）\n\n" +
       `原本想做的：${plan.intent}\n` +
       `为什么：${plan.why}\n` +
-      `实际做了：${String(actOut || "").slice(0, 400)}\n\n` +
+      `实际做了：${String(actOut || "").slice(0, 2000)}\n\n` +
       "回头看这几个问题，用两三句话说清（不用全答，挑有话说）：\n" +
       "1. 做到了吗？和想的有差别吗？\n" +
       "2. 这件事让你对自己或对什么有了新的看法吗？\n" +
@@ -13390,7 +13390,7 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
     appendActivity({
       at: Date.now(),
       kind: plan.action,
-      content: String(actOut).slice(0, 400),
+      content: String(actOut).slice(0, 3000),
       think: plan,
       reflect: reflectOut,
       offline,
@@ -13769,7 +13769,7 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
         .replace(/\[\[game\s*[:：][^\]\n]*\]\]/gi, "")
         .replace(/\[\[book\s*[:：][^\]\n]*\]\]/gi, "")
         .trim();
-      appendActivity({ at: Date.now(), kind, content: cleanOut.slice(0, 500), offline });
+      appendActivity({ at: Date.now(), kind, content: cleanOut.slice(0, 3000), offline });
       // 也记进统一记忆日志（带 kind 标签，方便摘要和检索）
       appendMem({
         kind,
@@ -14024,7 +14024,7 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
         return;
       }
       const obj = JSON.parse(m[0]);
-      const summary = String(obj.summary || "").trim().slice(0, 400);
+      const summary = String(obj.summary || "").trim().slice(0, 2000);
       if (summary.length < 20) return;
       const pathArr = Array.isArray(obj.path)
         ? obj.path.slice(0, 6).map((x) =>
@@ -14433,7 +14433,7 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
       audit({ kind: "qzone_skip" });
       return;
     }
-    text = cleanQzone(stripLoneSurrogates(text).slice(0, 300));
+    text = cleanQzone(stripLoneSurrogates(text).slice(0, 1000));
     try {
       const res = await client.call(
         "send_qzone_msg",
