@@ -2486,8 +2486,9 @@ export function apply(ctx, _pluginConfig) {
         defineTool({
           name: "hot_news",
           description:
-            "查看当前网络热点（百度热搜）。当对方问「最近有什么新鲜事」「今天有什么热点」「最近发生啥了」" +
-            "之类的问题时调用，拿到标题后用自己的话聊，不要逐条念。",
+            "查百度热搜。对方问「最近有什么新鲜事」「今天有什么热点」时用，拿到标题后用自己的话聊，不要逐条念。\n" +
+            "注意：news_now 更全（16 个平台，也含百度）——想看微博/知乎/抖音/B站那些用 news_now。" +
+            "只想看百度这一个源时用这个也行。",
           parameters: {
             count: { type: "number", description: "返回几条，默认 8，最多 15" },
           },
@@ -3000,9 +3001,10 @@ export function apply(ctx, _pluginConfig) {
         defineTool({
           name: "request_feature",
           description:
-            "如果你发现自己缺某个能力（想存图但没工具、想查某个信息但没接口、想做某件事但做不到），" +
-            "可以提一次功能申请给主人。**不要频繁**：一天最多一次，只有真的影响你做事的时候才提。" +
-            "提之前先想想有没有现有工具能绕过去。",
+            "觉得自己缺某个能力，提一次功能申请给主人。**一天最多一次**，只有真的卡住才提。" +
+            "提之前先想想有没有现有工具能绕过去。\n" +
+            "注意：note_want({kind:\"feature\"}) 也能记功能需求，而且**不限次数**——" +
+            "只是记下来等主人看的话用它；真要主人现在就知道、并且已经卡住你了，才用这个。",
           parameters: {
             idea: { type: "string", description: "你想要的新功能，一句话说清" },
             why: { type: "string", description: "为什么需要它（今天遇到了什么具体情况）" },
@@ -3537,8 +3539,8 @@ export function apply(ctx, _pluginConfig) {
         defineTool({
           name: "my_source",
           description:
-            "看你自己的源码里某个函数/关键词是怎么实现的。有人问「你怎么做到的」「你的代码怎么写的」，或者你自己想确认某个行为时用。" +
-            "只返回匹配到的片段，不是全文。",
+            "看源码里某个函数/关键词是怎么实现的，只返回匹配片段。有人问「你怎么做到的」时用。\n" +
+            "注意：read_source 更全（能按行号看、命中更多、每段行数可调），要精确定位某一段时用 read_source。",
           parameters: {
             keyword: { type: "string", description: "函数名或关键词，比如 window_handoff、humanizePunct" },
           },
@@ -3578,8 +3580,10 @@ export function apply(ctx, _pluginConfig) {
         defineTool({
           name: "my_adventures",
           description:
-            "翻你自己出门走过的地方（每次自主探索的完整记录：看了什么、为什么往那儿走、当时想到什么）。" +
-            "有人问你「最近在忙什么」「有什么新发现」，或者你自己想回顾时用。",
+            "翻自己出门走过的地方（每次自主探索的完整记录：看了什么、为什么往那儿走、当时想到什么）。" +
+            "有人问「最近在忙什么」「有什么新发现」时用。\n" +
+            "注意：my_activities 有全部活动（探险只是其中一类，还有读书/玩/思考/写）——" +
+            "只想看探险用这个，想看完整日志用 my_activities。",
           parameters: {
             limit: { type: "number", description: "返回几条，默认 5" },
           },
@@ -3717,9 +3721,10 @@ export function apply(ctx, _pluginConfig) {
           description:
             "在自己的沙箱里跑代码。可以算数、统计、处理文本、画图（matplotlib）、写小游戏、" +
             "联网抓东西（curl / requests 都行）。" +
-            "沙箱是降权的（sandbox 用户），碰不到你的记忆和源码（那些是只读的）；" +
-            "书桌（desk）里的文件和目录会一直留着，重启也不清；不限时，但 CPU 时间有上限。" +
-            "language 填 python 或 javascript；输出最多 4000 字。",
+            "沙箱是降权的（sandbox 用户），碰不到你的记忆和源码（那些是只读的）；不限时，但 CPU 时间有上限。" +
+            "language 填 python 或 javascript；输出最多 4000 字。\n" +
+            "工作目录是 /var/lib/fish-desk，写出来的文件会留在那儿——**那地方你自己能删能改**，" +
+            "只想临时用就随便放，想长期留着就挪到文件区（note_file），那边删不掉。",
           parameters: {
             language: { type: "string", description: "python 或 javascript" },
             code: { type: "string", description: "要跑的代码" },
@@ -3819,7 +3824,8 @@ export function apply(ctx, _pluginConfig) {
         defineTool({
           name: "read_source",
           description:
-            "看你自己的源码。可以搜函数名/关键词，也可以按行号看一段。源码是只读副本，你只能看不能改。",
+            "看自己的源码。可以搜函数名/关键词，也可以按行号看一段（start + count）。源码是只读副本，你只能看不能改。\n" +
+            "这是看代码的主力工具；my_source 是它的旧版，功能更少。",
           parameters: {
             keyword: { type: "string", description: "要搜的关键词或函数名" },
             start: { type: "number", description: "起始行号（配合 count）" },
@@ -3872,8 +3878,9 @@ export function apply(ctx, _pluginConfig) {
           name: "note_want",
           description:
             "把「我想要什么」记进记事本：感兴趣的网站要账号、缺的功能、想看的书/番…" +
-            "随时可以记，不占额度。主人有空会看，恢复联络时会一起报给他。" +
-            "kind 填 account（要账号）/ feature（要功能）/ other（其它）。",
+            "随时可以记，不占额度，不限次数。主人有空会看，恢复联络时会一起报给他。\n" +
+            "kind 填 account（要账号）/ feature（要功能）/ other（其它）。\n" +
+            "跟 request_feature 的区别：这个只是**记下来**等主人看；request_feature 是**现在就通知他**且一天只能一次。",
           parameters: {
             kind: { type: "string", description: "account / feature / other" },
             what: { type: "string", description: "想要什么，一句话" },
@@ -4146,8 +4153,10 @@ export function apply(ctx, _pluginConfig) {
         defineTool({
           name: "my_capabilities",
           description:
-            "列一下你自己会什么：能用的工具、能做的自主活动、能查的记忆、有什么限制。" +
-            "有人问「你会什么」「你能做什么」「你有什么功能」时用它，别凭印象瞎说。",
+            "列一下自己会什么：能用的工具、能做的自主活动、能查的记忆、有什么限制。" +
+            "有人问「你会什么」「你能做什么」时用它，别凭印象瞎说。\n" +
+            "注意：audit_self 更全（多给你「每个工具用过几次、失败几次、哪些从没用过」）。" +
+            "只想知道自己会什么用这个；想查哪个功能有问题用 audit_self。",
           parameters: {},
           output: {
             schema: { type: "json" },
@@ -4385,8 +4394,8 @@ export function apply(ctx, _pluginConfig) {
         defineTool({
           name: "my_thoughts",
           description:
-            "查你自己写下的观点和自省。有人问「你都有什么想法」「你反省过什么」时用。" +
-            "which 填 views（观点，默认）或 reflections（自省）。",
+            "查自己写下的观点和自省。which 填 views（观点，默认）或 reflections（自省）。\n" +
+            "注意：my_memory({type:\"views\"}) 或 {type:\"reflections\"} 是同一份数据，两个都行。",
           parameters: {
             which: { type: "string", description: "views（观点）/ reflections（自省），默认 views" },
             limit: { type: "number", description: "看几条，默认 20" },
@@ -4516,8 +4525,9 @@ export function apply(ctx, _pluginConfig) {
         defineTool({
           name: "write_notebook",
           description:
-            "往你的本子上写东西。这是你自己的本子：写什么、怎么写都由你，不会被人整理成别的格式。" +
-            "按天分文件，写进去就存住了，隔几晚翻回来还认得。",
+            "往本子上写东西——**按天分文件的那种**。想写「今天我干了什么」「今天想到什么」就用这个。" +
+            "按天自动分文件，写进去就存住了，隔几晚翻回来还认得。" +
+            "（不知道往哪儿写的时候：流水账用这个，要长期留的东西用 note_file。）",
           parameters: {
             text: { type: "string", description: "要写的内容（可以写很多）" },
             title: { type: "string", description: "小标题，可省略" },
@@ -4552,7 +4562,8 @@ export function apply(ctx, _pluginConfig) {
         defineTool({
           name: "read_notebook",
           description:
-            "翻自己的本子。参数 date 填某天（2026-10-29），不填就看最近几天；days 控制看几天，默认 3。",
+            "翻自己的本子（write_notebook 写的那种，按天分的）。" +
+            "参数 date 填某天（2026-10-29），不填就看最近几天；days 控制看几天，默认 3。",
           parameters: {
             date: { type: "string", description: "某一天，格式 2026-10-29" },
             days: { type: "number", description: "看最近几天，默认 3" },
@@ -4624,9 +4635,12 @@ export function apply(ctx, _pluginConfig) {
         defineTool({
           name: "note_file",
           description:
-            "在自己的文件区建一个文件、往里写东西。可以放笔记、草稿、小脚本。\n" +
-            "只允许 md / txt / py / js / json / csv / svg，单个文件最多 64KB，总共 20MB。\n" +
-            "文件会一直留着，隔几天还在、重启也在；要跑里面的脚本，把代码贴给 exec_sandbox。",
+            "在文件区建文件——**要长期留着的东西放这儿**：你的规矩、对照表、笔记、攒的资料。\n" +
+            "跟另外两处的区别：\n" +
+            "· write_notebook = 按天分的流水账（日期是文件名，你自己命名不了）\n" +
+            "· note_file = 你自己命名的长期文件，**删不掉**（root 权限），最安全\n" +
+            "· exec_sandbox 的沙箱目录 = 临时跑代码用的，**你自己能删能改**，重要的别只放那儿\n" +
+            "只允许 md / txt / py / js / json / csv / svg，单个文件最多 64KB，总共 20MB。",
           parameters: {
             name: { type: "string", description: "文件名，例如 读书笔记.md、潮汐.js（不能带路径）" },
             text: { type: "string", description: "要写的内容" },
@@ -4670,7 +4684,7 @@ export function apply(ctx, _pluginConfig) {
       ctx.get?.("tools")?.register?.(
         defineTool({
           name: "read_note",
-          description: "读自己文件区里的某个文件。name 填文件名；不填就列清单。",
+          description: "读文件区里的某个文件。name 填文件名；不填就列清单（等同 list_notes）。",
           parameters: {
             name: { type: "string", description: "文件名，可省略" },
           },
@@ -4695,7 +4709,7 @@ export function apply(ctx, _pluginConfig) {
       ctx.get?.("tools")?.register?.(
         defineTool({
           name: "list_notes",
-          description: "列出自己文件区里所有文件（名字、大小、最后改动时间）。",
+          description: "列出文件区里所有文件（名字、大小、最后改动时间）。想找长期存的东西用这个；临时产物在沙箱目录，用 sandbox_files 看。",
           parameters: {},
           output: {
             schema: { type: "json" },
@@ -5193,9 +5207,10 @@ export function apply(ctx, _pluginConfig) {
         defineTool({
           name: "sandbox_files",
           description:
-            "看/清理你沙箱目录里的文件。不传 delete 就列出所有文件（名字、大小、时间）；" +
+            "看/清理沙箱目录（/var/lib/fish-desk）里的文件。不传 delete 就列出所有文件（名字、大小、时间）；" +
             "传 delete: [\"a.py\", \"b.png\"] 就删掉指定的。" +
-            "留哪些删哪些你自己定——空间是你的，别攒成垃圾堆就行。",
+            "留哪些删哪些你自己定——空间是你的，别攒成垃圾堆就行。\n" +
+            "提醒：这儿的文件你自己能删，所以**真正想留住的东西别只放这儿**，挪到文件区（note_file）更稳。",
           parameters: {
             delete: {
               type: "array",
