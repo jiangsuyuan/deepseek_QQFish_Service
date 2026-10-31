@@ -432,6 +432,66 @@ namespace FishTray
                 TextFormatFlags.WordBreak | TextFormatFlags.NoPadding | TextFormatFlags.TextBoxControl);
         }
 
+
+        /// <summary>复制成功后通知外面（标题栏闪一下"已复制"）</summary>
+        public event Action<string> Copied;
+
+        // 菜单只建一次，每次右键复用（之前每次 new，旧的不释放会叠在一起）
+        ContextMenuStrip _menu;
+        ToolStripMenuItem _miCopy;
+        ToolStripMenuItem _miPic;
+
+        void BuildMenu()
+        {
+            _menu = new ContextMenuStrip();
+            _menu.ShowImageMargin = false;
+
+            _miCopy = new ToolStripMenuItem("复制这条");
+            _miCopy.Click += delegate
+            {
+                if (string.IsNullOrEmpty(Body)) return;
+                try
+                {
+                    Clipboard.SetText(Body);
+                    if (Copied != null) Copied(Body);
+                }
+                catch { }
+            };
+            _menu.Items.Add(_miCopy);
+
+            _miPic = new ToolStripMenuItem("复制图片");
+            _miPic.Click += delegate
+            {
+                if (Pic == null) return;
+                try { Clipboard.SetImage(Pic); if (Copied != null) Copied(""); }
+                catch { }
+            };
+            _menu.Items.Add(_miPic);
+
+            _menu.Opening += delegate
+            {
+                _miCopy.Enabled = !string.IsNullOrEmpty(Body);
+                _miPic.Visible = Pic != null;
+            };
+
+            // 关键：挂到属性上，WinForms 自己处理右键，不再冒泡到父容器
+            ContextMenuStrip = _menu;
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            // 右键交给 ContextMenuStrip 属性处理（见 BuildMenu），
+            // 自己 Show 会和父容器的菜单撞在一起，出现两个
+            base.OnMouseDown(e);
+            if (e.Button == MouseButtons.Right && _menu == null) BuildMenu();
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && _menu != null) { _menu.Dispose(); _menu = null; }
+            base.Dispose(disposing);
+        }
+
         static GraphicsPath Round(Rectangle r, int rad)
         {
             var p = new GraphicsPath();
@@ -727,6 +787,17 @@ namespace FishTray
 
             scrollHost = new Panel { Dock = DockStyle.Fill, AutoScroll = false };
             canvas = new Panel { Location = new Point(0, 0) };
+            canvas.ContextMenuStrip = new ContextMenuStrip();
+            var allMenu = canvas.ContextMenuStrip;
+            allMenu.Items.Add("复制全部聊天", null, delegate { CopyAll(); });
+            allMenu.Items.Add("清空显示", null, delegate
+            {
+                canvas.Controls.Clear();
+                bubbles.Clear();
+                lastAt = 0;
+                Log.W("已清空显示");
+            });
+
             scrollHost.Controls.Add(canvas);
             scrollHost.Resize += delegate { Relayout(); };
             scrollHost.MouseWheel += delegate (object s2, MouseEventArgs e2) { Wheel(e2.Delta); };
@@ -767,9 +838,29 @@ namespace FishTray
         bool collapsed = false;
         Timer collapseTimer;
 
+        /// <summary>把窗口位置夹到屏幕工作区内，不超出边界</summary>
+        static Point ClampToScreen(int x, int y, int w, int h, Rectangle wa)
+        {
+            if (w > wa.Width) w = wa.Width;
+            if (h > wa.Height) h = wa.Height;
+            if (x + w > wa.Right) x = wa.Right - w;
+            if (y + h > wa.Bottom) y = wa.Bottom - h;
+            if (x < wa.Left) x = wa.Left;
+            if (y < wa.Top) y = wa.Top;
+            return new Point(x, y);
+        }
+
+        // 收起后的位置（用户拖过就记这里，下次收起别再归位到默认点）
+        Point collapsedPos = Point.Empty;
+        bool hasCollapsedPos = false;
+
         void Collapse()
         {
             if (collapsed) return;
+
+            // 注意：收起时**不重算**图标位置。
+            // 之前这里是「把图标挪到窗口右边缘」，结果每次展开再收起，
+            // 图标都会跟着窗口走一段，不再是用户拖到的那个点。
             collapsed = true;
 
             var wa = Screen.PrimaryScreen.WorkingArea;
@@ -783,8 +874,17 @@ namespace FishTray
             fishStrip.BringToFront();
             Width = COLLAPSED_W;
             Height = COLLAPSED_H;
-            Left = wa.Right - COLLAPSED_W - 8;
-            Top = wa.Top + (wa.Height - COLLAPSED_H) / 2;
+            if (hasCollapsedPos)
+            {
+                var cp = ClampToScreen(collapsedPos.X, collapsedPos.Y, COLLAPSED_W, COLLAPSED_H, wa);
+                Left = cp.X;
+                Top = cp.Y;
+            }
+            else
+            {
+                Left = wa.Right - COLLAPSED_W - 8;
+                Top = wa.Top + (wa.Height - COLLAPSED_H) / 2;
+            }
             ResumeLayout();
             BackColor = pal.Card;
 
@@ -811,9 +911,27 @@ namespace FishTray
             HeaderShow();
             Region = null;
             Width = EXPANDED_W;
-            Height = 800;
-            Left = wa.Right - EXPANDED_W - 12;
-            Top = wa.Bottom - Height - 8;
+            // 高度不能超过屏幕：原来硬编码 800，小屏会伸出边界
+            Height = Math.Min(800, wa.Height - 40);
+
+            // 以图标（收起态）位置为基准展开
+            int iconRight, iconCenterY;
+            if (hasCollapsedPos)
+            {
+                iconRight = collapsedPos.X + COLLAPSED_W;
+                iconCenterY = collapsedPos.Y + COLLAPSED_H / 2;
+            }
+            else
+            {
+                iconRight = wa.Right - 8;
+                iconCenterY = wa.Top + wa.Height / 2;
+            }
+
+            int tx2 = iconRight - Width;
+            int ty2 = iconCenterY - 40;
+            var pos = ClampToScreen(tx2, ty2, Width, Height, wa);
+            Left = pos.X;
+            Top = pos.Y;
             ResumeLayout();
             ApplyPal();
             Relayout();
@@ -856,7 +974,20 @@ namespace FishTray
         void OnFormMouseUp(object sender, MouseEventArgs e)
         {
             if (!collapsed || e.Button != MouseButtons.Left) return;
-            if (!collapsedDragging) Expand();   // 没拖动过 = 点击 = 展开
+            if (!collapsedDragging)
+            {
+                Expand();   // 没拖动过 = 点击 = 展开
+            }
+            else
+            {
+                // 拖完了：记住位置，下次收起别再归位
+                var wa2 = Screen.FromControl(this).WorkingArea;
+                var p2 = ClampToScreen(Location.X, Location.Y, COLLAPSED_W, COLLAPSED_H, wa2);
+                collapsedPos = p2;
+                hasCollapsedPos = true;
+                Location = p2;
+                Log.W("图标位置已记住: " + p2.X + "," + p2.Y);
+            }
             collapsedDragging = false;
         }
 
@@ -1096,6 +1227,25 @@ namespace FishTray
             canvas.ResumeLayout();
         }
 
+        void CopyAll()
+        {
+            try
+            {
+                var sb = new StringBuilder();
+                foreach (var b in bubbles)
+                {
+                    if (b.Pic != null) { sb.AppendLine("[图片]"); continue; }
+                    if (string.IsNullOrEmpty(b.Body)) continue;
+                    string who = b.Role == "me" ? "我" : (b.Role == "tool" ? "（工具）" : "她");
+                    sb.AppendLine(who + "：" + b.Body);
+                    sb.AppendLine();
+                }
+                Clipboard.SetText(sb.ToString());
+                Log.W("已复制全部 " + sb.Length + " 字");
+            }
+            catch (Exception ex) { Log.W("复制失败 " + ex.Message); }
+        }
+
         void ScrollEnd()
         {
             try
@@ -1273,9 +1423,29 @@ namespace FishTray
 
             string body = m.text ?? "";
             var b = new Bubble(role, body, pal, maxW);
+            b.Copied += delegate (string t) { FlashCopied(t); };
             b.Parent = canvas;
             bubbles.Add(b);
             canvas.Controls.Add(b);
+        }
+
+        void FlashCopied(string t)
+        {
+            try
+            {
+                string old = statusLabel.Text;
+                SetStatus("已复制", true);
+                var t2 = new Timer { Interval = 1200 };
+                t2.Tick += delegate
+                {
+                    t2.Stop();
+                    t2.Dispose();
+                    SetStatus(old, Tunnel.Open(cfg.port));
+                };
+                t2.Start();
+                Log.W("已复制 " + (t == null ? 0 : t.Length) + " 字");
+            }
+            catch { }
         }
 
         void AddImageBubble(string imgPath, string role, int maxW)

@@ -48,7 +48,7 @@ $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
     AssemblyInfo.cs Main.cs
 ```
 
-产物 **136 KB**（含 91 KB 的图标图片）。
+产物 **141 KB**（含 91 KB 的图标图片）。`FishTray.exe` 已经编译好放在这个目录里，**不需要自己编译也能直接跑**。
 
 ## 首次运行
 
@@ -93,9 +93,43 @@ $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
 8. **消息双份**：本地乐观显示 + 轮询回推会画两遍。记住刚发的原文，回来时比对吞掉。
 9. **主题切换气泡不变色**：气泡颜色在构造时定死，`Invalidate()` 只重绘不换色。要 `ApplyPalette()` 重新赋值。
 
+## 图标位置
+
+**小球拖到哪，下次收起就还在哪**（2026-10-31 修）。
+
+之前每次收起都强制归位到屏幕右侧中央，拖动等于白拖。现在：
+
+```csharp
+Point collapsedPos;      // 记住的位置
+bool hasCollapsedPos;
+
+// 拖动结束
+collapsedPos = Location;
+hasCollapsedPos = true;
+
+// 收起时
+if (hasCollapsedPos) { Left = collapsedPos.X; Top = collapsedPos.Y; }
+else { /* 第一次才用默认位置 */ }
+```
+
+**展开时围绕小球**（不是固定在右下角）：
+
+```csharp
+Height = Math.Min(800, wa.Height - 40);   // 屏矮就缩，别伸出边界
+
+int iconRight   = collapsedPos.X + COLLAPSED_W;
+int iconCenterY = collapsedPos.Y + COLLAPSED_H / 2;
+int tx = iconRight - Width;
+int ty = iconCenterY - 40;
+
+var pos = ClampToScreen(tx, ty, Width, Height, wa);   // 越界推回来
+```
+
+`ClampToScreen` 用 `Screen.FromControl(this).WorkingArea`（**当前屏幕**，多显示器也对）。
+
 ## 已知限制
 
 - 图片消息只显示 `［图片］路径`，没真正加载缩略图
 - 只有 Windows 版（`System.Windows.Forms`）
 - 没做开机自启
-- 收起小球的位置不会记忆，重启回到屏幕右侧中间
+- 小球位置只在**本次运行**内记住，重启回到屏幕右侧中间（要持久化得写进 `settings.json`）
