@@ -1519,14 +1519,27 @@ namespace FishTray
         {
             string role = m.role == "me" ? "me" : (m.role == "tool" ? "tool" : "her");
 
-            // 图片消息：先放占位方块，图下载回来再填
-            if (!string.IsNullOrEmpty(m.image))
+            string body = m.text ?? "";
+            bool hasImg = !string.IsNullOrEmpty(m.image);
+
+            // 完全没有内容的条目直接跳过 —— 以前纯发图会推一条 text="" 的空记录，
+            // 界面上就只剩一个空蓝条
+            if (!hasImg && body.Trim().Length == 0) return;
+
+            // 图片消息：先放占位方块，图下载回来再填；有配文的话下面再补一个文字气泡
+            if (hasImg)
             {
                 AddImageBubble(m.image, role, maxW);
+                if (body.Trim().Length == 0) return;
+                var textBubble = new Bubble(role, body, pal, maxW);
+                textBubble.Copied += delegate (string t) { FlashCopied(t); };
+                textBubble.Parent = canvas;
+                bubbles.Add(textBubble);
+                canvas.Controls.Add(textBubble);
+                Relayout();
+                ScrollEnd();
                 return;
             }
-
-            string body = m.text ?? "";
             var b = new Bubble(role, body, pal, maxW);
             b.Copied += delegate (string t) { FlashCopied(t); };
             b.Parent = canvas;

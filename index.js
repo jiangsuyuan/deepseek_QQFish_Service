@@ -11503,10 +11503,16 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
               // via: "assistant" 表示这条是 AI 助手代主人发的，不是主人本人打的
               __viaAssistant: /^assistant$/i.test(String(parsedBody.via || "")),
             };
-            // 先把「你发的」记进网页聊天历史——图片记成 /uploads 地址，前端能渲染
+            // 先把「你发的」记进网页聊天历史。
+            // ⚠️ 必须合并成一条：之前是 webPush(text) + webPush(image) 两次，
+            // 两次的 at 在同一毫秒，客户端的去重逻辑只认第一条，图就被丢了，
+            // 界面上只剩一个空蓝条。
             try {
-              webPush({ role: "me", text: t.slice(0, 500) });
-              if (savedName) webPush({ role: "me", image: `/uploads/${savedName}`, text: "" });
+              webPush({
+                role: "me",
+                text: t.slice(0, 500),
+                ...(savedName ? { image: `/uploads/${savedName}` } : {}),
+              });
             } catch (err) {
               logger.warn?.(`[onebot] WebUI 消息未记入历史：${err?.message ?? err}`);
             }
