@@ -732,14 +732,100 @@ function htmlToText(html) {
     .trim();
 }
 
+function stripToText(html) {
+    let h = String(html || "");
+    h = h.replace(/<script[\s\S]*?<\/script>/gi, " ");
+    h = h.replace(/<style[\s\S]*?<\/style>/gi, " ");
+    h = h.replace(/<noscript[\s\S]*?<\/noscript>/gi, " ");
+    h = h.replace(/<svg[\s\S]*?<\/svg>/gi, " ");
+    h = h.replace(/<iframe[\s\S]*?<\/iframe>/gi, " ");
+    h = h.replace(/<(nav|footer|aside|form|button)[\s\S]*?<\/\1>/gi, " ");
+
+    const tm = h.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+    const title = tm ? tm[1].replace(/<[^>]*>/g, "").trim() : "";
+
+    // 优先 article / main
+    let body = h;
+    const art = h.match(/<(article|main)[^>]*>([\s\S]*?)<\/\1>/i);
+    if (art && art[2].length > 600) body = art[2];
+
+    // 有像样的 <p> 就只取段落，否则整块
+    const paras = [...body.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi)].map((m) => m[1]);
+    let text = paras.join("").length > 250 ? paras.join("\n\n") : body;
+
+    text = text.replace(/<br\s*\/?>/gi, "\n");
+    text = text.replace(/<\/(p|div|h[1-6]|li|tr|section|article)>/gi, "\n");
+    text = text.replace(/<[^>]+>/g, "");
+    // HTML 实体：&emsp; 这类中文站常用，之前漏掉了
+    const ENT = {
+      nbsp: " ", ensp: " ", emsp: " ", thinsp: " ", zwnj: "", zwj: "",
+      amp: "&", lt: "<", gt: ">", quot: '"', apos: "'",
+      mdash: "—", ndash: "–", hellip: "…", middot: "·", bull: "•",
+      ldquo: "“", rdquo: "”", lsquo: "‘", rsquo: "’",
+      laquo: "«", raquo: "»", times: "×", divide: "÷", deg: "°",
+      copy: "©", reg: "®", trade: "™", yen: "¥", euro: "€",
+    };
+    text = text
+      .replace(/&([a-z]+);/gi, (m, k) => (ENT[k.toLowerCase()] !== undefined ? ENT[k.toLowerCase()] : m))
+      .replace(/&#x([0-9a-f]+);/gi, (_m, h) => String.fromCharCode(parseInt(h, 16)))
+      .replace(/&#(\d+);/g, (_m, d) => String.fromCharCode(Number(d)))
+      .replace(/[ \t\u00a0\u3000]+/g, " ")
+      .replace(/\n[ \t]+/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+
+    // 去导航噪音：短、没标点、不像句子的行（"用微信扫码二维码" "分享至好友和朋友圈"）
+    const NOISE =
+      /^(点击播报本文.*|用微信扫码.*|分享至.*|扫一扫.*|下载.*客户端.*|打开.*APP.*|广告|登录|注册|首页|上一页|下一页|返回顶部|查看更多|阅读全文|相关阅读|责任编辑[:：].*|原标题[:：].*|本文来源[:：].*)$/;
+    text = text
+      .split("\n")
+      .map((ln) => ln.trim())
+      .filter((ln) => {
+        if (!ln) return false;
+        if (NOISE.test(ln)) return false;
+        // 很短又不含标点的，多半是导航碎片
+        if (ln.length < 12 && !/[，。！？；：、,.!?;:]/.test(ln)) return false;
+        return true;
+      })
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+
+    return { title, text };
+  }
+
+/// 按字数截断时切在句末，别切在句子中间
+function smartCut(text, max) {
+  const t = String(text || "");
+  if (t.length <= max) return t;
+  const head = t.slice(0, max);
+  // 优先切在句末
+  const m = head.match(/[\s\S]*[。！？…!?\n]/);
+  if (m && m[0].trim().length >= max * 0.55) return m[0].trim();
+  // 退一步切在逗号/分号
+  const m2 = head.match(/[\s\S]*[，；、,;]/);
+  if (m2 && m2[0].trim().length >= max * 0.55) return m2[0].trim() + "…";
+  return head.trim() + "…";
+}
+
+
 /** 抓一个链接的标题 + 正文前 N 字 */
 async function fetchLinkPreview(url, maxChars, logger) {
   try {
     const u = new URL(url);
     if (!/^https?:$/.test(u.protocol) || isPrivateHost(u.hostname)) return null;
     const res = await fetch(url, {
-      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", Accept: "text/html" },
-      signal: AbortSignal.timeout(9000),
+      // UA 要完整：之前只到 "(Windows NT 10.0; Win64; x64)"，
+      // 少了 AppleWebKit/... Chrome/... Safari/... 的尾巴，比爬虫还像爬虫。
+      headers: {
+        "user-agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        accept:
+          "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "upgrade-insecure-requests": "1",
+      },
+      signal: AbortSignal.timeout(12000),
       redirect: "follow",
     });
     if (!res.ok) return null;
@@ -749,9 +835,11 @@ async function fetchLinkPreview(url, maxChars, logger) {
     if (buf.length > 3 * 1024 * 1024) return null;
     const html = buf.toString("utf8");
     const title = (html.match(/<title[^>]*>([^<]{1,120})/i) || [])[1]?.trim() || "";
-    const text = htmlToText(html).slice(0, maxChars || 600);
+    const full = stripToText(html).text;
+    // 只给摘要，但把总字数带出去 —— 让她知道有全文、自己决定要不要看
+    const text = smartCut(full, maxChars || 600);
     if (!text && !title) return null;
-    return { url, title, text };
+    return { url, title, text, totalChars: full.length };
   } catch (err) {
     logger?.debug?.(`[onebot] 链接抓取失败 ${url}：${err?.message ?? err}`);
     return null;
@@ -4108,7 +4196,7 @@ export function apply(ctx, _pluginConfig) {
                 mood: String(plan.mood || ""),
                 looked: Array.isArray(plan.looked) ? plan.looked : [],
                 did: cut(r.content, 300),
-                reflect: cut(r.reflect, 600),
+                reflect: cut(r.reflect, 3000),
                 nextAt: nextStr,
                 nextDelayMin: Number(r.nextDelayMin) || 0,
               };
@@ -5305,67 +5393,7 @@ export function apply(ctx, _pluginConfig) {
         "upgrade-insecure-requests": "1",
       };
 
-      function stripToText(html) {
-        let h = String(html || "");
-        h = h.replace(/<script[\s\S]*?<\/script>/gi, " ");
-        h = h.replace(/<style[\s\S]*?<\/style>/gi, " ");
-        h = h.replace(/<noscript[\s\S]*?<\/noscript>/gi, " ");
-        h = h.replace(/<svg[\s\S]*?<\/svg>/gi, " ");
-        h = h.replace(/<iframe[\s\S]*?<\/iframe>/gi, " ");
-        h = h.replace(/<(nav|footer|aside|form|button)[\s\S]*?<\/\1>/gi, " ");
 
-        const tm = h.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-        const title = tm ? tm[1].replace(/<[^>]*>/g, "").trim() : "";
-
-        // 优先 article / main
-        let body = h;
-        const art = h.match(/<(article|main)[^>]*>([\s\S]*?)<\/\1>/i);
-        if (art && art[2].length > 600) body = art[2];
-
-        // 有像样的 <p> 就只取段落，否则整块
-        const paras = [...body.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi)].map((m) => m[1]);
-        let text = paras.join("").length > 250 ? paras.join("\n\n") : body;
-
-        text = text.replace(/<br\s*\/?>/gi, "\n");
-        text = text.replace(/<\/(p|div|h[1-6]|li|tr|section|article)>/gi, "\n");
-        text = text.replace(/<[^>]+>/g, "");
-        // HTML 实体：&emsp; 这类中文站常用，之前漏掉了
-        const ENT = {
-          nbsp: " ", ensp: " ", emsp: " ", thinsp: " ", zwnj: "", zwj: "",
-          amp: "&", lt: "<", gt: ">", quot: '"', apos: "'",
-          mdash: "—", ndash: "–", hellip: "…", middot: "·", bull: "•",
-          ldquo: "“", rdquo: "”", lsquo: "‘", rsquo: "’",
-          laquo: "«", raquo: "»", times: "×", divide: "÷", deg: "°",
-          copy: "©", reg: "®", trade: "™", yen: "¥", euro: "€",
-        };
-        text = text
-          .replace(/&([a-z]+);/gi, (m, k) => (ENT[k.toLowerCase()] !== undefined ? ENT[k.toLowerCase()] : m))
-          .replace(/&#x([0-9a-f]+);/gi, (_m, h) => String.fromCharCode(parseInt(h, 16)))
-          .replace(/&#(\d+);/g, (_m, d) => String.fromCharCode(Number(d)))
-          .replace(/[ \t\u00a0\u3000]+/g, " ")
-          .replace(/\n[ \t]+/g, "\n")
-          .replace(/\n{3,}/g, "\n\n")
-          .trim();
-
-        // 去导航噪音：短、没标点、不像句子的行（"用微信扫码二维码" "分享至好友和朋友圈"）
-        const NOISE =
-          /^(点击播报本文.*|用微信扫码.*|分享至.*|扫一扫.*|下载.*客户端.*|打开.*APP.*|广告|登录|注册|首页|上一页|下一页|返回顶部|查看更多|阅读全文|相关阅读|责任编辑[:：].*|原标题[:：].*|本文来源[:：].*)$/;
-        text = text
-          .split("\n")
-          .map((ln) => ln.trim())
-          .filter((ln) => {
-            if (!ln) return false;
-            if (NOISE.test(ln)) return false;
-            // 很短又不含标点的，多半是导航碎片
-            if (ln.length < 12 && !/[，。！？；：、,.!?;:]/.test(ln)) return false;
-            return true;
-          })
-          .join("\n")
-          .replace(/\n{3,}/g, "\n\n")
-          .trim();
-
-        return { title, text };
-      }
 
       ctx.get?.("tools")?.register?.(
         defineTool({
@@ -5375,10 +5403,13 @@ export function apply(ctx, _pluginConfig) {
             "带了就放行；还会把 HTML 洗成纯文本（去掉导航、广告、脚本、页脚）。\n" +
             "读不到时会告诉你是谁挡的：Cloudflare 拦截 / SPA 需要 JS / 404 / 超时，" +
             "并给出能用什么替代（知乎用 zhihu_daily，热榜用 news_now）。\n" +
-            "max 控制最多返回多少字，默认 6000。",
+            "默认返回**全文**（最多 5 万字）；真嫌长可以用 max 自己压。",
           parameters: {
             url: { type: "string", description: "http/https 网址" },
-            max: { type: "number", description: "最多返回多少字，默认 6000" },
+            max: {
+              type: "number",
+              description: "最多返回多少字，默认 50000（等于全文）；想只看开头就填个小的",
+            },
           },
           output: {
             schema: { type: "json" },
@@ -5386,7 +5417,8 @@ export function apply(ctx, _pluginConfig) {
           },
           execute: async (args) => {
             const url = String(args?.url ?? "").trim();
-            const max = Math.max(500, Math.min(20000, Number(args?.max) || 6000));
+            // 默认给全文：不预设"看多少就够了"，让她自己决定
+            const max = Math.max(500, Math.min(50000, Number(args?.max) || 50000));
             if (!/^https?:\/\//i.test(url)) {
               return { ok: false, reason: "url 要以 http:// 或 https:// 开头" };
             }
@@ -5458,6 +5490,7 @@ export function apply(ctx, _pluginConfig) {
                   hint: "找一个 JSON 接口替代（很多站在 /api/ 下），或者用 news_now / zhihu_daily 这类现成工具",
                 };
               }
+              const shown = smartCut(text, max);
               return {
                 ok: true,
                 url,
@@ -5465,7 +5498,11 @@ export function apply(ctx, _pluginConfig) {
                 title,
                 chars: text.length,
                 truncated: text.length > max,
-                text: text.slice(0, max),
+                text: shown,
+                note:
+                  text.length > max
+                    ? `全文 ${text.length} 字，这里给了前 ${shown.length} 字（切在句末）。想看全部就加 max: ${text.length}`
+                    : "",
               };
             } catch (err) {
               const msg = String(err?.message ?? err);
@@ -9164,14 +9201,24 @@ async function handleOwnerNatural(ev, text) {
     if (cfg.linkPreview !== false && !!(ev.message_type !== "group" || parsed.hasAt)) {
       const lm = parsed.text.match(/https?:\/\/[^\s<>"']+/);
       if (lm) {
-        const pv = await fetchLinkPreview(lm[0], Number(cfg.linkPreviewChars) || 600, logger);
+        const previewChars = Number(cfg.linkPreviewChars) || 600;
+        const pv = await fetchLinkPreview(lm[0], previewChars, logger);
         if (pv) {
-          linkNote =
-            `[链接预览·前${Number(cfg.linkPreviewChars) || 600}字，非全文]\n` +
-            (pv.title ? `标题：${pv.title}\n` : "") +
-            `${pv.text}\n\n`;
-          logger.info?.(`[onebot] 链接预览：${(pv.title || lm[0]).slice(0, 40)}`);
-          audit({ kind: "link_preview", url: lm[0], title: pv.title });
+          const total = Number(pv.totalChars) || 0;
+          const gotAll = total > 0 && total <= previewChars;
+          linkNote = gotAll
+            ? `[链接正文·全文 ${total} 字]\n` +
+              (pv.title ? `标题：${pv.title}\n` : "") +
+              `${pv.text}\n\n`
+            : `[链接预览·全文共 ${total} 字，下面只给了前 ${previewChars} 字]\n` +
+              (pv.title ? `标题：${pv.title}\n` : "") +
+              `${pv.text}\n` +
+              `（还有 ${Math.max(0, total - previewChars)} 字没看到。想看完整的就用 ` +
+              `read_page({url: "${lm[0]}"})，要不要读你自己定。）\n\n`;
+          logger.info?.(
+            `[onebot] 链接预览：${(pv.title || lm[0]).slice(0, 40)}（全文 ${total} 字）`,
+          );
+          audit({ kind: "link_preview", url: lm[0], title: pv.title, total });
         }
       }
     }
