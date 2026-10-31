@@ -2240,6 +2240,8 @@ export function apply(ctx, _pluginConfig) {
     "zhihu_daily",
     "news_now",
     "sandbox_files",
+    "notify_owner",
+    "audit_self",
     "render_page",
     "add_webui_button",
     "remove_webui_button",
@@ -5001,15 +5003,63 @@ export function apply(ctx, _pluginConfig) {
         defineTool({
           name: "zhihu_daily",
           description:
-            "读知乎日报（每天 4-5 篇精选文章）。date 填 20261029 这种八位数字看那天的，不填看今天。",
+            "读知乎日报（每天 4-5 篇精选文章）。\n" +
+            "· 不传参数 → 今天的列表\n" +
+            "· date: \"20261029\" → 那天的列表\n" +
+            "· id: 9793630 → **那一篇的全文**（列表里的 id 字段，直接给正文，不用再抓网页）",
           parameters: {
             date: { type: "string", description: "八位日期，例 20261029；不填看今天" },
+            id: { type: "string", description: "文章 id（列表里返回的），传了就返回这篇的全文" },
           },
           output: {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
           execute: async (args) => {
+            const artId = String(args?.id ?? "").trim();
+            if (/^\d+$/.test(artId)) {
+              // 单篇全文：/api/4/news/<id> 直接带 body（HTML）
+              try {
+                const ctrl0 = new AbortController();
+                const t0 = setTimeout(() => ctrl0.abort(), 15000);
+                const r0 = await fetch(`https://news-at.zhihu.com/api/4/news/${artId}`, {
+                  signal: ctrl0.signal,
+                  headers: {
+                    "user-agent":
+                      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                    referer: "https://daily.zhihu.com/",
+                  },
+                });
+                clearTimeout(t0);
+                if (!r0.ok) return { ok: false, reason: `HTTP ${r0.status}` };
+                const j0 = await r0.json();
+                // 把 HTML 正文洗成纯文本
+                const plain = String(j0.body || "")
+                  .replace(/<script[\s\S]*?<\/script>/gi, "")
+                  .replace(/<style[\s\S]*?<\/style>/gi, "")
+                  .replace(/<[^>]+>/g, " ")
+                  .replace(/&nbsp;/g, " ")
+                  .replace(/&amp;/g, "&")
+                  .replace(/&lt;/g, "<")
+                  .replace(/&gt;/g, ">")
+                  .replace(/&quot;/g, '"')
+                  .replace(/\s+/g, " ")
+                  .trim();
+                return {
+                  ok: true,
+                  id: artId,
+                  title: String(j0.title || ""),
+                  author: String(j0.author || ""),
+                  url: j0.share_url || j0.url || `https://daily.zhihu.com/story/${artId}`,
+                  chars: plain.length,
+                  truncated: plain.length > 6000,
+                  text: plain.slice(0, 6000),
+                };
+              } catch (err) {
+                return { ok: false, reason: String(err?.message ?? err).slice(0, 200) };
+              }
+            }
+
             const date = String(args?.date ?? "").trim();
             const url = /^\d{8}$/.test(date)
               ? `https://news-at.zhihu.com/api/4/news/before/${date}`
@@ -5215,6 +5265,255 @@ export function apply(ctx, _pluginConfig) {
       );
 
       logger.info?.("[onebot] 沙箱文件管理工具已注册（sandbox_files）");
+
+      // ── 主动联系主人 ──
+      // 她想说点什么、发现了新鲜事、有改动申请，都可以用这个主动推给主人。
+      // 不走 QQ（QQ 可能封号），直接推到 WebUI / WinForms 客户端（它们轮询 /history）。
+      const NOTIFY_LOG = join(HOME, ".dsh/onebot-bridge/owner-notifications.jsonl");
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "notify_owner",
+          description:
+            "主动跟主人说句话——不用等他先开口。\n" +
+            "适合：发现了有意思的事、读到一段想分享的话、有件事想让他知道、" +
+            "或者只是想冒个泡。\n" +
+            "**不适合**：闲聊、催促、重复说过的话。一天最多 3 次，说之前先想清楚值不值得打断他。\n" +
+            "kind 可以填 news（新鲜事）/ thought（想法）/ patch（改动申请）/ hello（冒泡）。",
+          parameters: {
+            text: { type: "string", description: "要说的话（两三句，别写长文）" },
+            kind: { type: "string", description: "news / thought / patch / hello，可不填" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            const text = String(args?.text ?? "").trim();
+            const kind = String(args?.kind ?? "hello").trim().toLowerCase().slice(0, 20);
+            if (!text) return { ok: false, reason: "内容是空的" };
+            if (text.length > 500) return { ok: false, reason: "太长了，精简到 500 字以内" };
+
+            // 每天最多 3 次
+            const today = new Date().toDateString();
+            let todayCount = 0;
+            try {
+              const raw = readFileSync(NOTIFY_LOG, "utf8");
+              for (const line of raw.split("\n")) {
+                if (!line.trim()) continue;
+                try {
+                  const o = JSON.parse(line);
+                  if (new Date(o.at).toDateString() === today) todayCount++;
+                } catch {
+                  // 忽略
+                }
+              }
+            } catch {
+              // 没有文件 = 0 次
+            }
+            const cap = Number(cfg.notifyOwnerPerDay ?? 3);
+            if (todayCount >= cap) {
+              return {
+                ok: false,
+                reason: `今天已经主动找过他 ${todayCount} 次了（上限 ${cap}），明天再说吧`,
+              };
+            }
+
+            try {
+              appendFileSync(
+                NOTIFY_LOG,
+                JSON.stringify({ at: Date.now(), kind, text: text.slice(0, 500) }) + "\n",
+              );
+            } catch {
+              // 忽略
+            }
+
+            // 推到 WebUI / WinForms 客户端
+            webPush({ role: "her", text, proactive: true });
+            audit({ kind: "notify_owner", kindTag: kind, len: text.length });
+
+            return {
+              ok: true,
+              sent: true,
+              todayUsed: todayCount + 1,
+              todayLeft: Math.max(0, cap - todayCount - 1),
+              note: "发出去了，他下次打开聊天窗口能看到",
+            };
+          },
+        }),
+      );
+
+      logger.info?.("[onebot] 主动联系工具已注册（notify_owner）");
+
+      // ── 审视自己：清单 + 使用情况 + 源码定位 + 改进方向 ──
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "audit_self",
+          description:
+            "审视你自己的所有功能。不传参数 → 全景：每个工具叫什么、用过几次、失败几次、" +
+            "哪些从没用过、哪些老是失败。\n" +
+            "传 tool: \"xxx\" → 深入那一个：它在源码哪几行、干什么、能怎么改。\n" +
+            "想给自己加东西、或者怀疑某个功能坏了，先用这个看清楚再动手。",
+          parameters: {
+            tool: { type: "string", description: "某个工具名，传了就只看它" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            const want = String(args?.tool ?? "").trim();
+
+            // 1) 现在注册了哪些工具
+            // 注意：ctx.get("tools").list() 在运行时返回空（实测 total:0），
+            // 所以直接以 ALLOWED_TOOLS 为准 —— 那份清单和实际注册的是同步维护的。
+            let registered = [];
+            try {
+              const t = ctx.get?.("tools");
+              const list = t?.list?.() ?? t?.tools ?? [];
+              registered = (Array.isArray(list) ? list : [])
+                .map((x) => String(x?.name ?? x).trim())
+                .filter(Boolean);
+            } catch {
+              registered = [];
+            }
+            if (!registered.length) registered = [...ALLOWED_TOOLS];
+
+            // 2) 从 audit.log 统计每个工具被调用的次数 / 失败次数 / 上次时间
+            const stats = {};
+            try {
+              const raw = readFileSync(join(HOME, ".dsh/onebot-bridge/audit.log"), "utf8");
+              const lines = raw.split("\n").slice(-8000); // 只扫最近 8000 条
+              for (const line of lines) {
+                if (!line.trim()) continue;
+                let o;
+                try {
+                  o = JSON.parse(line);
+                } catch {
+                  continue;
+                }
+                const nm = o.tool || o.name || "";
+                if (!nm) continue;
+                // 只统计工具调用相关的 kind
+                if (o.kind !== "tool" && o.kind !== "tool_blocked" && o.kind !== "run_code") {
+                  continue;
+                }
+                const st = stats[nm] || (stats[nm] = { calls: 0, fails: 0, lastAt: 0 });
+                st.calls++;
+                if (o.ok === false || o.kind === "tool_blocked") st.fails++;
+                // 时间字段是 ts（ISO 字符串），不是 at（数字）
+                const t = o.ts ? Date.parse(o.ts) : Number(o.at) || 0;
+                if (t > st.lastAt) st.lastAt = t;
+              }
+            } catch {
+              // 没有日志
+            }
+
+            // 3) 源码定位：在 /opt/fish-src/index.js 里找 name: "<tool>"
+            let srcLines = null;
+            try {
+              srcLines = readFileSync("/opt/fish-src/index.js", "utf8").split("\n");
+            } catch {
+              srcLines = null;
+            }
+            const findTool = (nm) => {
+              if (!srcLines) return null;
+              const needle = `name: "${nm}"`;
+              for (let i = 0; i < srcLines.length; i++) {
+                if (srcLines[i].includes(needle)) return i + 1;
+              }
+              return null;
+            };
+
+            const ZH = {
+              send_sticker: "发表情", save_sticker: "存表情", list_stickers: "看表情库",
+              send_face: "发小黄脸", at_person: "艾特别人", draw_image: "画图",
+              draw_svg: "画SVG", hot_news: "查热点", news_now: "看热榜",
+              web_search: "搜网", web_fetch: "读网页", zhihu_daily: "看知乎日报",
+              recall: "翻旧对话", remember_fact: "记事实", remember_person: "记人物",
+              remember_self: "记想法", revise_self: "改想法", forget_self: "忘想法",
+              my_memory: "查记忆", memory_index: "看记忆目录", my_digest: "看近期摘要",
+              person_dossier: "查人物档案", group_recap: "看群记录", who_said: "查谁说的",
+              view_avatar: "看头像", my_status: "看状态", my_activities: "看活动记录",
+              my_adventures: "看探险记录", my_capabilities: "看能力清单",
+              my_changelog: "看更新日志", my_source: "看源码片段", my_outages: "看掉线记录",
+              my_schedule: "看排期", run_activity: "开始活动", set_reminder: "设提醒",
+              write_notebook: "写本子", read_notebook: "翻本子", read_pdf: "读PDF",
+              exec_sandbox: "跑代码", read_source: "读源码", sandbox_files: "管沙箱文件",
+              note_want: "记需求", my_wants: "看需求本", resolve_want: "标记需求完成",
+              drop_want: "删需求", request_feature: "申请功能",
+              propose_patch: "提改动申请", my_patch_proposals: "看改动申请",
+              patch_guide: "看申请写法", notify_owner: "主动找他",
+              owner_commands: "查指令清单", group_impressions: "看群印象",
+              my_thoughts: "看我的想法", render_page: "做网页",
+              add_webui_button: "加按钮", remove_webui_button: "删按钮",
+              read_forward_more: "展开转发", refuse_person: "拒聊", audit_self: "审视自己",
+            };
+
+            if (want) {
+              const line = findTool(want);
+              const st = stats[want] || { calls: 0, fails: 0, lastAt: 0 };
+              if (!line && !st.calls) {
+                return { ok: false, reason: `既没找到「${want}」这个工具，也没有它的调用记录` };
+              }
+              let snippet = "";
+              if (line && srcLines) {
+                snippet = srcLines.slice(Math.max(0, line - 3), line + 40).join("\n").slice(0, 2500);
+              }
+              return {
+                ok: true,
+                tool: want,
+                zh: ZH[want] || want,
+                registered: registered.includes(want),
+                calls: st.calls,
+                fails: st.fails,
+                lastUsed: st.lastAt
+                  ? new Date(st.lastAt).toLocaleString("zh-CN", { hour12: false })
+                  : "从没用过",
+                sourceLine: line,
+                source: snippet,
+                hint: "想改它就用 propose_patch；想加新功能就用 note_want / request_feature",
+              };
+            }
+
+            // 全景
+            const rows = registered.map((nm) => {
+              const st = stats[nm] || { calls: 0, fails: 0, lastAt: 0 };
+              return {
+                tool: nm,
+                zh: ZH[nm] || nm,
+                calls: st.calls,
+                fails: st.fails,
+                lastUsed: st.lastAt
+                  ? new Date(st.lastAt).toLocaleString("zh-CN", {
+                      month: "2-digit",
+                      day: "2-digit",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })
+                  : "",
+              };
+            });
+            const never = rows.filter((r) => r.calls === 0).map((r) => r.zh);
+            const failing = rows
+              .filter((r) => r.fails > 0)
+              .sort((a, b) => b.fails - a.fails)
+              .slice(0, 8)
+              .map((r) => `${r.zh}（失败 ${r.fails} 次）`);
+
+            return {
+              ok: true,
+              total: rows.length,
+              unusedCount: never.length,
+              neverUsed: never.slice(0, 20),
+              failingTop: failing,
+              all: rows.sort((a, b) => b.calls - a.calls),
+              hint: "传 tool: \"某个工具名\" 可以看它的源码和调用情况",
+            };
+          },
+        }),
+      );
+
+      logger.info?.("[onebot] 自我审视工具已注册（audit_self）");
 
       // ── 用网页展示内容：记录、记忆、统计、想法 ──
       const PAGES_DIR = join(HOME, ".dsh/onebot-bridge/workspace/pages");
@@ -9806,7 +10105,7 @@ const TOOL_ZH={
   read_notebook:"翻本子",
   read_pdf:"读PDF",
   propose_patch:"提改动申请",
-  my_patch_proposals:"看改动申请",patch_guide:"看申请写法",zhihu_daily:"看知乎日报",news_now:"看热榜",sandbox_files:"管沙箱文件"
+  my_patch_proposals:"看改动申请",patch_guide:"看申请写法",zhihu_daily:"看知乎日报",news_now:"看热榜",sandbox_files:"管沙箱文件",notify_owner:"主动找他",audit_self:"审视自己"
 };
 // 分类颜色
 const TOOL_KIND={
@@ -9824,7 +10123,7 @@ const TOOL_KIND={
   write_notebook:"mem",
   read_notebook:"mem",
   read_pdf:"mem",
-  propose_patch:"code",patch_guide:"code",zhihu_daily:"net",news_now:"net",sandbox_files:"code",
+  propose_patch:"code",patch_guide:"code",zhihu_daily:"net",news_now:"net",sandbox_files:"code",notify_owner:"chat",audit_self:"self",
   my_patch_proposals:"code",
   run_activity:"self",
   set_reminder:"self",
@@ -10752,6 +11051,8 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
           zhihu_daily: "看知乎日报",
           news_now: "看热榜",
           sandbox_files: "管沙箱文件",
+          notify_owner: "主动找他",
+          audit_self: "审视自己",
           run_activity: "开始活动",
           set_reminder: "设提醒",
           group_impressions: "看群印象",

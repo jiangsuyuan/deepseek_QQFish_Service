@@ -141,5 +141,6 @@
     "runCodeCpuSec":  900,
     "notebookEnabled":  true,
     "patchProposalEnabled":  true,
-    "selfActivityMinPerDay":  10
+    "selfActivityMinPerDay":  10,
+    "notifyOwnerPerDay":  3
 }
