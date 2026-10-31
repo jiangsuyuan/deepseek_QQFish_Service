@@ -13,7 +13,7 @@ import http from "node:http";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync, copyFileSync, chmodSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync, copyFileSync, chmodSync, chownSync } from "node:fs";
 import { join, join as pathJoin } from "node:path";
 import { homedir } from "node:os";
 import { SessionId } from "@deepseek-ai/dsh-session";
@@ -2240,6 +2240,8 @@ export function apply(ctx, _pluginConfig) {
     "zhihu_daily",
     "news_now",
     "sandbox_files",
+    "read_page",
+    "files",
     "notify_owner",
     "audit_self",
     "render_page",
@@ -5280,6 +5282,449 @@ export function apply(ctx, _pluginConfig) {
       );
 
       logger.info?.("[onebot] 沙箱文件管理工具已注册（sandbox_files）");
+
+      // ══════════ 读网页正文 ══════════
+      // web_fetch 有两个短板：① 裸请求被 Cloudflare 拦（403）② SPA 页面读不到正文。
+      // 这个工具带完整浏览器头、自己洗正文，失败时说清是谁挡的。
+      const BROWSER_HEADERS = {
+        "user-agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        accept:
+          "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "accept-encoding": "gzip, deflate, br",
+        "cache-control": "no-cache",
+        pragma: "no-cache",
+        "sec-ch-ua": '"Chromium";v="131", "Not_A Brand";v="24"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "sec-fetch-dest": "document",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-site": "none",
+        "sec-fetch-user": "?1",
+        "upgrade-insecure-requests": "1",
+      };
+
+      function stripToText(html) {
+        let h = String(html || "");
+        h = h.replace(/<script[\s\S]*?<\/script>/gi, " ");
+        h = h.replace(/<style[\s\S]*?<\/style>/gi, " ");
+        h = h.replace(/<noscript[\s\S]*?<\/noscript>/gi, " ");
+        h = h.replace(/<svg[\s\S]*?<\/svg>/gi, " ");
+        h = h.replace(/<iframe[\s\S]*?<\/iframe>/gi, " ");
+        h = h.replace(/<(nav|footer|aside|form|button)[\s\S]*?<\/\1>/gi, " ");
+
+        const tm = h.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+        const title = tm ? tm[1].replace(/<[^>]*>/g, "").trim() : "";
+
+        // 优先 article / main
+        let body = h;
+        const art = h.match(/<(article|main)[^>]*>([\s\S]*?)<\/\1>/i);
+        if (art && art[2].length > 600) body = art[2];
+
+        // 有像样的 <p> 就只取段落，否则整块
+        const paras = [...body.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi)].map((m) => m[1]);
+        let text = paras.join("").length > 250 ? paras.join("\n\n") : body;
+
+        text = text.replace(/<br\s*\/?>/gi, "\n");
+        text = text.replace(/<\/(p|div|h[1-6]|li|tr|section|article)>/gi, "\n");
+        text = text.replace(/<[^>]+>/g, "");
+        // HTML 实体：&emsp; 这类中文站常用，之前漏掉了
+        const ENT = {
+          nbsp: " ", ensp: " ", emsp: " ", thinsp: " ", zwnj: "", zwj: "",
+          amp: "&", lt: "<", gt: ">", quot: '"', apos: "'",
+          mdash: "—", ndash: "–", hellip: "…", middot: "·", bull: "•",
+          ldquo: "“", rdquo: "”", lsquo: "‘", rsquo: "’",
+          laquo: "«", raquo: "»", times: "×", divide: "÷", deg: "°",
+          copy: "©", reg: "®", trade: "™", yen: "¥", euro: "€",
+        };
+        text = text
+          .replace(/&([a-z]+);/gi, (m, k) => (ENT[k.toLowerCase()] !== undefined ? ENT[k.toLowerCase()] : m))
+          .replace(/&#x([0-9a-f]+);/gi, (_m, h) => String.fromCharCode(parseInt(h, 16)))
+          .replace(/&#(\d+);/g, (_m, d) => String.fromCharCode(Number(d)))
+          .replace(/[ \t\u00a0\u3000]+/g, " ")
+          .replace(/\n[ \t]+/g, "\n")
+          .replace(/\n{3,}/g, "\n\n")
+          .trim();
+
+        // 去导航噪音：短、没标点、不像句子的行（"用微信扫码二维码" "分享至好友和朋友圈"）
+        const NOISE =
+          /^(点击播报本文.*|用微信扫码.*|分享至.*|扫一扫.*|下载.*客户端.*|打开.*APP.*|广告|登录|注册|首页|上一页|下一页|返回顶部|查看更多|阅读全文|相关阅读|责任编辑[:：].*|原标题[:：].*|本文来源[:：].*)$/;
+        text = text
+          .split("\n")
+          .map((ln) => ln.trim())
+          .filter((ln) => {
+            if (!ln) return false;
+            if (NOISE.test(ln)) return false;
+            // 很短又不含标点的，多半是导航碎片
+            if (ln.length < 12 && !/[，。！？；：、,.!?;:]/.test(ln)) return false;
+            return true;
+          })
+          .join("\n")
+          .replace(/\n{3,}/g, "\n\n")
+          .trim();
+
+        return { title, text };
+      }
+
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "read_page",
+          description:
+            "取一个网页的正文（比 web_fetch 强）。它带完整浏览器头——很多站只拦裸请求，" +
+            "带了就放行；还会把 HTML 洗成纯文本（去掉导航、广告、脚本、页脚）。\n" +
+            "读不到时会告诉你是谁挡的：Cloudflare 拦截 / SPA 需要 JS / 404 / 超时，" +
+            "并给出能用什么替代（知乎用 zhihu_daily，热榜用 news_now）。\n" +
+            "max 控制最多返回多少字，默认 6000。",
+          parameters: {
+            url: { type: "string", description: "http/https 网址" },
+            max: { type: "number", description: "最多返回多少字，默认 6000" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            const url = String(args?.url ?? "").trim();
+            const max = Math.max(500, Math.min(20000, Number(args?.max) || 6000));
+            if (!/^https?:\/\//i.test(url)) {
+              return { ok: false, reason: "url 要以 http:// 或 https:// 开头" };
+            }
+            let host = "";
+            try {
+              host = new URL(url).hostname;
+            } catch {
+              return { ok: false, reason: "url 格式不对" };
+            }
+            try {
+              const ctrl = new AbortController();
+              const timer = setTimeout(() => ctrl.abort(), 20000);
+              const r = await fetch(url, {
+                signal: ctrl.signal,
+                headers: BROWSER_HEADERS,
+                redirect: "follow",
+              });
+              clearTimeout(timer);
+
+              const ctype = String(r.headers.get("content-type") || "");
+              const raw = await r.text();
+
+              // JSON 直接给
+              if (/json/i.test(ctype) || /^\s*[{[]/.test(raw)) {
+                return {
+                  ok: r.ok,
+                  url,
+                  status: r.status,
+                  type: "json",
+                  text: raw.slice(0, max),
+                  note: "这是 JSON 接口，直接给了原文",
+                };
+              }
+
+              // Cloudflare / 人机验证
+              const cf = /Attention Required|cf-error-details|Just a moment|cf-browser-verification|Enable JavaScript and cookies/i.test(
+                raw,
+              );
+              if (r.status === 403 || cf) {
+                return {
+                  ok: false,
+                  url,
+                  status: r.status,
+                  reason: cf
+                    ? "站点挂了 Cloudflare 人机验证，带浏览器头也过不去（需要真浏览器）"
+                    : `HTTP ${r.status}`,
+                  hint:
+                    host.includes("zhihu.com")
+                      ? "知乎用 zhihu_daily（日报全文不需要签名）"
+                      : host.includes("newsnow")
+                        ? "热榜用 news_now"
+                        : "可以试试别的来源，或者用 exec_sandbox 里的 curl 加同样的头",
+                };
+              }
+              if (!r.ok) {
+                return { ok: false, url, status: r.status, reason: `HTTP ${r.status}` };
+              }
+
+              const { title, text } = stripToText(raw);
+              // SPA 特征：HTML 壳很厚但正文几乎没有
+              if (text.length < 200 && raw.length > 2000) {
+                return {
+                  ok: false,
+                  url,
+                  status: r.status,
+                  reason: "这是 SPA（页面靠 JS 渲染），HTML 里没正文",
+                  rawSize: Math.round(raw.length / 1024) + " KB",
+                  title,
+                  hint: "找一个 JSON 接口替代（很多站在 /api/ 下），或者用 news_now / zhihu_daily 这类现成工具",
+                };
+              }
+              return {
+                ok: true,
+                url,
+                status: r.status,
+                title,
+                chars: text.length,
+                truncated: text.length > max,
+                text: text.slice(0, max),
+              };
+            } catch (err) {
+              const msg = String(err?.message ?? err);
+              return {
+                ok: false,
+                url,
+                reason: /abort/i.test(msg) ? "超时（20 秒）" : msg.slice(0, 200),
+              };
+            }
+          },
+        }),
+      );
+
+      logger.info?.("[onebot] 读网页正文工具已注册（read_page）");
+
+      // ══════════ 统一文件操作 ══════════
+      // 文件区（notes，root 所有、删不掉）和沙箱（sandbox，她自己的）
+      // 以前只能靠 exec_sandbox 写脚本搬文件。现在直接搬、改名、删。
+      // 删除 = 移到 .trash，不是真删 —— 误删能捡回来。
+      const FILES_AREA = {
+        notes: NOTE_FILES_DIR,
+        sandbox: "/var/lib/fish-desk",
+      };
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "files",
+          description:
+            "管你的文件，**不用跑代码**。两处：\n" +
+            "· area=\"notes\" 文件区（长期留的，删不掉，默认）\n" +
+            "· area=\"sandbox\" 沙箱（临时跑代码那地方）\n" +
+            "op：list 列清单 / read 读 / write 写 / move 搬（跨两处）/ rename 改名 / delete 删 / " +
+            "trash 看回收站 / restore 从回收站还原。\n" +
+            "删是**移到回收站**（.trash），不是真删；想看回收站用 op=\"trash\"，想捡回来用 " +
+            "op=\"restore\"（restore 的 name 填回收站里那个完整名字）。\n" +
+            "提示：delete/move 时 area 默认是 notes（文件区），要动沙箱就显式写 area=\"sandbox\"。",
+          parameters: {
+            op: {
+              type: "string",
+              description: "list / read / write / move / rename / delete",
+            },
+            area: { type: "string", description: "notes（默认）/ sandbox" },
+            name: { type: "string", description: "文件名（不能带路径）" },
+            text: { type: "string", description: "write 时写什么" },
+            to: { type: "string", description: "move 时的目标区域：notes / sandbox" },
+            newName: { type: "string", description: "rename 时的新名字" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            const op = String(args?.op ?? "list").trim().toLowerCase();
+            const areaKey = String(args?.area ?? "notes").trim().toLowerCase();
+            const dir = FILES_AREA[areaKey];
+            if (!dir) return { ok: false, reason: `area 只能是 notes / sandbox` };
+
+            const safe = (nm) => {
+              const t = String(nm ?? "").trim();
+              if (!t || t.includes("/") || t.includes("\\") || t.includes("..")) return null;
+              if (!/^[\w\u4e00-\u9fa5.\-]{1,64}$/.test(t)) return null;
+              return t;
+            };
+
+            try {
+              mkdirSync(dir, { recursive: true });
+
+              // 回收站：列 / 还原
+              if (op === "trash") {
+                const trash = join(dir, ".trash");
+                const out = [];
+                if (existsSync(trash)) {
+                  for (const f of readdirSync(trash)) {
+                    try {
+                      const st = statSync(join(trash, f));
+                      if (!st.isFile()) continue;
+                      out.push({
+                        name: f,
+                        kb: Math.round((st.size / 1024) * 10) / 10,
+                        at: new Date(st.mtimeMs).toLocaleString("zh-CN", { hour12: false }),
+                      });
+                    } catch {
+                      // 忽略
+                    }
+                  }
+                }
+                out.sort((a, b) => b.name.localeCompare(a.name));
+                return {
+                  ok: true,
+                  op,
+                  area: areaKey,
+                  count: out.length,
+                  files: out,
+                  hint: out.length ? '想还原就 op="restore", name 填上面那个完整名字' : "回收站是空的",
+                };
+              }
+
+              if (op === "restore") {
+                const raw = String(args?.name ?? "").trim();
+                const trash = join(dir, ".trash");
+                const src = join(trash, raw);
+                if (!raw || raw.includes("/") || raw.includes("\\") || raw.includes("..")) {
+                  return { ok: false, reason: "name 填回收站里那个完整名字（不能带路径）" };
+                }
+                if (!existsSync(src)) {
+                  return { ok: false, reason: `回收站里没有「${raw}」，先用 op="trash" 看看` };
+                }
+                // 原名在 __ 后面
+                const parts = raw.split("__");
+                const orig = parts.length > 1 ? parts.slice(1).join("__") : raw;
+                const dest = join(dir, orig);
+                if (existsSync(dest)) {
+                  return { ok: false, reason: `文件区已经有「${orig}」了，先改名再还原` };
+                }
+                copyFileSync(src, dest);
+                unlinkSync(src);
+                try {
+                  chownSync(dest, 0, 0);
+                  chmodSync(dest, 0o644);
+                } catch {
+                  // 忽略
+                }
+                audit({ kind: "files_restore", area: areaKey, name: orig });
+                return { ok: true, op, area: areaKey, restored: orig };
+              }
+
+              if (op === "list") {
+                const out = [];
+                for (const f of readdirSync(dir)) {
+                  if (f.startsWith(".trash")) continue;
+                  try {
+                    const st = statSync(join(dir, f));
+                    if (!st.isFile()) continue;
+                    out.push({
+                      name: f,
+                      kb: Math.round((st.size / 1024) * 10) / 10,
+                      at: new Date(st.mtimeMs).toLocaleString("zh-CN", { hour12: false }),
+                    });
+                  } catch {
+                    // 忽略
+                  }
+                }
+                out.sort((a, b) => b.at.localeCompare(a.at));
+                return { ok: true, op, area: areaKey, count: out.length, files: out };
+              }
+
+              const name = safe(args?.name);
+              if (!name) return { ok: false, reason: "文件名不合法（不能带路径）" };
+              const full = join(dir, name);
+
+              if (op === "read") {
+                if (!existsSync(full)) {
+                  const otherKey = areaKey === "notes" ? "sandbox" : "notes";
+                  const otherFull = join(FILES_AREA[otherKey], name);
+                  if (existsSync(otherFull)) {
+                    return {
+                      ok: false,
+                      reason: `「${areaKey}」里没有「${name}」，但「${otherKey}」里有 —— 加 area="${otherKey}" 再试`,
+                    };
+                  }
+                  return { ok: false, reason: `没有「${name}」，先用 op="list" 看看有什么` };
+                }
+                const t = readFileSync(full, "utf8");
+                return {
+                  ok: true,
+                  op,
+                  area: areaKey,
+                  name,
+                  chars: t.length,
+                  truncated: t.length > 8000,
+                  text: t.slice(0, 8000),
+                };
+              }
+
+              if (op === "write") {
+                const text = String(args?.text ?? "");
+                if (!text) return { ok: false, reason: "text 是空的" };
+                writeFileSync(full, text, "utf8");
+                try {
+                  execFileSync("chown", ["root:root", full], { timeout: 3000 });
+                  chmodSync(full, 0o644);
+                } catch {
+                  // 忽略
+                }
+                return { ok: true, op, area: areaKey, name, chars: text.length };
+              }
+
+              if (op === "move") {
+                const toKey = String(args?.to ?? "").trim().toLowerCase();
+                const toDir = FILES_AREA[toKey];
+                if (!toDir) return { ok: false, reason: "to 只能是 notes / sandbox" };
+                if (toKey === areaKey) return { ok: false, reason: "两边一样，不用搬" };
+                if (!existsSync(full)) return { ok: false, reason: `没有「${name}」` };
+                mkdirSync(toDir, { recursive: true });
+                const dest = join(toDir, name);
+                if (existsSync(dest)) {
+                  return { ok: false, reason: `目标已有「${name}」，先改名或删掉再搬` };
+                }
+                copyFileSync(full, dest);
+                try {
+                  chownSync(dest, 0, 0);
+                  chmodSync(dest, 0o644);
+                } catch {
+                  // 忽略
+                }
+                unlinkSync(full);
+                return { ok: true, op, from: areaKey, to: toKey, name };
+              }
+
+              if (op === "rename") {
+                const nn = safe(args?.newName);
+                if (!nn) return { ok: false, reason: "newName 不合法" };
+                if (!existsSync(full)) return { ok: false, reason: `没有「${name}」` };
+                const dest = join(dir, nn);
+                if (existsSync(dest)) return { ok: false, reason: `已经有「${nn}」了` };
+                copyFileSync(full, dest);
+                unlinkSync(full);
+                return { ok: true, op, area: areaKey, from: name, to: nn };
+              }
+
+              if (op === "delete") {
+                if (!existsSync(full)) {
+                  const otherKey = areaKey === "notes" ? "sandbox" : "notes";
+                  if (existsSync(join(FILES_AREA[otherKey], name))) {
+                    return {
+                      ok: false,
+                      reason: `「${areaKey}」里没有「${name}」，但「${otherKey}」里有 —— 加 area="${otherKey}" 再试`,
+                    };
+                  }
+                  return { ok: false, reason: `没有「${name}」` };
+                }
+                const trash = join(dir, ".trash");
+                mkdirSync(trash, { recursive: true });
+                const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+                const dest = join(trash, `${stamp}__${name}`);
+                copyFileSync(full, dest);
+                unlinkSync(full);
+                audit({ kind: "files_delete", area: areaKey, name });
+                return {
+                  ok: true,
+                  op,
+                  area: areaKey,
+                  name,
+                  trash: `.trash/${stamp}__${name}`,
+                  note: "只是移到回收站，要捡回来说一声",
+                };
+              }
+
+              return {
+                ok: false,
+                reason: `不认识的 op「${op}」，可选：list / read / write / move / rename / delete`,
+              };
+            } catch (err) {
+              return { ok: false, reason: String(err?.message ?? err).slice(0, 200) };
+            }
+          },
+        }),
+      );
+
+      logger.info?.("[onebot] 统一文件工具已注册（files）");
 
       // ── 主动联系主人 ──
       // 她想说点什么、发现了新鲜事、有改动申请，都可以用这个主动推给主人。
@@ -10120,7 +10565,7 @@ const TOOL_ZH={
   read_notebook:"翻本子",
   read_pdf:"读PDF",
   propose_patch:"提改动申请",
-  my_patch_proposals:"看改动申请",patch_guide:"看申请写法",zhihu_daily:"看知乎日报",news_now:"看热榜",sandbox_files:"管沙箱文件",notify_owner:"主动找他",audit_self:"审视自己",
+  my_patch_proposals:"看改动申请",patch_guide:"看申请写法",zhihu_daily:"看知乎日报",news_now:"看热榜",sandbox_files:"管沙箱文件",read_page:"读网页正文",files:"管文件",notify_owner:"主动找他",audit_self:"审视自己",
   note_file:"建文件",read_note:"读文件",list_notes:"看文件区"
 };
 // 分类颜色
@@ -10139,7 +10584,7 @@ const TOOL_KIND={
   write_notebook:"mem",
   read_notebook:"mem",
   read_pdf:"mem",
-  propose_patch:"code",patch_guide:"code",zhihu_daily:"net",news_now:"net",sandbox_files:"code",notify_owner:"chat",audit_self:"self",
+  propose_patch:"code",patch_guide:"code",zhihu_daily:"net",news_now:"net",sandbox_files:"code",read_page:"net",files:"code",notify_owner:"chat",audit_self:"self",
   note_file:"note",read_note:"note",list_notes:"note",
   my_patch_proposals:"code",
   run_activity:"self",
@@ -11068,6 +11513,8 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
           zhihu_daily: "看知乎日报",
           news_now: "看热榜",
           sandbox_files: "管沙箱文件",
+          read_page: "读网页正文",
+          files: "管文件",
           note_file: "建文件",
           read_note: "读文件",
           list_notes: "看文件区",
