@@ -241,6 +241,40 @@ namespace FishTray
             }
             catch { return false; }
         }
+
+        /// <summary>发一张图（转 base64 走 /send 的 image 字段）。返回 (成功, 错误信息)</summary>
+        public static string SendImage(Settings s, string filePath, string caption)
+        {
+            try
+            {
+                if (!System.IO.File.Exists(filePath)) return "文件不存在";
+                var bytes = System.IO.File.ReadAllBytes(filePath);
+                if (bytes.Length == 0) return "文件是空的";
+                if (bytes.Length > 8 * 1024 * 1024) return "图片超过 8MB";
+
+                string ext = System.IO.Path.GetExtension(filePath).ToLower();
+                string mime = ext == ".png" ? "image/png"
+                    : ext == ".gif" ? "image/gif"
+                    : ext == ".webp" ? "image/webp"
+                    : "image/jpeg";
+
+                string b64 = Convert.ToBase64String(bytes);
+                var payload = new Dictionary<string, object> {
+                    { "text", caption ?? "" },
+                    { "image", "data:" + mime + ";base64," + b64 },
+                    { "imageName", System.IO.Path.GetFileName(filePath) },
+                    { "from", "" }
+                };
+                string json = new JavaScriptSerializer().Serialize(payload);
+                var c = new StringContent(json, Encoding.UTF8, "application/json");
+                var resp = H.PostAsync(Url(s, "/send"), c).GetAwaiter().GetResult();
+                if (resp.IsSuccessStatusCode) return "";
+                string body = "";
+                try { body = resp.Content.ReadAsStringAsync().GetAwaiter().GetResult(); } catch { }
+                return "HTTP " + (int)resp.StatusCode + " " + body;
+            }
+            catch (Exception ex) { return ex.Message; }
+        }
     }
 
     public class Msg
@@ -579,6 +613,37 @@ namespace FishTray
                 bigPath.Dispose();
                 cutPath.Dispose();
             }
+            else if (Kind == "pic")
+            {
+                // 相框 + 两座山 + 太阳，线描风格，和 close 一致
+                float rx = w * 0.20f, ry = h * 0.24f, rw = w * 0.60f, rh = h * 0.52f;
+                using (var pen = new Pen(Ink, 1.5f))
+                {
+                    pen.StartCap = LineCap.Round;
+                    pen.EndCap = LineCap.Round;
+                    pen.LineJoin = LineJoin.Round;
+
+                    // 外框（圆角矩形）
+                    using (var frame = R.Path(new Rectangle((int)rx, (int)ry, (int)rw, (int)rh), 2))
+                        g.DrawPath(pen, frame);
+
+                    // 第一座山（小）
+                    g.DrawLines(pen, new[] {
+                        new PointF(rx + rw * 0.10f, ry + rh * 0.80f),
+                        new PointF(rx + rw * 0.38f, ry + rh * 0.44f),
+                        new PointF(rx + rw * 0.60f, ry + rh * 0.80f)
+                    });
+                    // 第二座山（大）
+                    g.DrawLines(pen, new[] {
+                        new PointF(rx + rw * 0.44f, ry + rh * 0.80f),
+                        new PointF(rx + rw * 0.70f, ry + rh * 0.30f),
+                        new PointF(rx + rw * 0.94f, ry + rh * 0.80f)
+                    });
+                    // 太阳（实心小圆）
+                    using (var b = new SolidBrush(Ink))
+                        g.FillEllipse(b, rx + rw * 0.18f, ry + rh * 0.16f, rw * 0.15f, rh * 0.18f);
+                }
+            }
             else // sun
             {
                 using (var pen = new Pen(Ink, 1.6f))
@@ -641,6 +706,7 @@ namespace FishTray
         IconBtn themeBtn, closeBtn;
         TextBox input;
         Panel inputHost;
+        IconBtn imgBtn;
         PictureBox fishStrip;     // 收起时显示的鱼图标条
         Button sendBtn;
 
@@ -794,13 +860,24 @@ namespace FishTray
                 ForeColor = pal.Fg
             };
             input.KeyDown += OnInputKey;
+            input.KeyDown += delegate (object s2, KeyEventArgs e2)
+            {
+                if (!(e2.Control && e2.KeyCode == Keys.V)) return;
+                TryPasteImage(e2);
+            };
             inputHost.Controls.Add(input);
 
             sendBtn = new Button { Text = "发送", FlatStyle = FlatStyle.Flat, Font = new Font("Microsoft YaHei UI", 9.5f) };
             sendBtn.FlatAppearance.BorderSize = 0;
             sendBtn.Click += delegate { SendNow(); };
 
+            imgBtn = new IconBtn { Kind = "pic", Size = new Size(30, 30) };
+            imgBtn.Click += delegate { PickAndSendImage(); };
+            imgBtn.TabStop = true;
+            new ToolTip().SetToolTip(imgBtn, "发一张图给她（也可以 Ctrl+V 粘贴）");
+
             footer.Controls.Add(inputHost);
+            footer.Controls.Add(imgBtn);
             footer.Controls.Add(sendBtn);
             footer.Resize += delegate { LayoutFooter(); };
 
@@ -1173,8 +1250,17 @@ namespace FishTray
             sendBtn.Size = new Size(62, h);
             sendBtn.Location = new Point(footer.Width - 72, 9);
 
+            if (imgBtn != null)
+            {
+                int s2 = Math.Min(30, Math.Max(22, h - 6));
+                imgBtn.Size = new Size(s2, s2);
+                imgBtn.Location = new Point(sendBtn.Left - s2 - 10, 9 + (h - s2) / 2);
+            }
+
             inputHost.Location = new Point(10, 9);
-            inputHost.Size = new Size(footer.Width - 94, h);
+            int inputW = footer.Width - 94;
+            if (imgBtn != null) inputW -= 42;
+            inputHost.Size = new Size(Math.Max(60, inputW), h);
 
             int ih = Math.Max(18, h - 14);
             input.Location = new Point(8, (h - ih) / 2 + 1);
@@ -1495,7 +1581,36 @@ namespace FishTray
                     if (bytes == null || bytes.Length < 100) { Log.W("图片太小 " + label); return; }
 
                     var ms = new MemoryStream(bytes);
-                    var img = Image.FromStream(ms);
+                    Image img;
+                    try
+                    {
+                        img = Image.FromStream(ms);
+                    }
+                    catch (Exception iex)
+                    {
+                        // .NET Framework 4.8 的 GDI+ 不认 webp（也没有 AVIF）
+                        string low = label.ToLower();
+                        if (low.EndsWith(".webp") || low.EndsWith(".avif"))
+                        {
+                            Log.W("跳过预览（客户端不支持 " + low.Substring(low.LastIndexOf('.')) + "）：" + label);
+                            // 画个占位，别静默失败
+                            try
+                            {
+                                BeginInvoke((Action)delegate
+                                {
+                                    var ph2 = new Bubble(role, "［" + low.Substring(low.LastIndexOf('.') + 1) + " 图片，点开看不了，但她收到了］", pal, maxW);
+                                    ph2.Parent = canvas;
+                                    bubbles.Add(ph2);
+                                    canvas.Controls.Add(ph2);
+                                    Relayout();
+                                });
+                            }
+                            catch { }
+                            return;
+                        }
+                        Log.W("图片解码失败 " + label + "：" + iex.Message);
+                        return;
+                    }
 
                     int mw = img.Width, mh = img.Height;
                     float k = Math.Min(1f, 200f / Math.Max(mw, mh));
@@ -1532,6 +1647,174 @@ namespace FishTray
                     v.ShowDialog(this);
             }
             catch (Exception ex) { Log.W("大图失败 " + ex.Message); }
+        }
+
+        /// <summary>粘贴图片的暂存目录：优先 exe 同目录，退回系统临时目录</summary>
+        static string PasteDir()
+        {
+            try
+            {
+                string baseDir = System.IO.Path.GetDirectoryName(Application.ExecutablePath);
+                string d = System.IO.Path.Combine(baseDir, "paste");
+                System.IO.Directory.CreateDirectory(d);
+                // 验证真能写
+                string probe = System.IO.Path.Combine(d, ".w");
+                System.IO.File.WriteAllText(probe, "1");
+                System.IO.File.Delete(probe);
+                return d;
+            }
+            catch
+            {
+                try
+                {
+                    string d2 = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "fish-tray-paste");
+                    System.IO.Directory.CreateDirectory(d2);
+                    Log.W("粘贴目录回退到临时目录 " + d2);
+                    return d2;
+                }
+                catch
+                {
+                    return System.IO.Path.GetTempPath();
+                }
+            }
+        }
+
+        /// <summary>Ctrl+V 贴图：依次尝试 位图 / 文件列表 / 网页 HTML 里的图片地址</summary>
+        void TryPasteImage(KeyEventArgs e)
+        {
+            try
+            {
+                // 注意：不能用 %APPDATA% —— 安全软件会拦这个目录的创建
+                // （实测报「对路径 ...\AppData\Roaming\fish-tray\paste 的访问被拒绝」）
+                string dir = PasteDir();
+                System.IO.Directory.CreateDirectory(dir);
+                string stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss-fff");
+
+                // ① 位图（截图、浏览器右键「复制图片」多半走这条）
+                if (Clipboard.ContainsImage())
+                {
+                    var img = Clipboard.GetImage();
+                    if (img != null)
+                    {
+                        e.SuppressKeyPress = true;
+                        string f = System.IO.Path.Combine(dir, "paste-" + stamp + ".png");
+                        img.Save(f, System.Drawing.Imaging.ImageFormat.Png);
+                        Log.W("粘贴 位图 " + img.Width + "x" + img.Height + " -> " + f);
+                        SendImageFile(f);
+                        return;
+                    }
+                }
+
+                // ② 复制的文件（资源管理器、部分浏览器）
+                if (Clipboard.ContainsFileDropList())
+                {
+                    var files = Clipboard.GetFileDropList();
+                    foreach (string p in files)
+                    {
+                        if (string.IsNullOrEmpty(p)) continue;
+                        string ext = System.IO.Path.GetExtension(p).ToLower();
+                        if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" ||
+                            ext == ".gif" || ext == ".webp" || ext == ".bmp")
+                        {
+                            e.SuppressKeyPress = true;
+                            Log.W("粘贴 文件 " + p);
+                            SendImageFile(p);
+                            return;
+                        }
+                    }
+                }
+
+                // ③ 网页 HTML 里的图（data: 直接解，http/https 先下载）
+                if (Clipboard.ContainsText(TextDataFormat.Html))
+                {
+                    string html = Clipboard.GetText(TextDataFormat.Html);
+                    // 逐字字符串：\s 和单引号在普通字符串里是非法转义
+                    var m = System.Text.RegularExpressions.Regex.Match(
+                        html, @"src\s*=\s*[""']([^""']+)[""']", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                    if (m.Success)
+                    {
+                        string src = m.Groups[1].Value;
+                        e.SuppressKeyPress = true;
+                        Log.W("粘贴 HTML 图源 " + src.Substring(0, Math.Min(120, src.Length)));
+                        if (src.StartsWith("data:image/"))
+                        {
+                            int comma = src.IndexOf(',');
+                            if (comma > 0)
+                            {
+                                string b64 = src.Substring(comma + 1);
+                                var bytes = Convert.FromBase64String(b64);
+                                string f = System.IO.Path.Combine(dir, "paste-" + stamp + ".png");
+                                System.IO.File.WriteAllBytes(f, bytes);
+                                SendImageFile(f);
+                                return;
+                            }
+                        }
+                        else if (src.StartsWith("http"))
+                        {
+                            try
+                            {
+                                using (var wc = new System.Net.WebClient())
+                                {
+                                    wc.Headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)";
+                                    wc.Headers["Referer"] = "https://www.baidu.com/";
+                                    var bytes = wc.DownloadData(src);
+                                    if (bytes != null && bytes.Length > 100)
+                                    {
+                                        string ext2 = ".png";
+                                        string low = src.ToLower();
+                                        if (low.Contains(".jpg") || low.Contains(".jpeg")) ext2 = ".jpg";
+                                        else if (low.Contains(".gif")) ext2 = ".gif";
+                                        else if (low.Contains(".webp")) ext2 = ".webp";
+                                        string f = System.IO.Path.Combine(dir, "paste-" + stamp + ext2);
+                                        System.IO.File.WriteAllBytes(f, bytes);
+                                        Log.W("粘贴 下载图 " + bytes.Length + " 字节");
+                                        SendImageFile(f);
+                                        return;
+                                    }
+                                }
+                            }
+                            catch (Exception ex) { Log.W("下载图失败 " + ex.Message); }
+                        }
+                    }
+                }
+
+                // 都没命中：把粘贴交还给输入框（当普通文本）
+                Log.W("粘贴里没有图片，按文本处理");
+            }
+            catch (Exception ex) { Log.W("粘贴失败 " + ex.Message); }
+        }
+
+        /// <summary>点「图」：选一张图发给她</summary>
+        void PickAndSendImage()
+        {
+            using (var d = new OpenFileDialog())
+            {
+                d.Title = "选一张图发给她";
+                d.Filter = "图片|*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp|所有文件|*.*";
+                if (d.ShowDialog(this) != DialogResult.OK) return;
+                SendImageFile(d.FileName);
+            }
+        }
+
+        void SendImageFile(string path)
+        {
+            string cap = (input != null ? input.Text.Trim() : "");
+            try
+            {
+                if (input != null) input.Text = "";
+                SetStatus(statusLabel.Text, false);
+                string err = Api.SendImage(cfg, path, cap);
+                if (err != "")
+                {
+                    Log.W("发图失败 " + path + " -> " + err);
+                    MessageBox.Show(this, "发图失败：" + err, "没发出去");
+                    return;
+                }
+                Log.W("已发图 " + path);
+                // 不在本地硬塞气泡：桥已经把这条记进 /history（带 /uploads 地址），
+                // 轮询会自己拉回来并渲染，路径也对。之前手动加的路径是错的文件名。
+            }
+            catch (Exception ex) { Log.W("发图异常 " + ex.Message); }
         }
 
         void OnInputKey(object sender, KeyEventArgs e)

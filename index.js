@@ -10792,11 +10792,13 @@ footer{padding:12px;border-top:1px solid var(--line);display:flex;gap:8px;flex:n
 #in{flex:1;background:var(--input);border:1px solid var(--input-line);color:var(--fg);border-radius:8px;padding:10px 12px;font:inherit;resize:none;height:44px}
 #send{background:var(--me);border:0;color:#fff;border-radius:8px;padding:0 18px;font:inherit;cursor:pointer}
 #send:disabled{opacity:.5}
+#imgBtn{background:var(--card);border:1px solid var(--line);color:var(--fg);border-radius:8px;padding:0 12px;font:inherit;cursor:pointer;margin-right:6px}
+#imgBtn:hover{border-color:var(--me)}
 </style></head><body>
 <header><span class="dot" id="dot"></span><h1>QQ 助手</h1><span id="st" style="font-size:12px;color:#8b93a1"></span><a id="pg" href="/pages?token=${encodeURIComponent(token)}" target="_blank">页面</a><button id="theme" title="切换日夜">☾</button></header>
 <div id="live"></div>
 <div id="log"></div>
-<footer><textarea id="in" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）"></textarea><button id="send">发送</button></footer>
+<footer><textarea id="in" placeholder="说点什么…（Enter 发送，Shift+Enter 换行，可 Ctrl+V 贴图）"></textarea><button id="imgBtn" title="发一张图给她">图</button><input type="file" id="pickImg" accept="image/*" style="display:none"><button id="send">发送</button></footer>
 <script>
 const T=${JSON.stringify(token)}, log=document.getElementById('log'),
       inp=document.getElementById('in'), btn=document.getElementById('send'),
@@ -10972,6 +10974,34 @@ es.onmessage=e=>{
   }
   add(d.role==='me'?'me':'her',d.text||'');
 };
+// 发图：读文件转 base64（也支持粘贴）
+async function sendImage(fileOrBlob, name){
+  if(!fileOrBlob) return;
+  if(fileOrBlob.size > 8*1024*1024){ addTool('图片超过 8MB'); return; }
+  const cap = inp.value.trim();
+  inp.value='';
+  btn.disabled=true; if(imgBtnEl) imgBtnEl.disabled=true;
+  try{
+    const b64 = await new Promise((res,rej)=>{
+      const fr=new FileReader();
+      fr.onload=()=>{
+        const r=String(fr.result||'');
+        const i=r.indexOf(',');
+        res(i>=0?r.slice(i+1):r);
+      };
+      fr.onerror=rej;
+      fr.readAsDataURL(fileOrBlob);
+    });
+    const mime = fileOrBlob.type || 'image/png';
+    add('me', cap ? ('［图］'+cap) : '［图］');
+    await fetch('/send?token='+T,{
+      method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({text:cap, image:'data:'+mime+';base64,'+b64, imageName:name||'粘贴的图'})
+    });
+  }catch(e){ addTool('发图失败：'+e.message); }
+  setTimeout(()=>{ btn.disabled=false; if(imgBtnEl) imgBtnEl.disabled=false; },800);
+}
+
 async function send(from){
   if(typeof from!=='string') from='';
   const t=inp.value.trim(); if(!t) return;
@@ -10990,6 +11020,30 @@ async function send(from){
   setTimeout(()=>btn.disabled=false,600);
 }
 btn.onclick=()=>send();
+
+const imgBtnEl=document.getElementById('imgBtn');
+const pickImgEl=document.getElementById('pickImg');
+if(imgBtnEl&&pickImgEl){
+  imgBtnEl.onclick=()=>pickImgEl.click();
+  pickImgEl.onchange=()=>{
+    const f=pickImgEl.files&&pickImgEl.files[0];
+    pickImgEl.value='';
+    if(f) sendImage(f,f.name);
+  };
+}
+// Ctrl+V 贴图
+inp.addEventListener('paste',e=>{
+  try{
+    const items=(e.clipboardData||{}).items||[];
+    for(const it of items){
+      if(it.type&&it.type.indexOf('image/')===0){
+        const f=it.getAsFile();
+        if(f){ e.preventDefault(); sendImage(f,'粘贴的图'); return; }
+      }
+    }
+  }catch{}
+});
+
 inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}});
 </script></body></html>`;
   }
@@ -11180,6 +11234,32 @@ inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDef
         return;
       }
       // 她发的图片（表情包等）
+      // 主人从 WebUI 发来的图片（存在 uploads/，带 token 校验）
+      if (u.pathname.startsWith("/uploads/")) {
+        const name = u.pathname.slice(9).replace(/[^a-zA-Z0-9._-]/g, "");
+        if (!name) {
+          res.writeHead(400).end("bad name");
+          return;
+        }
+        const file = join(HOME, ".dsh/onebot-bridge/uploads", name);
+        try {
+          const buf = readFileSync(file);
+          const ext = (name.split(".").pop() || "png").toLowerCase();
+          const mime =
+            ext === "png"
+              ? "image/png"
+              : ext === "gif"
+                ? "image/gif"
+                : ext === "webp"
+                  ? "image/webp"
+                  : "image/jpeg";
+          res.writeHead(200, { "content-type": mime, "cache-control": "private, max-age=600" });
+          res.end(buf);
+        } catch {
+          res.writeHead(404).end("no image");
+        }
+        return;
+      }
       if (u.pathname.startsWith("/img/")) {
         const name = u.pathname.slice(5).replace(/[^a-zA-Z0-9._-]/g, "");
         const file = join(HOME, ".dsh/onebot-bridge/workspace/pages", name);
@@ -11323,17 +11403,91 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
         let body = "";
         req.on("data", (c) => {
           body += c;
-          if (body.length > 10_000) req.destroy();
+          // 放宽到 12MB：发图时 base64 会让 body 变大
+          if (body.length > 12_000_000) req.destroy();
         });
-        req.on("end", () => {
+        // 注意：要 async —— 图片转码（webp/avif → png）里用了 await import(sharp)
+        req.on("end", async () => {
           try {
             const parsedBody = JSON.parse(body || "{}");
             const t = String(parsedBody.text || "").trim();
             const from = String(parsedBody.from || "").slice(0, 40);
-            if (!t) {
+
+            // 主人发来的图片：base64（可带 data:image/png;base64, 前缀）
+            const rawImg = String(parsedBody.image || "");
+            const segs = [];
+            let savedName = "";
+            if (rawImg) {
+              try {
+                const mm = rawImg.match(/^data:(image\/[a-z0-9.+-]+);base64,(.*)$/i);
+                const mediaType = mm ? mm[1].toLowerCase() : "image/png";
+                const b64 = mm ? mm[2] : rawImg;
+                let buf = Buffer.from(b64, "base64");
+                if (!buf.length) throw new Error("图片是空的");
+                if (buf.length > 8 * 1024 * 1024) throw new Error("图片超过 8MB");
+
+                // webp / avif / bmp：.NET Framework 的 GDI+ 不认，桌面客户端显示不出来。
+                // 统一转成 png 再存（gif 保留原格式，免得把动图弄没了）。
+                let ext = mediaType.includes("jpeg") || mediaType.includes("jpg")
+                  ? "jpg"
+                  : mediaType.includes("gif")
+                    ? "gif"
+                    : mediaType.includes("webp")
+                      ? "webp"
+                      : mediaType.includes("avif")
+                        ? "avif"
+                        : mediaType.includes("bmp")
+                          ? "bmp"
+                          : "png";
+                if (ext === "webp" || ext === "avif" || ext === "bmp") {
+                  try {
+                    const sharpMod = await import(
+                      "/opt/node-v24.22.1-linux-x64/lib/node_modules/@deepseek-ai/dsh/node_modules/sharp/dist/index.mjs"
+                    );
+                    const sharp = sharpMod.default ?? sharpMod;
+                    const pngBuf = await sharp(buf).png().toBuffer();
+                    if (pngBuf && pngBuf.length) {
+                      logger.info?.(
+                        `[onebot] 图片转码 ${ext} → png（${Math.round(buf.length / 1024)} KB → ${Math.round(pngBuf.length / 1024)} KB）`,
+                      );
+                      buf = pngBuf;
+                      ext = "png";
+                    }
+                  } catch (ce) {
+                    logger.warn?.(`[onebot] 图片转码失败（保持原格式）：${ce?.message ?? ce}`);
+                  }
+                }
+
+                const dir = join(HOME, ".dsh/onebot-bridge/uploads");
+                mkdirSync(dir, { recursive: true });
+                savedName = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+                writeFileSync(join(dir, savedName), buf);
+                // 用本地 HTTP 地址，桥自己的 downloadImage 能拉（它只认 http）
+                const base = `http://127.0.0.1:${Number(cfg.webuiPort) || 3081}`;
+                segs.push({
+                  type: "image",
+                  data: {
+                    url: `${base}/uploads/${savedName}?token=${encodeURIComponent(String(cfg.webuiToken || ""))}`,
+                    file: savedName,
+                    summary: String(parsedBody.imageName || "主人发来的图").slice(0, 60),
+                  },
+                });
+                logger.info?.(`[onebot] WebUI 收到图片 ${savedName}（${Math.round(buf.length / 1024)} KB）`);
+              } catch (err) {
+                res.writeHead(400, { "content-type": "application/json" })
+                  .end(JSON.stringify({ ok: false, reason: `图片存不下：${String(err?.message ?? err).slice(0, 80)}` }));
+                return;
+              }
+            }
+
+            if (!t && !savedName) {
               res.writeHead(400).end("empty");
               return;
             }
+
+            // 文本段（有字才加）
+            if (t) segs.unshift({ type: "text", data: { text: t } });
+
             // 走跟 QQ 私聊同一条管道
             const fakeEv = {
               post_type: "message",
@@ -11342,16 +11496,17 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
               message_id: `webui-${Date.now()}`,
               time: Math.floor(Date.now() / 1000),
               sender: { user_id: Number(cfg.ownerId) || 0, nickname: "主人" },
-              message: [{ type: "text", data: { text: t } }],
-              raw_message: t,
+              message: segs,
+              raw_message: t || "[图片]",
               __fromWebUI: true,
               __fromButton: from || "",
               // via: "assistant" 表示这条是 AI 助手代主人发的，不是主人本人打的
               __viaAssistant: /^assistant$/i.test(String(parsedBody.via || "")),
             };
-            // 先把「你发的」记进网页聊天历史——不依赖 deliver 能不能跑通
+            // 先把「你发的」记进网页聊天历史——图片记成 /uploads 地址，前端能渲染
             try {
               webPush({ role: "me", text: t.slice(0, 500) });
+              if (savedName) webPush({ role: "me", image: `/uploads/${savedName}`, text: "" });
             } catch (err) {
               logger.warn?.(`[onebot] WebUI 消息未记入历史：${err?.message ?? err}`);
             }

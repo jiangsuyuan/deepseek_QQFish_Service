@@ -1,5 +1,87 @@
 # 更新日志
 
+## 1.1.35 · 2026-10-31
+
+**主人终于能发图给她了。** 之前 `/send` 只收文本，现在端到端支持图片。
+
+### 新增：`/send` 收图片
+
+```http
+POST /send?token=...
+{ "text": "看图", "image": "data:image/png;base64,...", "imageName": "xxx.png" }
+```
+
+流程：
+
+```
+base64 → 存 ~/.dsh/onebot-bridge/uploads/<时间戳>-<随机>.png
+      → 加进 fakeEv.message 的 image 段（url 走本地 3081，桥的 downloadImage 能拉）
+      → 走跟 QQ 私聊同一条管道 → 她能「看见」
+      → 同时 webPush 到 /history → 前端能渲染
+```
+
+- 单张 ≤ 8 MB，body ≤ 12 MB（原来 10 KB，发图必炸）
+- 新增 `/uploads/<name>` 静态路由
+- **webp / avif / bmp 自动转 png**：.NET Framework 的 GDI+ 不认这些格式，桌面客户端显示不出来。实测 `图片转码 webp → png（5 KB → 43 KB）`
+
+### 新增：客户端发图
+
+`tray-client` 的 footer 多了一个图标按钮：
+
+```
+[ 输入框 .................. ] [🖼] [发送]
+                              ↑ 相框+山+太阳，IconBtn 自绘
+```
+
+**三种发图方式**：
+
+| 方式 | 路径 |
+|---|---|
+| 点「🖼」 | 文件选择器 → 发 |
+| **Ctrl+V** | 剪贴板位图（截图、浏览器右键「复制图片」）→ 发 |
+| **Ctrl+V** | 文件列表 / 网页 HTML 里的 `<img src>` → 发 |
+
+**粘贴的三种来源**（依次尝试）：
+
+1. `Clipboard.ContainsImage()` —— 位图
+2. `Clipboard.ContainsFileDropList()` —— 图片文件
+3. `Clipboard.ContainsText(Html)` —— 从网页 HTML 里抠 `src`（`data:` 直接解码，`http(s)` 客户端自己下载并带 Referer）
+
+都不命中就不拦截，正常粘文本。
+
+### 新增：WebUI 也能发图
+
+- footer 加「图」按钮 + 隐藏 file input
+- 输入框支持 **Ctrl+V 贴图**
+
+### 修复
+
+- **粘贴报「访问被拒绝」**：
+  ```
+  23:06:24 粘贴失败 对路径"C:\Users\...\AppData\Roaming\fish-tray\paste"的访问被拒绝。
+  ```
+  `%APPDATA%` 被安全软件保护（README 里早就记过「日志只能写 exe 同目录」）。改到 exe 同目录，并带回退：exe 目录写不了 → 系统临时目录。
+
+- **webp 图片显示成「参数无效」**：
+  ```
+  23:00:43 图片失败 /uploads/xxx.webp 参数无效。
+  ```
+  GDI+ 没有 webp 解码器。两头都修：服务端转 png（治本）+ 客户端遇到 webp/avif 画占位气泡说明（治标）。
+
+- **`/send` 回调改成 `async`**：转码里用了 `await import(sharp)`，同步回调会报 `Unexpected reserved word`。
+
+### 实测
+
+```
+23:08:47 粘贴 位图 850x478 -> D:\...\paste\paste-20261031-230847-682.png
+23:08:47 已发图 D:\...\paste\paste-20261031-230847-682.png
+23:09:08 WebUI 收到图片 1793459348543-480jpj.png（634 KB）
+23:09:14 她：怎么，发了两遍？
+23:09:47 她：哦，那我看错了。这张我就当一次问号收下了。
+```
+
+她收到了，还敏锐指出这条**没有「助手代发」标记**——因为客户端发的就是主人本人的话，行为正确。
+
 ## 1.1.34 · 2026-10-31
 
 三个「自己看得见」的补丁：她画完能看、客户端点图能放大、以及一个**服务器上一颗中文字体都没有**的坑。
