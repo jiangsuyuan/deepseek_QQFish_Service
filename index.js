@@ -10105,7 +10105,8 @@ const TOOL_ZH={
   read_notebook:"翻本子",
   read_pdf:"读PDF",
   propose_patch:"提改动申请",
-  my_patch_proposals:"看改动申请",patch_guide:"看申请写法",zhihu_daily:"看知乎日报",news_now:"看热榜",sandbox_files:"管沙箱文件",notify_owner:"主动找他",audit_self:"审视自己"
+  my_patch_proposals:"看改动申请",patch_guide:"看申请写法",zhihu_daily:"看知乎日报",news_now:"看热榜",sandbox_files:"管沙箱文件",notify_owner:"主动找他",audit_self:"审视自己",
+  note_file:"建文件",read_note:"读文件",list_notes:"看文件区"
 };
 // 分类颜色
 const TOOL_KIND={
@@ -10124,6 +10125,7 @@ const TOOL_KIND={
   read_notebook:"mem",
   read_pdf:"mem",
   propose_patch:"code",patch_guide:"code",zhihu_daily:"net",news_now:"net",sandbox_files:"code",notify_owner:"chat",audit_self:"self",
+  note_file:"note",read_note:"note",list_notes:"note",
   my_patch_proposals:"code",
   run_activity:"self",
   set_reminder:"self",
@@ -11051,6 +11053,9 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
           zhihu_daily: "看知乎日报",
           news_now: "看热榜",
           sandbox_files: "管沙箱文件",
+          note_file: "建文件",
+          read_note: "读文件",
+          list_notes: "看文件区",
           notify_owner: "主动找他",
           audit_self: "审视自己",
           run_activity: "开始活动",
