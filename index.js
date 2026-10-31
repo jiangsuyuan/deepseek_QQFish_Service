@@ -1404,30 +1404,138 @@ function loadStickerLabels(dir) {
 }
 
 /** 在表情包目录里按标签挑一张图；挑不到就随机 */
-function pickSticker(dir, mood) {
+// ── 表情匹配：一个池子函数，两处共用 ──
+// 原来 pickSticker 和 pickStickerCandidates 各写了一份匹配逻辑，
+// 结果候选那边漏了反义映射（"不开心"直接掉随机）。
+// 现在统一走 pickStickerPool。
+
+const STICKER_NEGS = ["不", "没", "无", "别", "莫", "非", "表", "儿"];
+
+// 预览用：execute（异步）里把图存成 attachment，render（同步）里取出来塞进工具结果。
+// 这样三张候选图直接进模型的上下文——她真的「看见」了，不是靠标签猜。
+let lastStickerPreview = [];
+
+function stickerContradicts(key, tag) {
+  const i = key.indexOf(tag);
+  if (i <= 0) return false;
+  if (STICKER_NEGS.some((n) => key.slice(0, i).endsWith(n))) return true;
+  return /^(不起来|不了|不成|不出|不动|不下去)/.test(key.slice(i + tag.length));
+}
+
+// 否定词命中时的反义映射（"不开心"→委屈/哭，而不是随机）
+const STICKER_ANTONYM = {
+  开心: ["委屈", "哭"], 高兴: ["委屈", "哭"], 快乐: ["委屈", "哭"],
+  笑: ["哭", "委屈"], 大笑: ["哭"], 得意: ["疲惫"],
+  生气: ["疲惫", "委屈"], 兴奋: ["疲惫"], 精神: ["疲惫"],
+  困: ["震惊"], 睡: ["震惊"], 舒服: ["疲惫"],
+  喜欢: ["拒绝", "冷漠"], 满意: ["委屈"],
+};
+
+/** 按 mood 算出候选文件池（含否定检测 + 反义映射），返回 { files, labels, matched } */
+function pickStickerPool(dir, mood) {
   try {
     const files = readdirSync(dir).filter((f) => /\.(png|jpe?g|gif|webp)$/i.test(f));
     if (!files.length) return null;
     const labels = loadStickerLabels(dir);
     const key = String(mood || "").trim();
-    let pool = files;
-    if (key) {
-      const hit = files.filter((f) =>
-        (labels[f] || []).some((t) => t.includes(key) || key.includes(t)),
-      );
-      if (hit.length) pool = hit;
+    if (!key) return { files, labels, matched: false };
+
+    const match = (f, k) =>
+      (labels[f] || []).some((t) => {
+        if (!t) return false;
+        if (stickerContradicts(k, t)) return false;
+        return t === k || t.includes(k) || k.includes(t);
+      });
+
+    let hit = files.filter((f) => match(f, key));
+
+    // 被否定挡掉时试一次反义
+    if (!hit.length) {
+      for (const [pos, negs] of Object.entries(STICKER_ANTONYM)) {
+        if (!key.includes(pos) || !stickerContradicts(key, pos)) continue;
+        for (const alt of negs) {
+          const altHit = files.filter((f) => match(f, alt));
+          if (altHit.length) {
+            hit = altHit;
+            break;
+          }
+        }
+        if (hit.length) break;
+      }
     }
-    const name = pool[Math.floor(Math.random() * pool.length)];
-    return {
-      path: pathJoin(dir, name),
-      name,
-      tags: labels[name] || [],
-      fallback: pool === files,
-    };
+
+    return hit.length ? { files: hit, labels, matched: true } : { files, labels, matched: false };
   } catch {
     return null;
   }
 }
+
+/** 挑一张发（兼容老调用） */
+function pickSticker(dir, mood) {
+  const pool = pickStickerPool(dir, mood);
+  if (!pool) return null;
+  const name = pool.files[Math.floor(Math.random() * pool.files.length)];
+  return {
+    path: pathJoin(dir, name),
+    name,
+    tags: pool.labels[name] || [],
+    fallback: !pool.matched,
+  };
+}
+
+/** 挑最多 n 张候选（标签尽量不重复，别给三张一模一样的） */
+function pickStickerCandidates(dir, mood, n) {
+  const pool = pickStickerPool(dir, mood);
+  if (!pool) return [];
+  const want = Math.max(1, Math.min(5, Number(n) || 3));
+  const out = [];
+  const usedTagSets = new Set();
+  const bag = [...pool.files];
+
+  // 第一轮：优先标签组合不同的
+  for (let guard = 0; guard < bag.length * 2 && out.length < want; guard++) {
+    if (!bag.length) break;
+    const idx = Math.floor(Math.random() * bag.length);
+    const nm = bag[idx];
+    const tags = pool.labels[nm] || [];
+    const sig = [...tags].sort().join("|");
+    if (usedTagSets.has(sig) && bag.length > want - out.length) continue;
+    bag.splice(idx, 1);
+    usedTagSets.add(sig);
+    out.push({ path: pathJoin(dir, nm), name: nm, tags });
+  }
+
+  // 第二轮：不够就随便补
+  while (out.length < want && bag.length) {
+    const nm = bag.splice(Math.floor(Math.random() * bag.length), 1)[0];
+    out.push({ path: pathJoin(dir, nm), name: nm, tags: pool.labels[nm] || [] });
+  }
+
+  return out;
+}
+
+
+
+/** 表情画面描述缓存：描述过一次就不再花算力 */
+function loadStickerDescs(dir) {
+  try {
+    return JSON.parse(readFileSync(pathJoin(dir, "descs.json"), "utf8")) || {};
+  } catch {
+    return {};
+  }
+}
+function saveStickerDesc(dir, name, desc) {
+  try {
+    const d = loadStickerDescs(dir);
+    d[name] = String(desc || "").slice(0, 200);
+    writeFileSync(pathJoin(dir, "descs.json"), JSON.stringify(d, null, 1), "utf8");
+  } catch {
+    // 忽略
+  }
+}
+
+/** 挑最多 n 张候选（给「先看几张再选」用） */
+
 
 /** 按「文件名 m007」或「序号 7」定位一张表情（序号同「表情包列表」的顺序） */
 function resolveSticker(dir, key) {
@@ -1777,33 +1885,33 @@ class SessionManager {
     return job;
   }
 
-  /** 用临时会话看一张图并描述（不占用当前对话的 agent） */
+  /**
+   * 用临时会话看一张图并描述（不占用当前对话的 agent）
+   *
+   * 原来这里直接 `agents.create()` 然后 `agent.session` —— 但 create 返回的是
+   * { agent, ... } 包装对象，不是 agent 本身，所以 .session 永远是 undefined，
+   * 报 "Cannot read properties of undefined (reading 'seq')"，看图永远失败
+   * （候选预览全变成「没看明白，只有标签」）。
+   * 现在改走 openAgent：它有 resume/create 回退 + 写锁重试，拿到的结构也对。
+   */
   async describeImage(image, question) {
     const agents = this.svc("agents");
     if (!agents) return "";
     const att = this.svc("attachments");
     if (!att) return "";
     const tmpId = `vision-${Date.now()}`;
-    let agent = null;
+    let handle = null;
     try {
-      const setup = async (agentCtx) => {
-        try {
-          const presets = this.svc("agentPresets");
-          if (presets?.mount) await presets.mount(agentCtx);
-        } catch {
-          // 忽略
-        }
-      };
-      agent = await agents.create({
-        sessionId: SessionId(tmpId),
-        meta: { cwd: this.cfg.workspace },
-        setup,
-        agentOptions: this.agentOptions(),
-      });
-      const ref = await att.saveImage({ data: image.data, mediaType: image.mediaType });
-      const session = agent.session;
+      handle = await this.openAgent(tmpId);
+      const realAgent = handle?.agent ?? handle;
+      const session = realAgent?.session;
+      if (!session) {
+        this.logger?.warn?.("[onebot] 看图：openAgent 没拿到 session");
+        return "";
+      }
       const firstSeq = session.seq;
-      agent.followup(
+      const ref = await att.saveImage({ data: image.data, mediaType: image.mediaType });
+      realAgent.followup(
         createUserMessage({
           content: [
             { type: "text", text: question || "这张图是什么？一两句话描述，别长篇。" },
@@ -1812,14 +1920,15 @@ class SessionManager {
           source: { kind: "user" },
         }),
       );
-      await withTimeout(agent.whenIdle(), 45000, "vision-turn");
+      await withTimeout(realAgent.whenIdle(), 45000, "vision-turn");
       return String(extractReply(session, firstSeq) ?? "").trim();
     } catch (err) {
       this.logger?.warn?.(`[onebot] 看图失败：${err?.message ?? err}`);
       return "";
     } finally {
       try {
-        await agent?.dispose?.();
+        const realAgent = handle?.agent ?? handle;
+        await realAgent?.dispose?.();
       } catch {
         // 忽略
       }
@@ -2855,10 +2964,30 @@ export function apply(ctx, _pluginConfig) {
                 description:
                   "要不要引用对方那条消息。想直接回应某人就填 true；只是气氛到了想发一张就填 false。看你心情。",
               },
+              preview: {
+                type: "boolean",
+                description:
+                  "先看几张再决定时填 true：不发送，只返回 2-3 张候选的画面描述和标签。" +
+                  "看完再用 name 指定发哪张。拿不准挑哪张时用这个，省得盲抽一张不搭的。",
+              },
             },
             output: {
               schema: { type: "json" },
-              render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+              render: (_a, v) => {
+                const blocks = [{ type: "text", text: JSON.stringify(v) }];
+                // 预览时把三张图直接拼进工具结果 —— 模型在返回处就能看到画面，
+                // 不用再起一个 agent 去「描述」，也不用她靠标签猜。
+                if (v && v.preview === true && Array.isArray(lastStickerPreview)) {
+                  for (const it of lastStickerPreview) {
+                    blocks.push({
+                      type: "text",
+                      text: `▼ ${it.name}　标签：${(it.tags || []).join(" / ") || "无"}`,
+                    });
+                    blocks.push({ type: "image", attachment: it.ref });
+                  }
+                }
+                return blocks;
+              },
             },
             execute: async (args, exec) => {
               const sid = exec?.agent?.session?.id;
@@ -2868,6 +2997,51 @@ export function apply(ctx, _pluginConfig) {
                 return { ok: false, reason: "当前没有 QQ 会话上下文" };
               }
               const want = String(args?.name ?? "").trim();
+
+              // 先看几张：把图直接塞进工具结果，她自己看着挑
+              if (args?.preview === true && !want) {
+                const cands = pickStickerCandidates(
+                  cfg.stickerDir,
+                  String(args?.mood ?? ""),
+                  3,
+                );
+                if (!cands.length) return { ok: false, reason: "库里没有可挑的图" };
+                const att = sessions.svc?.("attachments");
+                if (!att?.saveImage) {
+                  return { ok: false, reason: "附件服务不可用，看不了图" };
+                }
+                lastStickerPreview = [];
+                for (const c of cands) {
+                  try {
+                    const buf = readFileSync(c.path);
+                    const ref = await att.saveImage({
+                      data: buf,
+                      mediaType: /\.png$/i.test(c.name) ? "image/png" : "image/jpeg",
+                    });
+                    lastStickerPreview.push({ name: c.name, tags: c.tags, ref });
+                  } catch (err) {
+                    return {
+                      ok: false,
+                      reason: `图读不出来：${String(err?.message ?? err).slice(0, 100)}`,
+                    };
+                  }
+                }
+                return {
+                  ok: true,
+                  preview: true,
+                  count: lastStickerPreview.length,
+                  candidates: lastStickerPreview.map((x) => ({
+                    name: x.name,
+                    tags: x.tags,
+                  })),
+                  hint:
+                    "图已经在你眼前了（不是标签，是真图）。看完三选一：\n" +
+                    "· 有一张合适 → send_sticker({ name: \"文件名\" })\n" +
+                    "· 都不合适 → 换个 mood 再 preview，或者干脆不发\n" +
+                    "· 只是不想发 → 什么都别做（预览不会发出去）",
+                };
+              }
+
               const picked = want
                 ? resolveSticker(cfg.stickerDir, want)
                 : pickSticker(cfg.stickerDir, String(args?.mood ?? ""));
