@@ -142,5 +142,6 @@
     "notebookEnabled":  true,
     "patchProposalEnabled":  true,
     "selfActivityMinPerDay":  10,
-    "notifyOwnerPerDay":  3
+    "notifyOwnerPerDay":  3,
+    "selfActivityCheckMinutes":  25
 }

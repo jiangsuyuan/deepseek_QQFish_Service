@@ -13572,9 +13572,9 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
       logger.info?.(
         `[onebot] 调度：delayMinutes=${delayMinutes} clamped=${clamped} 目标=${new Date(targetAt).toLocaleTimeString("zh-CN", { hour12: false })}`,
       );
+      // 只存「下次时刻」，不再用 setTimeout 精确触发。
+      // 到点后由每 25 分钟的 checkSelfActivity 来问她：现在动，还是改时间。
       patchSelfState({ selfActivityNextAt: targetAt });
-      nextActivityTimer = setTimeout(() => void tickSelfActivity(), clamped * 60_000);
-      nextActivityTimer.unref?.();
       if (delayMinutes > 0 && delayMinutes !== clamped) {
         logger.info?.(`[onebot] 她说 ${Math.round(delayMinutes)} 分钟，按 ${Math.round(clamped)} 分钟执行`);
       }
@@ -13679,6 +13679,103 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
   }, 20_000).unref?.();
 
   // 启动时：如果上次存了「下次什么时候」，按剩余时间恢复；否则 3 分钟后开始
+  // ── 每 25 分钟：看一眼该不该动 ──
+  // 不再按「间隔」精确触发，到点后由这里问她：现在动，还是改时间。
+  let activityChecking = false;
+  async function checkSelfActivity() {
+    if (activityChecking) return;
+    if (cfg.selfActivityEnabled === false || cfg.autoActionsEnabled === false) return;
+    activityChecking = true;
+    try {
+      const now = Date.now();
+      const st = loadSelfState();
+      const nextAt = Number(st.selfActivityNextAt) || 0;
+      const acts = loadActivities(200);
+      const lastAt = acts.length ? acts[acts.length - 1].at : 0;
+
+      // 离下次时间还早（超过 25 分钟）就先不管
+      if (nextAt && now < nextAt - 25 * 60_000) return;
+
+      const fmt = (t) =>
+        t
+          ? new Date(t).toLocaleString("zh-CN", {
+              month: "2-digit",
+              day: "2-digit",
+              hour: "2-digit",
+              minute: "2-digit",
+              hour12: false,
+            })
+          : "没排过";
+
+      let decision = null;
+      try {
+        const prompt =
+          "（内部，不要发消息。这是在问你要不要现在活动。）\n" +
+          `现在是 ${fmt(now)}。\n` +
+          `你上次活动是 ${fmt(lastAt)}${lastAt ? `（${Math.round((now - lastAt) / 60000)} 分钟前）` : ""}。\n` +
+          `你上次给自己排的下次时间是 ${fmt(nextAt)}${
+            nextAt
+              ? `（${
+                  nextAt > now
+                    ? "还有 " + Math.round((nextAt - now) / 60000) + " 分钟"
+                    : "已经过了 " + Math.round((now - nextAt) / 60000) + " 分钟"
+                }）`
+              : ""
+          }。\n\n` +
+          "问自己三件事：\n" +
+          "1. 现在想动吗？还是想再待一会儿？\n" +
+          "2. 如果不想动，下次想排到什么时候？\n" +
+          "3. 上次排的时间还合适吗？要不要改？\n\n" +
+          '只输出 JSON，别的话都不要：{"actNow": true/false, "delayMin": 数字或 0, "why": "一句话"}\n' +
+          "· actNow=true → 立刻开始一轮活动（delayMin 忽略）\n" +
+          "· actNow=false 且 delayMin>0 → 把下次时刻改成 delayMin 分钟后\n" +
+          "· actNow=false 且 delayMin=0 → 不改时间，维持原计划";
+        const out = String((await sessions.runSilent(SELF_ACTIVITY_KEY, prompt)) ?? "").trim();
+        const m = out.match(/\{[\s\S]*\}/);
+        if (m) decision = JSON.parse(m[0]);
+      } catch (err) {
+        logger.warn?.(`[onebot] 活动自检判断失败：${err?.message ?? err}`);
+      }
+
+      if (!decision) {
+        if (nextAt && now >= nextAt) {
+          logger.info?.("[onebot] 自检没结论，按原计划开跑");
+          void tickSelfActivity();
+        }
+        return;
+      }
+
+      const why = String(decision.why || "").slice(0, 60);
+      if (decision.actNow === true) {
+        logger.info?.(`[onebot] 自检：现在就动 —— ${why}`);
+        patchSelfState({ selfActivityNextAt: now });
+        void tickSelfActivity();
+        return;
+      }
+
+      const delayMin = Math.max(0, Math.min(720, Number(decision.delayMin) || 0));
+      if (delayMin > 0) {
+        const newAt = now + delayMin * 60_000;
+        patchSelfState({ selfActivityNextAt: newAt });
+        logger.info?.(`[onebot] 自检：缓一缓，改到 ${fmt(newAt)} —— ${why}`);
+        audit({ kind: "activity_reschedule", delayMin, why });
+      } else {
+        logger.info?.(`[onebot] 自检：维持原计划 —— ${why}`);
+      }
+    } catch (err) {
+      logger.warn?.(`[onebot] 活动自检失败：${err?.message ?? err}`);
+    } finally {
+      activityChecking = false;
+    }
+  }
+
+  // 每 25 分钟跑一次（cfg.selfActivityCheckMinutes 可调）
+  const checkMin = Math.max(5, Number(cfg.selfActivityCheckMinutes) || 25);
+  setInterval(() => void checkSelfActivity(), checkMin * 60_000).unref?.();
+  // 启动 1 分钟后先看一眼（不然重启后要空等一个周期）
+  setTimeout(() => void checkSelfActivity(), 60_000).unref?.();
+  logger.info?.(`[onebot] 活动自检已启动：每 ${checkMin} 分钟看她想不想动`);
+
   setTimeout(() => {
     try {
       const saved = Number(loadSelfState().selfActivityNextAt) || 0;
