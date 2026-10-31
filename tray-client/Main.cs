@@ -257,6 +257,8 @@ namespace FishTray
         public string Role = "her";
         public string Body = "";
         public Image Pic;              // 有图就画图，不画文字气泡
+        public event Action<Image> PicClicked;      // 点图看大图
+        public string PicLabel = "";               // 原图路径/说明，给大图窗口当标题用
         public Color BgCol, FgCol;
         public int Radius = 10;
         public int PadX = 11;
@@ -399,6 +401,23 @@ namespace FishTray
         {
             base.OnResize(e);
             ApplyRegion();
+        }
+
+        protected override void OnMouseClick(MouseEventArgs e)
+        {
+            if (Pic != null && e.Button == MouseButtons.Left && PicClicked != null)
+            {
+                try { PicClicked(Pic); } catch { }
+                return;
+            }
+            base.OnMouseClick(e);
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            var want = Pic != null ? Cursors.Hand : Cursors.Default;
+            if (Cursor != want) Cursor = want;
         }
 
         protected override void OnPaint(PaintEventArgs e)
@@ -1488,6 +1507,8 @@ namespace FishTray
                         BeginInvoke((Action)delegate
                         {
                             ph.Pic = img;
+                            ph.PicLabel = label;
+                            ph.PicClicked += ShowBigImage;
                             ph.Size = new Size(nw, nh);
                             Relayout();
                             ScrollEnd();
@@ -1498,6 +1519,19 @@ namespace FishTray
                 }
                 catch (Exception ex) { Log.W("图片失败 " + label + " " + ex.Message); }
             });
+        }
+
+        /// <summary>点图片气泡：开一个大图窗口看原图</summary>
+        void ShowBigImage(Image img)
+        {
+            if (img == null) return;
+            try
+            {
+                Log.W("打开大图 " + img.Width + "x" + img.Height);
+                using (var v = new ImageViewer(img, pal))
+                    v.ShowDialog(this);
+            }
+            catch (Exception ex) { Log.W("大图失败 " + ex.Message); }
         }
 
         void OnInputKey(object sender, KeyEventArgs e)
@@ -1691,5 +1725,247 @@ namespace FishTray
                 try { MessageBox.Show(ex.Message, "启动失败"); } catch { }
             }
         }
+
+
     }
+
+    /// <summary>大图查看器：点聊天里的图片弹这个 —— 滚轮缩放、拖拽平移、双击原尺寸、ESC 关</summary>
+    public class ImageViewer : Form
+    {
+        readonly Image src;
+        float zoom = 1f;
+        bool fitToScreen = true;
+        Point dragFrom;
+        Point panFrom;
+        bool dragging;
+        Point offset;
+        readonly Label hint;
+        readonly Label info;
+
+        const float MIN_ZOOM = 0.1f;
+        const float MAX_ZOOM = 8f;
+
+        public ImageViewer(Image img, Palette pal)
+        {
+            src = img;
+
+            Text = "看大图　" + img.Width + "×" + img.Height;
+            StartPosition = FormStartPosition.CenterScreen;
+            FormBorderStyle = FormBorderStyle.None;
+            WindowState = FormWindowState.Maximized;
+            BackColor = Color.FromArgb(18, 20, 24);
+            KeyPreview = true;
+            DoubleBuffered = true;
+
+            info = new Label();
+            info.AutoSize = true;
+            info.BackColor = Color.FromArgb(170, 0, 0, 0);
+            info.ForeColor = Color.FromArgb(230, 230, 235);
+            info.Font = new Font("Microsoft YaHei UI", 9f);
+            info.Padding = new Padding(10, 6, 10, 6);
+            info.Text = img.Width + "×" + img.Height + "　适配屏幕";
+            info.Location = new Point(16, 14);
+            Controls.Add(info);
+
+            hint = new Label();
+            hint.AutoSize = true;
+            hint.BackColor = Color.FromArgb(150, 0, 0, 0);
+            hint.ForeColor = Color.FromArgb(180, 185, 195);
+            hint.Font = new Font("Microsoft YaHei UI", 8.5f);
+            hint.Padding = new Padding(10, 5, 10, 5);
+            hint.Text = "滚轮缩放　拖拽平移　双击原尺寸　右键菜单　ESC 关闭";
+            Controls.Add(hint);
+            hint.Location = new Point(16, 52);
+
+            Resize += delegate { PlaceHint(); };
+            PlaceHint();
+
+            // 图片本身画在 OnPaint 里
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer, true);
+
+            MouseWheel += OnWheel;
+            MouseDown += OnDown;
+            MouseMove += OnMove;
+            MouseUp += OnUp;
+            DoubleClick += OnDouble;
+            KeyDown += OnKey;
+
+            var menu = new ContextMenuStrip();
+            menu.ShowImageMargin = false;
+            var miCopy = new ToolStripMenuItem("复制图片");
+            miCopy.Click += delegate
+            {
+                try { Clipboard.SetImage(src); Flash("已复制"); } catch { }
+            };
+            menu.Items.Add(miCopy);
+            var miSave = new ToolStripMenuItem("另存为…");
+            miSave.Click += delegate { SaveAs(); };
+            menu.Items.Add(miSave);
+            menu.Items.Add(new ToolStripSeparator());
+            var miFit = new ToolStripMenuItem("适配屏幕");
+            miFit.Click += delegate { fitToScreen = true; zoom = 1f; offset = Point.Empty; Recalc(); };
+            menu.Items.Add(miFit);
+            var miReal = new ToolStripMenuItem("原始尺寸 (100%)");
+            miReal.Click += delegate { UseRealSize(); };
+            menu.Items.Add(miReal);
+            menu.Items.Add(new ToolStripSeparator());
+            var miClose = new ToolStripMenuItem("关闭");
+            miClose.Click += delegate { Close(); };
+            menu.Items.Add(miClose);
+            ContextMenuStrip = menu;
+        }
+
+        void PlaceHint()
+        {
+            try
+            {
+                hint.Location = new Point(16, ClientSize.Height - hint.Height - 16);
+            }
+            catch { }
+        }
+
+        void Flash(string msg)
+        {
+            var old = info.Text;
+            info.Text = msg;
+            var t = new Timer();
+            t.Interval = 1200;
+            t.Tick += delegate { t.Stop(); t.Dispose(); try { info.Text = old; } catch { } };
+            t.Start();
+        }
+
+        void SaveAs()
+        {
+            try
+            {
+                using (var d = new SaveFileDialog())
+                {
+                    d.Filter = "PNG 图片|*.png|JPEG 图片|*.jpg";
+                    d.FileName = "her-image";
+                    if (d.ShowDialog(this) != DialogResult.OK) return;
+                    if (d.FileName.ToLower().EndsWith(".jpg"))
+                        src.Save(d.FileName, System.Drawing.Imaging.ImageFormat.Jpeg);
+                    else
+                        src.Save(d.FileName, System.Drawing.Imaging.ImageFormat.Png);
+                    Flash("已保存");
+                }
+            }
+            catch (Exception ex) { Flash("保存失败：" + ex.Message); }
+        }
+
+        void UseRealSize()
+        {
+            fitToScreen = false;
+            zoom = 1f;
+            offset = Point.Empty;
+            Recalc();
+        }
+
+        Rectangle ImageRect()
+        {
+            if (!fitToScreen) { zoom = 1f; }
+            float baseScale;
+            if (fitToScreen)
+            {
+                float sx = (ClientSize.Width - 80f) / src.Width;
+                float sy = (ClientSize.Height - 120f) / src.Height;
+                baseScale = Math.Min(1f, Math.Min(sx, sy));
+            }
+            else baseScale = 1f;
+
+            float k = baseScale * zoom;
+            int w = Math.Max(1, (int)(src.Width * k));
+            int h = Math.Max(1, (int)(src.Height * k));
+            int x = (ClientSize.Width - w) / 2 + offset.X;
+            int y = (ClientSize.Height - h) / 2 + offset.Y;
+            return new Rectangle(x, y, w, h);
+        }
+
+        void Recalc()
+        {
+            var r = ImageRect();
+            info.Text = src.Width + "×" + src.Height + "　显示 " + r.Width + "×" + r.Height +
+                        "　" + (fitToScreen ? "适配屏幕" : (int)(zoom * 100) + "%");
+            Invalidate();
+        }
+
+        void OnWheel(object sender, MouseEventArgs e)
+        {
+            if (src == null) return;
+            float step = e.Delta > 0 ? 1.15f : 1f / 1.15f;
+            float next = zoom * step;
+            if (next < MIN_ZOOM) next = MIN_ZOOM;
+            if (next > MAX_ZOOM) next = MAX_ZOOM;
+            // 以鼠标位置为中心缩放
+            var r = ImageRect();
+            float cx = (e.X - r.Left) / (float)Math.Max(1, r.Width);
+            float cy = (e.Y - r.Top) / (float)Math.Max(1, r.Height);
+            fitToScreen = false;
+            zoom = next;
+            var r2 = ImageRect();
+            offset.X += (e.X - (r2.Left + (int)(cx * r2.Width)));
+            offset.Y += (e.Y - (r2.Top + (int)(cy * r2.Height)));
+            Recalc();
+        }
+
+        void OnDown(object sender, MouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Left) return;
+            dragging = true;
+            dragFrom = e.Location;
+            panFrom = offset;
+            Cursor = Cursors.SizeAll;
+        }
+
+        void OnMove(object sender, MouseEventArgs e)
+        {
+            if (!dragging) return;
+            offset = new Point(panFrom.X + (e.X - dragFrom.X), panFrom.Y + (e.Y - dragFrom.Y));
+            Invalidate();
+        }
+
+        void OnUp(object sender, MouseEventArgs e)
+        {
+            dragging = false;
+            Cursor = Cursors.Default;
+        }
+
+        void OnDouble(object sender, EventArgs e)
+        {
+            if (fitToScreen) UseRealSize();
+            else { fitToScreen = true; zoom = 1f; offset = Point.Empty; Recalc(); }
+        }
+
+        void OnKey(object sender, KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Escape) Close();
+            else if (e.KeyCode == Keys.D0 || e.KeyCode == Keys.NumPad0) UseRealSize();
+            else if (e.KeyCode == Keys.F) { fitToScreen = true; zoom = 1f; offset = Point.Empty; Recalc(); }
+            else if (e.KeyCode == Keys.Left) { offset.X -= 40; Invalidate(); }
+            else if (e.KeyCode == Keys.Right) { offset.X += 40; Invalidate(); }
+            else if (e.KeyCode == Keys.Up) { offset.Y -= 40; Invalidate(); }
+            else if (e.KeyCode == Keys.Down) { offset.Y += 40; Invalidate(); }
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.Clear(BackColor);
+            if (src == null) return;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.InterpolationMode = zoom > 1.6f
+                ? InterpolationMode.NearestNeighbor
+                : InterpolationMode.HighQualityBicubic;
+            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+
+            var r = ImageRect();
+            // 底部投影，让图从深色背景里浮起来
+            using (var b = new SolidBrush(Color.FromArgb(90, 0, 0, 0)))
+                g.FillRectangle(b, r.Left + 6, r.Top + 8, r.Width, r.Height);
+            g.DrawImage(src, r);
+            using (var p = new Pen(Color.FromArgb(60, 255, 255, 255)))
+                g.DrawRectangle(p, r.Left, r.Top, r.Width - 1, r.Height - 1);
+        }
+    }
+
 }

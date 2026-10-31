@@ -1411,6 +1411,10 @@ function loadStickerLabels(dir) {
 
 const STICKER_NEGS = ["不", "没", "无", "别", "莫", "非", "表", "儿"];
 
+// draw_svg 画完的图：execute 里 saveImage，render 里塞回工具结果 ——
+// 让她自己看见画成什么样，不满意就改 SVG 重画。
+let lastSvgRender = null;
+
 // 预览用：execute（异步）里把图存成 attachment，render（同步）里取出来塞进工具结果。
 // 这样三张候选图直接进模型的上下文——她真的「看见」了，不是靠标签猜。
 let lastStickerPreview = [];
@@ -2500,11 +2504,25 @@ export function apply(ctx, _pluginConfig) {
             "svg 参数要传**完整的 <svg>...</svg>**，宽高建议 400-800。" +
             "同样是低频使用，只在气氛合适时画。",
           parameters: {
+            send: {
+              type: "boolean",
+              description:
+                "画完要不要直接发到聊天里，默认 true。" +
+                "想先看效果再决定就填 false —— 渲染结果照样会摆在工具结果里给你看，只是不发出去。",
+            },
             svg: { type: "string", description: "完整的 SVG 代码" },
           },
           output: {
             schema: { type: "json" },
-            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+            render: (_a, v) => {
+              const blocks = [{ type: "text", text: JSON.stringify(v) }];
+              // 把画出来的图摆回工具结果 —— 她画完立刻就能看见效果，好自己判断要不要改
+              if (lastSvgRender && lastSvgRender.ref) {
+                blocks.push({ type: "text", text: "▼ 渲染结果（你画的就是这样）" });
+                blocks.push({ type: "image", attachment: lastSvgRender.ref });
+              }
+              return blocks;
+            },
           },
           execute: async (args, exec) => {
             const sid = String(exec?.agent?.session?.id ?? "");
@@ -2536,10 +2554,45 @@ export function apply(ctx, _pluginConfig) {
               }
               const tmp = join(HOME, ".dsh/onebot-bridge/svg.png");
               writeFileSync(tmp, png);
-              await client.sendImage(target, tmp);
-              audit({ kind: "draw_svg", len: svg.length, bytes: png.length });
-              logger.info?.(`[onebot] 画了张 SVG 图（${png.length} 字节）`);
-              return { ok: true, bytes: png.length };
+              // 同时把 SVG 源码存一份：出图有问题（文字重叠、位置错）时能直接看源码定位
+              try {
+                const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+                writeFileSync(
+                  join(HOME, ".dsh/onebot-bridge/svg-src", `svg-${stamp}.svg`),
+                  svg,
+                  "utf8",
+                );
+              } catch {
+                // 忽略
+              }
+              // 存成 attachment：这样 render 能把图摆回工具结果给她看
+              const wantSend = args?.send !== false;
+              let ref = null;
+              try {
+                const att = sessions.svc?.("attachments");
+                if (att?.saveImage) ref = await att.saveImage({ data: png, mediaType: "image/png" });
+              } catch {
+                // 存不了也不影响发送，只是她看不见
+              }
+              lastSvgRender = { ref, bytes: png.length, sent: wantSend };
+
+              if (wantSend) {
+                await client.sendImage(target, tmp);
+                audit({ kind: "draw_svg", len: svg.length, bytes: png.length, sent: true });
+                logger.info?.(`[onebot] 画了张 SVG 图并发出去（${png.length} 字节）`);
+              } else {
+                audit({ kind: "draw_svg_preview", len: svg.length, bytes: png.length });
+                logger.info?.(`[onebot] 画了张 SVG 图（只是预览，没发出去）`);
+              }
+
+              return {
+                ok: true,
+                bytes: png.length,
+                sent: wantSend,
+                note: wantSend
+                  ? "已经发出去了。图就在上面，你要是看着不对可以直接改 SVG 重画。"
+                  : "只是预览，没发出去。看着行就再调一次 send:true，不行就改 SVG。",
+              };
             } catch (err) {
               logger.warn?.(`[onebot] SVG 渲染失败：${err?.message ?? err}`);
               return { ok: false, reason: String(err?.message ?? err).slice(0, 120) };
@@ -2547,6 +2600,11 @@ export function apply(ctx, _pluginConfig) {
           },
         }),
       );
+      try {
+        mkdirSync(join(HOME, ".dsh/onebot-bridge/svg-src"), { recursive: true });
+      } catch {
+        // 忽略
+      }
       logger.info?.("[onebot] SVG 画图工具已注册");
     } catch (err) {
       logger.warn?.(`[onebot] SVG 工具注册失败：${err?.message ?? err}`);
