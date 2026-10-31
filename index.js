@@ -12782,8 +12782,28 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
   }
 
   /** 完整的一轮：思考 → 行动 → 反思 */
+  // 全局活动锁：自检、手动触发、定时触发可能同时来，同时跑会撞会话写锁
+  let activityRunning = false;
+  let activityRunningSince = 0;
+
   async function runThinkingCycle(opts = {}) {
     if (cfg.autoActionsEnabled === false) return;
+    if (activityRunning) {
+      const busySec = Math.round((Date.now() - activityRunningSince) / 1000);
+      logger.info?.(`[onebot] 已有一轮在进行（${busySec} 秒），这次跳过`);
+      return false;
+    }
+    activityRunning = true;
+    activityRunningSince = Date.now();
+    try {
+      await runThinkingCycleInner(opts);
+      return true;
+    } finally {
+      activityRunning = false;
+    }
+  }
+
+  async function runThinkingCycleInner(opts = {}) {
     // 主人点名/测试触发的活动：不占她的每日额度
     const byOwner = opts.byOwner === true;
     if (!selfActivityHoursOk()) return;
@@ -12801,8 +12821,9 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
       }
     }
     if (!plan) {
-      logger.info?.("[onebot] 没想出来要做什么，跳过这轮");
-      scheduleNextSelfActivity(0);
+      // 想不出来 = 这轮没跑成。不要排下次时间（那等于假装跑过了），
+      // 保持原来的 nextAt 不变，让自检下一轮再看。
+      logger.info?.("[onebot] 没想出来要做什么，本轮跳过（不改下次时间）");
       return;
     }
     logger.info?.(`[onebot] 想好了：${plan.action} — ${plan.intent.slice(0, 40)}`);
@@ -12882,7 +12903,9 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
     } else {
       logger.info?.("[onebot] 反思没说下次什么时候，用默认间隔");
     }
-    scheduleNextSelfActivity(reflectRes.delayMin || 0);
+    // 注意：下一次的时间已经在 reflectPhase 里排过了（解析出 [[next:]] 就按她的，
+    // 没解析出来就用默认）。这里再排一次会把她的时间覆盖掉 —— 之前就是这里
+    // 导致「调度：」日志出现两条，后一条覆盖前一条。
   }
 
   /** 第二段：行动——按上一段想好的去做 */
@@ -13517,12 +13540,11 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
 
   // 每小时看一次（9-23 点之间才真跑，每天仍受 autoExplorePerDay 限制）
   // 自主活动：由她自己决定下一次什么时候（几分钟到几小时）
-  let nextActivityTimer = null;
   let lastActivityAt = 0;
 
   function scheduleNextSelfActivity(delayMinutes) {
     try {
-      if (nextActivityTimer) clearTimeout(nextActivityTimer);
+      // 不再用定时器了，nextActivityTimer 已废弃
       if (cfg.selfActivityEnabled === false || cfg.autoActionsEnabled === false) return;
       // 她主动说了多久 → 尊重她（1 分钟 ~ 12 小时，但受每天保底次数约束）
       // 没说 → 默认 10-30 分钟
@@ -13621,10 +13643,17 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
       }
       // 三段式：思考 → 行动 → 反思（由她自己决定做什么）
       lastActivityAt = Date.now();
-      await runThinkingCycle();
-      // runSelfActivity 内部会调 scheduleNextSelfActivity；
-      // 如果它没调（比如 reco 失败），这里兜底
-      if (!nextActivityTimer) scheduleNextSelfActivity(0);
+      const before = Number(loadSelfState().selfActivityNextAt) || 0;
+      const ran = await runThinkingCycle();
+      // 只有真的跑了一轮，才需要检查「有没有排下次」。
+      // 被锁挡掉（ran=false）说明什么都没发生，兜底排时间等于白推一次。
+      if (ran) {
+        const after = Number(loadSelfState().selfActivityNextAt) || 0;
+        if (after === before) {
+          logger.info?.("[onebot] 活动跑完但没排下次，兜底排一次");
+          scheduleNextSelfActivity(0);
+        }
+      }
     } catch (err) {
       logger.warn?.(`[onebot] 自主活动调度失败：${err?.message ?? err}`);
       scheduleNextSelfActivity(30);
@@ -13730,7 +13759,9 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
           "· actNow=true → 立刻开始一轮活动（delayMin 忽略）\n" +
           "· actNow=false 且 delayMin>0 → 把下次时刻改成 delayMin 分钟后\n" +
           "· actNow=false 且 delayMin=0 → 不改时间，维持原计划";
-        const out = String((await sessions.runSilent(SELF_ACTIVITY_KEY, prompt)) ?? "").trim();
+        // 注意：这里绝对不能用 SELF_ACTIVITY_KEY —— 那会和活动抢同一个会话，
+        // 报 "already owned by an active write handle"，把思考阶段弄挂。
+        const out = String((await sessions.runSilent("self:check", prompt)) ?? "").trim();
         const m = out.match(/\{[\s\S]*\}/);
         if (m) decision = JSON.parse(m[0]);
       } catch (err) {
