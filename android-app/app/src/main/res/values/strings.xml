@@ -11,16 +11,18 @@
     <string name="channel_name">隧道状态</string>
 
     <string name="settings_title">连接设置</string>
-    <string name="settings_desc">填服务器的 SSH 信息和她的 WebUI token。私钥和 token 加密存在本机。</string>
+    <string name="settings_desc">填服务器的 SSH 信息和 WebUI token。私钥和 token 加密存在本机。</string>
     <string name="l_host">服务器</string>
     <string name="l_port">SSH 端口</string>
     <string name="l_webport">WebUI 端口</string>
     <string name="l_user">用户名</string>
     <string name="l_key">SSH 私钥</string>
-    <string name="l_key_hint">把 id_ed25519 的全文粘进来（从 -----BEGIN 到 END-----）</string>
+    <string name="l_key_hint">把私钥文件用文本编辑器打开，全选复制粘进来（从 -----BEGIN 到 -----END 共 7 行）</string>
     <string name="l_token">WebUI token</string>
     <string name="l_token_hint">WebUI 地址里的 token 参数</string>
+    <string name="test_conn">测试连接</string>
     <string name="save">保存并连接</string>
     <string name="cancel">取消</string>
-    <string name="settings_note">第一次用建议先在桌面端（WinForms 或浏览器）确认能连上，再把同样的信息填到这里。</string>
+    <string name="view_log">看日志</string>
+    <string name="settings_note">私钥别通过聊天消息复制（会插换行/丢字符）——把文件发过去，用文本编辑器打开再复制。</string>
 </resources>

@@ -23,7 +23,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="6dp"
-            android:layout_marginBottom="18dp"
+            android:layout_marginBottom="14dp"
             android:text="@string/settings_desc"
             android:textColor="@color/muted"
             android:textSize="12sp"/>
@@ -32,7 +32,7 @@
         <EditText
             android:id="@+id/eHost"
             style="@style/Field"
-            android:hint="47.101.158.42"
+            android:hint="服务器 IP 或域名，例如 1.2.3.4"
             android:inputType="textUri"/>
 
         <LinearLayout
@@ -97,23 +97,50 @@
             android:fontFamily="monospace"/>
 
         <Button
+            android:id="@+id/btnTest"
+            android:layout_width="match_parent"
+            android:layout_height="46dp"
+            android:layout_marginTop="20dp"
+            android:text="@string/test_conn"
+            android:textColor="@color/accent"
+            android:textSize="14sp"
+            android:background="@drawable/btn_ghost"/>
+
+        <Button
             android:id="@+id/btnSave"
             android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:layout_marginTop="20dp"
+            android:layout_height="50dp"
+            android:layout_marginTop="10dp"
             android:text="@string/save"
             android:textColor="#ffffff"
             android:textSize="15sp"
             android:background="@drawable/btn_primary"/>
 
-        <Button
-            android:id="@+id/btnCancel"
+        <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="44dp"
-            android:layout_marginTop="8dp"
-            android:text="@string/cancel"
-            android:textColor="@color/muted"
-            android:background="@drawable/btn_ghost"/>
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btnLog"
+                android:layout_width="0dp"
+                android:layout_height="44dp"
+                android:layout_weight="1"
+                android:text="@string/view_log"
+                android:textColor="@color/muted"
+                android:background="@drawable/btn_ghost"/>
+
+            <Button
+                android:id="@+id/btnCancel"
+                android:layout_width="0dp"
+                android:layout_height="44dp"
+                android:layout_weight="1"
+                android:layout_marginStart="8dp"
+                android:text="@string/cancel"
+                android:textColor="@color/muted"
+                android:background="@drawable/btn_ghost"/>
+        </LinearLayout>
 
         <TextView
             android:layout_width="wrap_content"

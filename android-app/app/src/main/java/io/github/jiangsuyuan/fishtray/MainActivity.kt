@@ -37,6 +37,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         AppCtx.init(this)
+        TLog.init(this)
         setContentView(R.layout.activity_main)
 
         web = findViewById(R.id.web)
@@ -50,6 +51,9 @@ class MainActivity : AppCompatActivity() {
             render(TunnelService.STATE_CONNECTING, "正在重连…")
         }
         findViewById<Button>(R.id.btnSettings).setOnClickListener { goSettings() }
+        // 点状态文字看连接日志 —— 连不上时这就是唯一的诊断入口
+        statusText.setOnClickListener { showLog() }
+        dot.setOnClickListener { showLog() }
         overlay.setOnClickListener {
             TunnelService.reconnect(this)
             render(TunnelService.STATE_CONNECTING, "正在重连…")
@@ -82,6 +86,16 @@ class MainActivity : AppCompatActivity() {
         }
 
         render(TunnelService.lastState, TunnelService.lastMsg)
+    }
+
+    private fun showLog() {
+        AlertDialog.Builder(this)
+            .setTitle("连接日志")
+            .setMessage(TLog.dump())
+            .setPositiveButton("关闭", null)
+            .setNeutralButton("清空") { _, _ -> TLog.clear() }
+            .setNegativeButton("重连") { _, _ -> TunnelService.reconnect(this) }
+            .show()
     }
 
     private fun goSettings() {

@@ -92,11 +92,14 @@ class TunnelService : Service() {
     override fun onCreate() {
         super.onCreate()
         createChannel()
+        TLog.init(this)
+        TLog.add("svc", "服务创建")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
+                TLog.add("svc", "收到停止")
                 wantRun = false
                 teardown()
                 broadcast(STATE_DISCONNECTED, "已断开")
@@ -105,6 +108,7 @@ class TunnelService : Service() {
                 return START_NOT_STICKY
             }
             ACTION_RECONNECT -> {
+                TLog.add("svc", "收到重连")
                 wantRun = true
                 startForegroundCompat()
                 // 强制重建：先拆后连
@@ -132,7 +136,9 @@ class TunnelService : Service() {
                 val ok = try {
                     connectOnce()
                 } catch (e: Exception) {
-                    Log.w(TAG, "connect 失败: ${e.message}")
+                    val detail = TLog.describe(e)
+                    TLog.add("ssh", "连接失败：${detail}")
+                    Log.w(TAG, "connect 失败: $detail")
                     broadcast(STATE_DISCONNECTED, readable(e))
                     false
                 }
@@ -147,6 +153,7 @@ class TunnelService : Service() {
                 // 指数退避：3,6,12,24,48,60,60...
                 attempt = (attempt + 1).coerceAtMost(10)
                 val waitMs = (3000L shl (attempt - 1)).coerceAtMost(60_000L)
+                TLog.add("retry", "第 $attempt 次重试，${waitMs}ms 后")
                 Log.i(TAG, "第 $attempt 次重试，$waitMs ms 后")
                 broadcast(STATE_DISCONNECTED, "${waitMs / 1000} 秒后重试（第 $attempt 次）")
                 delay(waitMs)
@@ -169,6 +176,7 @@ class TunnelService : Service() {
         }
 
         broadcast(STATE_CONNECTING, "连接 $host …")
+        TLog.add("ssh", "开始连接 $user@$host:$port")
         val jsch = JSch()
         jsch.addIdentity("fishkey", key.toByteArray(), null, null)
         val s = jsch.getSession(user, host, port)
@@ -176,9 +184,11 @@ class TunnelService : Service() {
         s.setServerAliveInterval(20_000)
         s.setServerAliveCountMax(3)
         s.connect(15_000)
+        TLog.add("ssh", "认证通过")
 
         // 把远端 127.0.0.1:webPort 转发到本机 127.0.0.1:webPort
         s.setPortForwardingL("127.0.0.1", webPort, "127.0.0.1", webPort)
+        TLog.add("ssh", "端口转发就绪 127.0.0.1:$webPort")
 
         session = s
         attempt = 0
@@ -197,6 +207,7 @@ class TunnelService : Service() {
             delay(15_000)
             val s = session
             if (s == null || !s.isConnected) {
+                TLog.add("hb", "session 断了")
                 Log.i(TAG, "session 断了")
                 teardown()
                 return false
@@ -213,6 +224,7 @@ class TunnelService : Service() {
             } else {
                 httpFail++
                 if (httpFail >= 3) {
+                    TLog.add("hb", "HTTP 探测连续失败 3 次，判定断线")
                     Log.i(TAG, "HTTP 探测连续失败 3 次，判定断线")
                     teardown()
                     return false
@@ -263,16 +275,7 @@ class TunnelService : Service() {
         updateNotification(state, msg)
     }
 
-    private fun readable(e: Throwable): String {
-        val m = e.message ?: e.javaClass.simpleName
-        return when {
-            m.contains("Auth fail") -> "认证失败（密钥对不对？）"
-            m.contains("timeout", true) || m.contains("timed out", true) -> "连接超时"
-            m.contains("Connection refused") -> "服务器拒绝连接"
-            m.contains("UnknownHost") -> "找不到主机"
-            else -> m.take(60)
-        }
-    }
+    private fun readable(e: Throwable): String = ConnTest.humanize(e)
 
     // ── 通知 ──
 
