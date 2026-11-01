@@ -2490,6 +2490,14 @@ export function apply(ctx, _pluginConfig) {
     "list_memories",
     "search_memory",
     "forget",
+    // 探寻自己的心（替代固定 22:00 的反思）
+    "explore_heart",
+    // 关注规则 + 群巡查
+    "watch_topic",
+    "unwatch_topic",
+    "my_watchlist",
+    "group_activity",
+    "group_patrol",
   ]);
 
   // 搜索类工具按小时限频，避免她一句话查十次
@@ -2658,7 +2666,10 @@ export function apply(ctx, _pluginConfig) {
             person: { type: "string", description: "想关注的人（QQ 号），他说话时会提醒你" },
             note: { type: "string", description: "为什么关注，一句话备忘" },
           },
-          output: { schema: { type: "json" } },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
           execute: async (args) => {
             const w = loadWatch();
             const added = [];
@@ -2695,7 +2706,10 @@ export function apply(ctx, _pluginConfig) {
             keyword: { type: "string", description: "要去掉的话题词" },
             person: { type: "string", description: "要去掉的人（QQ 号）" },
           },
-          output: { schema: { type: "json" } },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
           execute: async (args) => {
             const w = loadWatch();
             const kw = String(args?.keyword ?? "").trim();
@@ -2715,7 +2729,10 @@ export function apply(ctx, _pluginConfig) {
           name: "my_watchlist",
           description: "看你都在关注什么。",
           parameters: {},
-          output: { schema: { type: "json" } },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
           execute: async () => {
             const w = loadWatch();
             return {
@@ -2736,7 +2753,10 @@ export function apply(ctx, _pluginConfig) {
           parameters: {
             hours: { type: "number", description: "回看多少小时，默认 24" },
           },
-          output: { schema: { type: "json" } },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
           execute: async (args) => {
             const list = groupActivityList(args?.hours ?? 24);
             const alive = list.filter((x) => x.count > 0);
@@ -2760,7 +2780,10 @@ export function apply(ctx, _pluginConfig) {
             group: { type: "string", description: "群号" },
             hours: { type: "number", description: "回看多少小时，默认 2" },
           },
-          output: { schema: { type: "json" } },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
           execute: async (args) => {
             const gid = String(args?.group ?? "").trim();
             if (!gid) return { ok: false, reason: "要填群号" };
@@ -13142,11 +13165,11 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
     }
   }
 
-  async function dailyReflect() {
-    if (!cfg.selfReflect) return;
+  async function dailyReflect(force = false) {
+    if (!cfg.selfReflect) return { ok: false, reason: "自我反思已被配置关闭" };
     try {
       const picked = pickTarget();
-      if (!picked) return;
+      if (!picked) return { ok: false, reason: "现在没有可复盘的对话" };
       const dialog = recentDialog(12);
       const views = selfViews.render(6);
       const text = await sessions.generate(
@@ -13159,14 +13182,21 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
           "如果你形成了新的明确看法，可以调 remember_self 记下来。）",
       );
       const content = String(text || "").trim();
-      if (!content) return;
+      if (!content) return { ok: false, reason: "这次没写出东西来" };
       selfViews.addReflection(content);
       logger.info?.(`[onebot] 今日反思：${content.slice(0, 60)}`);
       audit({ kind: "reflect", text: content.slice(0, 300) });
-      // 反思完顺便看要不要微调「我是什么样的」
-      void maybeAdjustSelfModel("dailyReflect");
+      // 反思完看要不要微调「我是什么样的」——工具调用时等它结束，好把结果带回去
+      let adjusted = null;
+      try {
+        adjusted = await maybeAdjustSelfModel("dailyReflect", force === true);
+      } catch {
+        // 忽略
+      }
+      return { ok: true, reflect: content, adjusted };
     } catch (err) {
       logger.warn?.(`[onebot] 反思失败：${err?.message ?? err}`);
+      return { ok: false, reason: String(err?.message ?? err) };
     }
   }
 
@@ -13187,6 +13217,82 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
     }, Math.max(60000, next - now)).unref?.();
     logger.info?.(`[onebot] 自我反思将在 ${next.toLocaleString("zh-CN")} 触发`);
   }
+
+
+  // ── 工具：回头看自己（替代固定的 22:00 定时）────────────────
+  void (async () => {
+    try {
+      const { defineTool } = await import("@deepseek-ai/dsh-tools");
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "explore_heart",
+          description:
+            "探寻自己的心——想重新认识一下「我是什么样的」的时候用。\n\n" +
+            "这跟「反思」不一样。反思是回头查错，这个不是。" +
+            "它更像坐下来看看：我最近在意什么、我变没变、我还认不认得自己。\n\n" +
+            "**但别天天来。** 心要稳——今天觉得自己窝囊、明天觉得自己通透，" +
+            "那不是认识，是天气。真拿它当天气预报用，就不值钱了。\n\n" +
+            "**值得来的时候**：\n" +
+            "· 你发现以前对自己的说法已经不对了（生活的地方变了、做的事变了、身边的人变了）\n" +
+            "· 经历了一件真正让你变了的事\n" +
+            "· 心里有件一直没摆平的事，想坐下来把它看清楚\n\n" +
+            "**不值得来的时候**：\n" +
+            "· 只是今天心情不同\n" +
+            "· 刚被谁夸了一句、或者被说了一句\n" +
+            "· 想让别人觉得你深刻\n\n" +
+            "来完之后 48 小时内，核心人格不会再自动改动（防止反复）。" +
+            "如果只是想记一件小事，用 remember_self 就够，不用动这个。",
+          parameters: {
+            reason: {
+              type: "string",
+              description: "为什么想回头看看，一句话（会写进审计日志，方便以后对）",
+            },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            const reason = String(args?.reason ?? "").trim().slice(0, 100);
+            // 冷却只提醒，不拦——她既然主动来了，就尊重她的判断。
+            // 拦下来才是替她做决定。
+            let cooldownNote = "";
+            try {
+              const m = loadSelfModel();
+              const lastAt = Math.max(
+                m.fact?.updatedAt ?? 0,
+                m.inner?.updatedAt ?? 0,
+                m.mirror?.updatedAt ?? 0,
+              );
+              const gapH = Number(cfg.selfModelMinGapHours ?? 48);
+              if (lastAt && Date.now() - lastAt < gapH * 3600_000) {
+                const hoursAgo = Math.round((Date.now() - lastAt) / 3600_000);
+                cooldownNote =
+                  `（提醒：自我认知 ${hoursAgo} 小时前刚调整过。这次也照办，` +
+                  `但如果只是一时心情，用 remember_self 记一句就够了。）`;
+              }
+            } catch {
+              // 检查失败就继续
+            }
+            const r = await dailyReflect(true);
+            if (r?.ok) {
+              audit({ kind: "explore_heart", reason });
+              return {
+                ok: true,
+                reflect: r.reflect,
+                selfModelAdjusted: !!r.adjusted,
+                note: cooldownNote || "记下来了。",
+              };
+            }
+            return { ok: false, reason: r?.reason || "这次没写出东西来" };
+          },
+        }),
+      );
+      logger.info?.("[onebot] 探寻自己的心 工具已注册（explore_heart）");
+    } catch (err) {
+      logger.warn?.(`[onebot] 自我反思工具注册失败：${err?.message ?? err}`);
+    }
+  })();
 
   // ── token 用量告警 ─────────────────────────────────────────
   let tokenAlertDay = "";
@@ -13289,7 +13395,8 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
   setTimeout(() => {
     scheduleProactive();
     scheduleDailyBrief();
-    scheduleReflect();
+    // scheduleReflect();  ← 停用：不再固定 22:00 反思
+    //   改成她自己调 explore_heart（人格要稳，不该被日历按着改）
     scheduleMorningCatchup();
     scheduleDiary();
   }, 20000).unref?.();
@@ -13449,13 +13556,15 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
   }
 
   /** 微调：只改需要改的句子，没变就不动 */
-  async function maybeAdjustSelfModel(reason) {
+  async function maybeAdjustSelfModel(reason, force = false) {
     try {
       const m = loadSelfModel();
       const now = Date.now();
       const MIN_GAP_HOURS = Number(cfg.selfModelMinGapHours ?? 48);
       const lastAt = Math.max(m.fact?.updatedAt ?? 0, m.inner?.updatedAt ?? 0, m.mirror?.updatedAt ?? 0);
-      if (lastAt && now - lastAt < MIN_GAP_HOURS * 3600_000) {
+      // force=true 只由她主动调 explore_heart 时传进来：她自己判断该改了，就不拦。
+      // 冷却仍然对「自动微调」生效，防止无人值守时反复改人格。
+      if (!force && lastAt && now - lastAt < MIN_GAP_HOURS * 3600_000) {
         logger.info?.("[onebot] 自我认知还没到该变的时候");
         return;
       }
