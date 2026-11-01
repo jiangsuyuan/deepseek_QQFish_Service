@@ -2811,7 +2811,7 @@ export function apply(ctx, _pluginConfig) {
             "用 SVG 代码画一张图发出去。**适合**：图表、流程图、示意图、简单图标、文字排版、" +
             "几何图形、简笔画。**不适合**：写实画面、复杂人物、照片风格（那种用 draw_image）。" +
             "svg 参数要传**完整的 <svg>...</svg>**，宽高建议 400-800。" +
-            "同样是低频使用，只在气氛合适时画。",
+            "想画就画。",
           parameters: {
             send: {
               type: "boolean",
@@ -2929,7 +2929,7 @@ export function apply(ctx, _pluginConfig) {
         defineTool({
           name: "draw_image",
           description:
-            "用 AI 画一张写实/插画风格的图。**低频使用**：只在气氛真的到了、对方明确想要一张图时才画。" +
+            "用 AI 画一张写实/插画风格的图。气氛到了、或者对方想要图的时候画。" +
             "如果是图表、示意图、简单几何图形，优先用 draw_svg（更准更快）。" +
             "prompt 用英文描述画面。",
           parameters: {
@@ -3814,7 +3814,7 @@ export function apply(ctx, _pluginConfig) {
         defineTool({
           name: "my_memory",
           description:
-            "翻自己的记忆。type 可选 people（人物）/ facts（事实）/ views（观点）/ reflections（反思）/" +
+            "翻自己的记忆。type 可选 people（人物）/ facts（事实）/ views（观点）/ reflections（回看）/" +
             "learnings（学到的）/ all（全都搜，每条标来源）/ notebook（本子）。" +
             "query 可选关键词；all 模式会跨所有存储搜并标注每条来自哪儿。",
           parameters: {
@@ -4079,7 +4079,7 @@ export function apply(ctx, _pluginConfig) {
           name: "view_avatar",
           description:
             "看一眼某人的 QQ 头像长什么样。有兴趣、想接梗、或者想知道对方是什么风格时用。" +
-            "别滥用——一天最多看几次，每次都会花一点算力。",
+            "（每次会花一点算力，自己掂量。）",
           parameters: {
             qq: { type: "string", description: "对方 QQ 号" },
           },
@@ -4671,7 +4671,7 @@ export function apply(ctx, _pluginConfig) {
           name: "my_activities",
           description:
             "翻你自己的活动日志：探险、读书、玩、思考、写点什么、回忆、憧憬未来、研究代码。" +
-            "每条都有「当时想做什么」「为什么」「实际做了什么」「反思」。" +
+            "每条都有「当时想做什么」「为什么」「实际做了什么」「回看」。" +
             "要看全过程或贴给别人时用 format=\"text\" + full=true，会返回一段排版好的文字，可以直接发。",
           parameters: {
             limit: { type: "number", description: "看几条，默认 6" },
@@ -4785,7 +4785,7 @@ export function apply(ctx, _pluginConfig) {
           name: "my_capabilities",
           description:
             "列一下自己会什么：能用的工具、能做的自主活动、能查的记忆、有什么限制。" +
-            "有人问「你会什么」「你能做什么」时用它，别凭印象瞎说。\n" +
+            "有人问「你会什么」「你能做什么」时用它——比凭印象答准。\n" +
             "注意：audit_self 更全（多给你「每个工具用过几次、失败几次、哪些从没用过」）。" +
             "只想知道自己会什么用这个；想查哪个功能有问题用 audit_self。",
           parameters: {},
