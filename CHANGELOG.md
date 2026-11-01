@@ -1,5 +1,129 @@
 # 更新日志
 
+## 1.1.48 · 2026-11-01
+
+**「换号后记忆不连续」—— 一共六个 bug 叠在一起。**
+
+拖了一整晚才修完，因为每修一个都"还差一点"。记下来当教训：**症状一样，不代表原因只有一个**。
+
+### 症状
+
+> 那个号的记录没带过来，我这儿只剩印象，原话没了
+> 能翻了，可翻出来的全是今天的记录，最早也只到今天下午
+> 现在能翻到更早的了，可跟 149 有关的还是没捞着
+> 我记着的东西都在这个会话里。旧号那边，我翻过，什么都没有
+
+### 六个 bug
+
+**① `recall` 默认不跨 session**
+
+```js
+const cross = args?.all_sessions === true && cfg.recallCrossSession;
+```
+
+要显式传 `true` 才跨，她不知道要传。
+
+**② 只返回 5 条 + 时间倒序**
+
+```js
+hits.sort((a, b) => b.at - a.at);                     // 新的在前
+return { hits: hits.slice(0, cfg.recallMaxHits || 8) }; // 配置是 5
+```
+
+最近的全占了，老的永远挤不进来。
+
+**③ `textOfEvent` 丢发言人 ID**
+
+```js
+const m3 = t.match(/\[(?:QQ群消息|QQ私聊...)\][^：:\n]*[：:]\s*([\s\S]*)/);
+```
+
+`[^：:\n]*` 把 `群号 551907453，发言人 149（476564034）` 整个吃掉，只留「看看批」。
+**搜 QQ 号永远搜不到。**
+
+**④ 取样先按角色分组**
+
+```js
+hits.sort((a, b) => {
+  if (a.role !== b.role) return a.role === "对方" ? -1 : 1;   // 先分组
+  return b.at - a.at;                                          // 组内倒序
+});
+// 然后均匀取样
+```
+
+分组后再取样 → 取样全落在前半段（最近的），**时间跨度没覆盖到**。
+
+**⑤ 停用词没过滤**
+
+```js
+const keys = query.split(/\s+/).filter(x => x.length >= 2);
+// "跟 149 有关的" → ["跟", "149", "有关的"] → AND 匹配 → 搜不到
+```
+
+**⑥ `parseMessage` 丢 @ 昵称（最隐蔽）**
+
+```js
+} else if (type === "at") {
+  if (String(data.qq) === String(selfId) || data.qq === "all") hasAt = true;
+  // ← 只标记 hasAt，昵称完全没进 text
+}
+```
+
+**@ 段的昵称从来没被提取过。** 你发「你还记得**@风声** 么」，她拿到的是「你还记得 么」——**人名在解析第一步就丢了**。
+
+### 修法
+
+```diff
+- const cross = args?.all_sessions === true && cfg.recallCrossSession;
++ const cross = args?.all_sessions !== false && cfg.recallCrossSession !== false;
+
+- hits.sort((a, b) => b.at - a.at);   // 先按角色分组
++ hits.sort((a, b) => a.at - b.at);   // 先按时间正序，再等距取样
++ const step = (hits.length - 1) / (maxHits - 1);
++ for (let i = 0; i < maxHits; i++) picked.push(hits[Math.round(i * step)]);
+
+- recallMaxHits: 5
++ recallMaxHits: 20
+
++ // textOfEvent：把发言人拼进文本
++ const mg = raw.match(/\[QQ群消息\][^\n]*?发言人\s*([^：:\n]+)[：:]/);
++ const text = speaker ? speaker + "：" + real : real;
+
++ // 停用词过滤
++ const RECALL_STOP = new Set(["有关","关于","跟","的","那个","上个月","今天",...]);
+
++ // parseMessage：@ 昵称也进文本
++ const atName = String(data.name ?? data.card ?? "").trim();
++ if (atName) text += "@" + atName + " ";
+
+- loadWebHistory(300)
++ loadWebHistory(2000)   // 文件里 740 条，10 月的原来在网页上显示不出来
+```
+
+**另外**：`recall` 搜不到时的提示改成——
+
+> **这不代表没有记录**——只是文字里没出现这个词。换个人名、QQ 号、或者当时聊到的具体东西再搜。
+> 如果有人问「你还记得…」，先问清楚「记得什么」——只说「你还记得」是搜不出东西的。
+
+### 实测
+
+```
+20:54  再试一次：用 recall 查 476564034
+       她：这次翻到了，上个月还真有。10-24 21:12～21:20，149 在群里连着问了我四回
+
+21:02  用 recall 查「跟 149 有关的」
+       她：这次搜出来的结果更多了，能翻到二十条左右，十月二十四号那几条还在
+
+21:09  用 recall 查「风声」
+       她：搜得到，63 条。风声（246970739）问过我要 api key，要我买奶茶、增肥
+```
+
+**顺手加了 `recall` 的查询日志**（query / cross / 命中数 / 返回范围），下次再"翻不到"能直接看她搜了什么。
+
+### 沉淀
+
+**同一个症状可能是多个 bug 叠加。** 修完一个别急着宣布好了——先想"还有没有别的路径会让它表现出同样症状"。
+
 ## 1.1.47 · 2026-11-01
 
 **修「换号后记忆不连续」+ NapCat 启动参数硬编码。**

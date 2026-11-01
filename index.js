@@ -167,8 +167,8 @@ const DEFAULTS = {
   /** 回忆：归档检索 */
   recallEnabled: true,
   recallAutoTrigger: true,
-  recallMaxHits: 5,
   recallCrossSession: true,
+  recallMaxHits: 20,           // 回忆最多返回几条（均匀覆盖时间跨度）
   /** 压缩：文件超过多少 MB 才压 */
   compactThresholdMB: 5,
   compactCheckMinutes: 30,
@@ -273,6 +273,16 @@ function parseMessage(ev, selfId) {
       text += String(data.text ?? "");
     } else if (type === "at") {
       if (String(data.qq) === String(selfId) || data.qq === "all") hasAt = true;
+      // 把 @ 的人名也加进文本——不然「你还记得@风声 么」会变成「你还记得 么」，
+      // 人名丢了，recall 搜不到，她还以为「那边什么都没有」。
+      const atName = String(data.name ?? data.card ?? "").trim();
+      const atQq = String(data.qq ?? "").trim();
+      if (atName) {
+        text += "@" + atName + " ";
+      } else if (atQq && atQq !== String(selfId) && atQq !== "all") {
+        // 有的客户端不给昵称，退化成 QQ 号也比丢掉强
+        text += "@" + atQq + " ";
+      }
     } else if (type === "image") {
       images.push({
         url: String(data.url || data.file || ""),
@@ -3696,9 +3706,13 @@ export function apply(ctx, _pluginConfig) {
           description:
             "回忆很久以前聊过的内容。对方说「你记得…吗」「上次那个」「之前提过」时调用。" +
             "你的上下文会被定期压缩（节省开销），压缩掉的细节都还在这里，需要时尽管查。" +
-            "**默认会连别的群、别的会话一起搜**——换号或重启后当前会话是新的，" +
-            "旧记录只有这里能找到。除非你明确只想搜当前会话，才传 all_sessions=false。" +
-            "query 填关键词（如「显卡」「书名」「那个约定」），会返回最相关的几条原文片段。",
+            "**默认会连别的群、别的会话一起搜**，而且覆盖整个时间跨度" +
+            "（不是只返回最近的——上周说的、上个月说的都能翻到）。" +
+            "结果按时间正序排，每条带日期，你能看出是哪天的。" +
+            "除非你明确只想搜当前会话，才传 all_sessions=false。" +
+            "query 填关键词（如「显卡」「书名」「那个约定」）。" +
+            "**搜不到不等于没有**——只是文字里没出现这个词，" +
+            "换个人名/QQ 号/当时聊到的具体东西再试。",
           parameters: {
             query: { type: "string", description: "关键词，2-10 个字" },
             all_sessions: { type: "boolean", description: "是否连其他群/私聊一起搜（默认只搜当前会话）" },
@@ -3724,9 +3738,15 @@ export function apply(ctx, _pluginConfig) {
             if (res && res.ok !== false && (!res.hits || res.hits.length === 0)) {
               return {
                 ...res,
+                hits: [],
+                total: 0,
                 hint:
-                  "跨了 " + (cross ? "全部" : "当前") + "会话没找到「" + (args?.query ?? "") +
-                  "」。换个说法或换个关键词再试——记录是按原话存的，可能跟你记得的词不完全一样。",
+                  "跨了 " + (cross ? "全部" : "当前") + " 会话，关键词「" + (args?.query ?? "") +
+                  "」一条都没命中。\n" +
+                  "**这不代表没有记录**——只是文字里没出现这个词。换个人名、QQ 号、" +
+                  "或者当时聊到的具体东西再搜。\n" +
+                  "如果有人问「你还记得…」，先问清楚「记得什么」——" +
+                  "只说「你还记得」是搜不出东西的。",
               };
             }
             return res;
@@ -7622,7 +7642,21 @@ ${html}
         // 真正的对方消息在这里面：[消息内容] xxx 或 [QQ私聊] 名字：xxx
         const real = extractRealInbound(raw);
         if (!real) return { text: "", role: "" }; // 纯内部提示，不收
-        return { text: real, role: "对方" };
+        // 把「谁说的」也带上——不然「搜某人 QQ 号」永远搜不到，
+        // 因为 extractRealInbound 的正则会把「发言人 149（100000004）」整段吃掉。
+        let speaker = "";
+        const mg = raw.match(
+          /\[QQ群消息\][^\n]*?发言人\s*([^：:\n]+)[：:]/,
+        );
+        if (mg) speaker = mg[1].trim();
+        else {
+          const mp = raw.match(
+            /\[(?:QQ私聊|网页聊天|网页聊天·助手代发)\]\s*([^：:\n]+)[：:]/,
+          );
+          if (mp) speaker = mp[1].trim();
+        }
+        const text = speaker ? speaker + "：" + real : real;
+        return { text, role: "对方" };
       }
       if (ev.type === "assistant/message") {
         const blocks = ev.data?.message?.content ?? [];
@@ -7671,13 +7705,33 @@ ${html}
   }
 
   async function recallSearch(currentSid, query, opts = {}) {
+    // 停用词：她常把整句当 query 传（「跟 149 有关的」），
+    // 不滤掉就会变成 ["149","有关"] 的 AND 匹配——「有关」当然搜不到。
+    const RECALL_STOP = new Set([
+      "有关", "关于", "跟", "和", "与", "的", "那个", "这个", "这件事", "那件事",
+      "上次", "之前", "以前", "记得", "回忆", "想起来", "查一下", "查查",
+      "说了", "说过", "是什么", "什么时候", "哪里", "吗", "呢", "啊", "吧",
+      "你", "我", "他", "她", "它", "们", "有", "没", "是", "在", "了",
+      "关于那个", "跟那个", "那个号", "上个月", "这个月", "今天", "昨天",
+    ]);
     const keys = String(query || "")
       .toLowerCase()
-      .split(/\s+/)
-      .filter((x) => x.length >= 2)
+      .split(/[\s，,。！!？?、]+/)
+      .map((x) => x.trim())
+      .filter((x) => x.length >= 2 && !RECALL_STOP.has(x))
       .slice(0, 4);
-    if (!keys.length) return { ok: false, reason: "关键词太短" };
+    if (!keys.length) {
+      return {
+        ok: false,
+        reason: "关键词全是「有关」「之前」这类虚词。换成具体的东西再试——人名、QQ 号、聊过的内容。",
+      };
+    }
 
+    logger.info?.(
+      "[onebot] recall 查询：query=" + JSON.stringify(query) +
+      " cross=" + !!opts.cross +
+      " onlyUser=" + !!opts.onlyUser,
+    );
     const all = listSessionFiles(opts.cross ? 60 : 20);
     let targets = [];
     if (currentSid) {
@@ -7721,14 +7775,38 @@ ${html}
         logger.warn?.(`[onebot] 读会话失败 ${t.sid}：${err?.message ?? err}`);
       }
     }
-    // 对方原话优先（她要核对自己有没有听错）
-    hits.sort((a, b) => {
-      const ra = a.role === "对方" ? 0 : 1;
-      const rb = b.role === "对方" ? 0 : 1;
-      if (ra !== rb) return ra - rb;
-      return b.at - a.at;
-    });
-    return { ok: true, hits: hits.slice(0, Number(cfg.recallMaxHits) || 8) };
+    // ⚠️ 取样前必须先按时间排序——不能先按角色分组。
+    // 之前是「对方优先 + 组内时间倒序」，导致均匀取样总落在最近那一小段，
+    // 「上个月」永远取不到。改成先全部按时间正序，再等距取样。
+    hits.sort((a, b) => a.at - b.at);
+    const maxHits = Number(cfg.recallMaxHits) || 20;
+    let picked = hits;
+    if (hits.length > maxHits) {
+      // 等距取样：从最早到最晚，每段取一条，保证覆盖整个时间跨度
+      picked = [];
+      const step = (hits.length - 1) / (maxHits - 1);
+      for (let i = 0; i < maxHits; i++) {
+        const idx = Math.min(hits.length - 1, Math.round(i * step));
+        picked.push(hits[idx]);
+      }
+      // 去重（等距可能取到同一条）
+      const seen = new Set();
+      picked = picked.filter((h) => {
+        const k = h.sid + "|" + h.at + "|" + h.text.slice(0, 20);
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      });
+    }
+    // 返回时按时间正序：老的在前，她能看出「上个月 → 今天」的演进
+    picked.sort((a, b) => a.at - b.at);
+    logger.info?.(
+      "[onebot] recall 结果：命中=" + hits.length + " 返回=" + picked.length +
+      (picked.length ? " 范围=" +
+        new Date(picked[0].at || 0).toLocaleDateString("zh-CN") + "~" +
+        new Date(picked[picked.length - 1].at || 0).toLocaleDateString("zh-CN") : ""),
+    );
+    return { ok: true, hits: picked, total: hits.length };
   }
 
   /** 把检索结果排成提示词片段 */
@@ -10942,7 +11020,9 @@ inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDef
       }
       if (u.pathname === "/history") {
         // 网页聊天有自己独立的一份记录，不和 QQ/群/活动混
-        let list = loadWebHistory(300);
+        // 返回全量——原来只给 300 条，文件里 740 条，
+        // 「上个月的对话」在网页上就成了空白
+        let list = loadWebHistory(2000);
         if (!list.length) list = webHistory.slice(-50);
         // 按时间排（回填过的旧记录会被追加到文件末尾，必须排序）
         list = list.slice().sort((a, b) => (a.at || 0) - (b.at || 0));
