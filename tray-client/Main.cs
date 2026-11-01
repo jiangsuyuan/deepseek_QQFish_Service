@@ -21,6 +21,9 @@ namespace FishTray
         public string sshHost { get; set; }
         public int port { get; set; }
         public string theme { get; set; }
+        // 收起态图标位置。多屏时可能落在副屏，坐标可以是负数。
+        public int iconX { get; set; }
+        public int iconY { get; set; }
 
         public Settings()
         {
@@ -30,6 +33,8 @@ namespace FishTray
             sshHost = "";
             port = 3081;
             theme = "light";
+            iconX = int.MinValue;
+            iconY = int.MinValue;
         }
 
         public static string Dir
@@ -965,6 +970,29 @@ namespace FishTray
         bool collapsed = false;
         Timer collapseTimer;
 
+        /// <summary>
+        /// 取某个点所在屏幕的工作区。
+        /// 多屏时不能写死 Screen.PrimaryScreen —— 那样窗口一旦拖到副屏
+        /// （坐标可能是负数），就会被 clamp 回主屏。
+        /// </summary>
+        static Rectangle WorkAreaFor(Point p)
+        {
+            try
+            {
+                var sc = Screen.FromPoint(p);
+                if (sc != null) return sc.WorkingArea;
+            }
+            catch { }
+            return Screen.PrimaryScreen.WorkingArea;
+        }
+
+        static Rectangle WorkAreaFor(Rectangle r)
+        {
+            return WorkAreaFor(new Point(
+                r.Left + Math.Max(1, r.Width) / 2,
+                r.Top + Math.Max(1, r.Height) / 2));
+        }
+
         /// <summary>把窗口位置夹到屏幕工作区内，不超出边界</summary>
         static Point ClampToScreen(int x, int y, int w, int h, Rectangle wa)
         {
@@ -990,7 +1018,8 @@ namespace FishTray
             // 图标都会跟着窗口走一段，不再是用户拖到的那个点。
             collapsed = true;
 
-            var wa = Screen.PrimaryScreen.WorkingArea;
+            // 用「窗口当前所在屏幕」而不是主屏
+            var wa = WorkAreaFor(Bounds);
             SuspendLayout();
             MinimumSize = Size.Empty;          // 关键：不然会被 380x600 拦住
             header.Visible = false;
@@ -1003,7 +1032,9 @@ namespace FishTray
             Height = COLLAPSED_H;
             if (hasCollapsedPos)
             {
-                var cp = ClampToScreen(collapsedPos.X, collapsedPos.Y, COLLAPSED_W, COLLAPSED_H, wa);
+                // collapsedPos 自己有屏幕归属（可能在副屏），用它自己的工作区
+                var cpWa = WorkAreaFor(new Point(collapsedPos.X, collapsedPos.Y));
+                var cp = ClampToScreen(collapsedPos.X, collapsedPos.Y, COLLAPSED_W, COLLAPSED_H, cpWa);
                 Left = cp.X;
                 Top = cp.Y;
             }
@@ -1031,7 +1062,11 @@ namespace FishTray
             if (!collapsed) { ShowIt(); return; }
             collapsed = false;
 
-            var wa = Screen.PrimaryScreen.WorkingArea;
+            // 以「小球所在的屏幕」为基准展开，这样拖到副屏后点开还留在副屏
+            var srcPt = hasCollapsedPos
+                ? new Point(collapsedPos.X + COLLAPSED_W / 2, collapsedPos.Y + COLLAPSED_H / 2)
+                : new Point(Left + Width / 2, Top + Height / 2);
+            var wa = WorkAreaFor(srcPt);
             SuspendLayout();
             MinimumSize = new Size(380, 600);
             fishStrip.Visible = false;
@@ -1108,12 +1143,25 @@ namespace FishTray
             else
             {
                 // 拖完了：记住位置，下次收起别再归位
-                var wa2 = Screen.FromControl(this).WorkingArea;
+                // 用鼠标位置的屏幕：拖动中窗口可能横跨两块屏
+                var wa2 = WorkAreaFor(Cursor.Position);
                 var p2 = ClampToScreen(Location.X, Location.Y, COLLAPSED_W, COLLAPSED_H, wa2);
                 collapsedPos = p2;
                 hasCollapsedPos = true;
                 Location = p2;
                 Log.W("图标位置已记住: " + p2.X + "," + p2.Y);
+                // 持久化：多屏时位置可能在副屏（负坐标），重启后要能还原
+                try
+                {
+                    if (cfg.iconX != p2.X || cfg.iconY != p2.Y)
+                    {
+                        cfg.iconX = p2.X;
+                        cfg.iconY = p2.Y;
+                        cfg.Save();
+                        Log.W("图标位置已写盘");
+                    }
+                }
+                catch (Exception ex) { Log.W("保存图标位置失败: " + ex.Message); }
             }
             collapsedDragging = false;
         }
@@ -1409,8 +1457,29 @@ namespace FishTray
         {
             Log.W("OnShown");
             UseSystemRoundCorner();
+            // 恢复上次的图标位置（如果还在某块屏幕上）
+            if (cfg.iconX != int.MinValue && cfg.iconY != int.MinValue)
+            {
+                var saved = new Point(cfg.iconX, cfg.iconY);
+                // 校验：这块屏幕现在还在不在（外接显示器可能拔掉了）
+                var savedWa = WorkAreaFor(saved);
+                bool onScreen = savedWa.Contains(saved);
+                if (onScreen)
+                {
+                    collapsedPos = saved;
+                    hasCollapsedPos = true;
+                    Log.W("恢复图标位置: " + saved.X + "," + saved.Y +
+                          "（" + (saved.X < 0 ? "副屏" : "主屏") + "）");
+                }
+                else
+                {
+                    Log.W("上次的图标位置 " + saved.X + "," + saved.Y + " 已不在任何屏幕上，回主屏");
+                }
+            }
+
             var wa = Screen.PrimaryScreen.WorkingArea;
-            Location = new Point(wa.Right - Width - 12, wa.Bottom - Height - 8);
+            if (!hasCollapsedPos)
+                Location = new Point(wa.Right - Width - 12, wa.Bottom - Height - 8);
 
             if (string.IsNullOrEmpty(cfg.token) || string.IsNullOrEmpty(cfg.sshHost))
             {
