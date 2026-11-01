@@ -169,7 +169,14 @@ class TunnelService : Service() {
         val key = Prefs.key
         val port = Prefs.port
         val webPort = Prefs.webPort.takeIf { it > 0 } ?: WEB_PORT_DEFAULT
+        // 把实际读到的配置打进日志 —— 连不上时这是第一手证据
+        TLog.add(
+            "cfg",
+            "读到配置 host=[${host}] port=$port user=[${user}] " +
+                "keyLen=${key.length} keyHead=[${key.take(27)}] tokenLen=${Prefs.token.length} webPort=$webPort",
+        )
         if (host.isBlank() || key.isBlank()) {
+            TLog.add("cfg", "致命：服务器或私钥是空的（配置没读到）")
             broadcast(STATE_DISCONNECTED, "还没配置服务器或密钥")
             wantRun = false
             return false

@@ -37,6 +37,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         AppCtx.init(this)
+        Prefs.ensure()
         TLog.init(this)
         setContentView(R.layout.activity_main)
 

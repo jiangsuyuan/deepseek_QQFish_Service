@@ -30,28 +30,33 @@ object Prefs {
         return p
     }
 
+    /** 启动时调一次：把 SharedPreferences 建起来，避免 getter 第一次读到默认值 */
+    fun ensure() {
+        sp(AppCtx.get())
+    }
+
     var host: String
-        get() = cachedOrNull()?.getString("host", "") ?: ""
+        get() = sp(AppCtx.get()).getString("host", "") ?: ""
         set(v) = sp(AppCtx.get()).edit().putString("host", v.trim()).apply()
 
     var port: Int
-        get() = cachedOrNull()?.getInt("port", 22) ?: 22
+        get() = sp(AppCtx.get()).getInt("port", 22)
         set(v) = sp(AppCtx.get()).edit().putInt("port", v).apply()
 
     var user: String
-        get() = cachedOrNull()?.getString("user", "root") ?: "root"
+        get() = sp(AppCtx.get()).getString("user", "root") ?: "root"
         set(v) = sp(AppCtx.get()).edit().putString("user", v.trim()).apply()
 
     var key: String
-        get() = cachedOrNull()?.getString("key", "") ?: ""
+        get() = sp(AppCtx.get()).getString("key", "") ?: ""
         set(v) = sp(AppCtx.get()).edit().putString("key", v.trim()).apply()
 
     var token: String
-        get() = cachedOrNull()?.getString("token", "") ?: ""
+        get() = sp(AppCtx.get()).getString("token", "") ?: ""
         set(v) = sp(AppCtx.get()).edit().putString("token", v.trim()).apply()
 
     var webPort: Int
-        get() = cachedOrNull()?.getInt("webPort", 3081) ?: 3081
+        get() = sp(AppCtx.get()).getInt("webPort", 3081)
         set(v) = sp(AppCtx.get()).edit().putInt("webPort", v).apply()
 
     fun isConfigured(): Boolean {
@@ -62,7 +67,6 @@ object Prefs {
         return "http://127.0.0.1:${webPort}/?token=" + android.net.Uri.encode(token)
     }
 
-    private fun cachedOrNull(): SharedPreferences? = cached
 }
 
 /** 给 Prefs 在任意地方取 Context 用（Application 里初始化） */
