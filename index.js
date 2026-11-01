@@ -118,6 +118,7 @@ const DEFAULTS = {
   thinkingBaseSec: 1.5,        // 看到消息后基础思考
   thinkingPerCharSec: 0.05,    // 每字额外思考
   replyJitterSec: [0.3, 1.2],  // 随机抖动
+  maxTypingDelaySec: 15,       // 打字延迟封顶（秒）
   typingQueueMax: 5,           // 打字队列上限
   staleMessageSec: 120,        // 超过 2 分钟的消息丢掉
   /** 单回合软超时：超过就取消本轮，避免工具链把聊天拖成 30 秒 */
@@ -535,7 +536,13 @@ class OneBotClient {
     const baseSec = Number(this.cfg.thinkingBaseSec) || 1.5;
     const jr = this.cfg.replyJitterSec || [0.3, 1.2];
     const jitterSec = jr[0] + Math.random() * (jr[1] - jr[0]);
-    const delay = Math.max(200, (baseSec + len * perChar + jitterSec) * 1000);
+    const rawDelay = (baseSec + len * perChar + jitterSec) * 1000;
+    // 封顶：再长的回复也不等超过这么久（真人不会一次打 300 字）
+    const capMs = (Number(this.cfg.maxTypingDelaySec) || 15) * 1000;
+    const delay = Math.max(200, Math.min(rawDelay, capMs));
+    this.logger?.debug?.(
+      "[onebot] 打字 len=" + len + " raw=" + Math.round(rawDelay) + "ms 封顶后=" + Math.round(delay) + "ms",
+    );
     // 单线程：等前一条打完再打这一条（私聊和群聊共享同一把锁）
     {
       const prevLock = __typingMutex;
@@ -8416,7 +8423,7 @@ async function handleOwnerNatural(ev, text) {
         `[onebot] 解析结果：text=${JSON.stringify(String(parsed.text || "").slice(0, 40))} hasAt=${parsed.hasAt} len=${String(parsed.text || "").length}`,
       );
     }
-    // 有人用纯文本打「@昵称」时 OneBot 不给 at 段，这里补上识别
+    // 有人用纯文本打「@QQ 助手」时 OneBot 不给 at 段，这里补上识别
     try {
       if (
         !parsed.hasAt &&
@@ -9880,7 +9887,9 @@ async function handleOwnerNatural(ev, text) {
       } catch {
         // 忽略
       }
-      logger.info?.(`[onebot] → ${key} ${clipped.slice(0, 60).replace(/\n/g, " ")}`);
+      // 区分通道：走网页的推到 WebUI，走 QQ 的发到 QQ——日志里一眼能看出来
+      const channel = ev.__fromWebUI ? "[网页]" : "[QQ]";
+      logger.info?.(`[onebot] → ${channel} ${key} ${clipped.slice(0, 60).replace(/\n/g, " ")}`);
       audit({
         kind: "reply",
         key,
