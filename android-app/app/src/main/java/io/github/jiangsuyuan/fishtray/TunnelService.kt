@@ -184,10 +184,10 @@ class TunnelService : Service() {
 
         broadcast(STATE_CONNECTING, "连接 $host …")
         TLog.add("ssh", "开始连接 $user@$host:$port")
+        ConnTest.initJsch()
         val jsch = JSch()
         jsch.addIdentity("fishkey", key.toByteArray(), null, null)
-        val s = jsch.getSession(user, host, port)
-        s.setConfig("StrictHostKeyChecking", "no")
+        val s = ConnTest.newSession(jsch, user, host, port)
         s.setServerAliveInterval(20_000)
         s.setServerAliveCountMax(3)
         s.connect(15_000)

@@ -49,6 +49,38 @@ object ConnTest {
         }
     }
 
+    private var loggerReady = false
+
+    /** 打开 JSch 内部日志（Android 上出问题时唯一能看到内部步骤的办法） */
+    fun initJsch() {
+        if (loggerReady) return
+        loggerReady = true
+        try {
+            JSch.setLogger(object : com.jcraft.jsch.Logger {
+                override fun isEnabled(level: Int): Boolean = true
+                override fun log(level: Int, message: String) {
+                    TLog.add("jsch", message)
+                }
+            })
+        } catch (e: Throwable) {
+            TLog.add("jsch", "装 logger 失败: " + e.message)
+        }
+    }
+
+    /**
+     * 建 Session。显式指定算法列表——JSch 在 Android 上自动探测会混进
+     * gssapi-* 之类，导致 publickey 阶段异常。
+     */
+    fun newSession(jsch: JSch, user: String, host: String, port: Int): Session {
+        val s = jsch.getSession(user, host, port)
+        s.setConfig("StrictHostKeyChecking", "no")
+        // 只限定走公钥，不碰算法列表（算法列表设错会变成 negotiation fail，
+        // 反而盖掉真正的问题）
+        s.setConfig("PreferredAuthentications", "publickey")
+        s.timeout = 15_000
+        return s
+    }
+
     data class Result(val ok: Boolean, val text: String)
 
     /**
@@ -64,11 +96,11 @@ object ConnTest {
         var s: Session? = null
         return try {
             TLog.add("test", "开始测试 → $user@$host:$port")
+            initJsch()
             val jsch = JSch()
+            TLog.add("test", "JSch 版本=" + JSch.VERSION + " keyLen=" + key.length)
             jsch.addIdentity("testkey", key.toByteArray(), null, null)
-            s = jsch.getSession(user, host, port)
-            s.setConfig("StrictHostKeyChecking", "no")
-            s.timeout = 15_000
+            s = newSession(jsch, user, host, port)
             s.connect(15_000)
             TLog.add("test", "认证通过")
 
