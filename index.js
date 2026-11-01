@@ -3696,6 +3696,8 @@ export function apply(ctx, _pluginConfig) {
           description:
             "回忆很久以前聊过的内容。对方说「你记得…吗」「上次那个」「之前提过」时调用。" +
             "你的上下文会被定期压缩（节省开销），压缩掉的细节都还在这里，需要时尽管查。" +
+            "**默认会连别的群、别的会话一起搜**——换号或重启后当前会话是新的，" +
+            "旧记录只有这里能找到。除非你明确只想搜当前会话，才传 all_sessions=false。" +
             "query 填关键词（如「显卡」「书名」「那个约定」），会返回最相关的几条原文片段。",
           parameters: {
             query: { type: "string", description: "关键词，2-10 个字" },
@@ -3711,11 +3713,22 @@ export function apply(ctx, _pluginConfig) {
           },
           execute: async (args, exec) => {
             const sid = exec?.agent?.session?.id;
-            const cross = args?.all_sessions === true && cfg.recallCrossSession;
+            // 默认跨会话搜——换号/重启后当前 session 是新的，
+            // 只搜当前会话等于「记录没了」。除非她显式传 false。
+            const cross = args?.all_sessions !== false && cfg.recallCrossSession !== false;
             const res = await recallSearch(sid, args?.query ?? "", {
               cross,
               onlyUser: args?.only_user === true,
             });
+            // 没搜到但跨会话了：给个提示，别让她以为真的没了
+            if (res && res.ok !== false && (!res.hits || res.hits.length === 0)) {
+              return {
+                ...res,
+                hint:
+                  "跨了 " + (cross ? "全部" : "当前") + "会话没找到「" + (args?.query ?? "") +
+                  "」。换个说法或换个关键词再试——记录是按原话存的，可能跟你记得的词不完全一样。",
+              };
+            }
             return res;
           },
         }),
@@ -7665,7 +7678,7 @@ ${html}
       .slice(0, 4);
     if (!keys.length) return { ok: false, reason: "关键词太短" };
 
-    const all = listSessionFiles(opts.cross ? 20 : 8);
+    const all = listSessionFiles(opts.cross ? 60 : 20);
     let targets = [];
     if (currentSid) {
       const mine = all.find((x) => x.sid === String(currentSid));

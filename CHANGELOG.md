@@ -1,5 +1,92 @@
 # 更新日志
 
+## 1.1.47 · 2026-11-01
+
+**修「换号后记忆不连续」+ NapCat 启动参数硬编码。**
+
+### 问题
+
+换号后她说：
+
+> 那个号的记录没带过来，我这儿只剩印象，原话没了
+
+其实记录都在（`session.v4.jsonl.zstd` 里有旧号的完整对话），只是她查不到。
+
+### 根因
+
+```js
+const cross = args?.all_sessions === true && cfg.recallCrossSession;
+```
+
+`recall` 的跨会话搜索**必须显式传 `all_sessions: true`**。她不知道要传，所以只搜当前 session——换号后当前 session 是新建的，早上说的话当然搜不到。
+
+### 修法
+
+**① 默认跨会话搜**
+
+```diff
+- const cross = args?.all_sessions === true && cfg.recallCrossSession;
++ // 默认跨会话——换号/重启后当前 session 是新的，只搜当前等于「记录没了」
++ const cross = args?.all_sessions !== false && cfg.recallCrossSession !== false;
+```
+
+**② 扩大搜索范围**
+
+```diff
+- const all = listSessionFiles(opts.cross ? 20 : 8);
++ const all = listSessionFiles(opts.cross ? 60 : 20);
+```
+
+**③ 没搜到时给提示**（别让她以为真的没了）
+
+```
+跨了全部会话没找到「xxx」。换个说法或换个关键词再试——
+记录是按原话存的，可能跟你记得的词不完全一样。
+```
+
+**④ `recall` 的描述改成让她知道默认就跨会话**
+
+> **默认会连别的群、别的会话一起搜**——换号或重启后当前会话是新的，旧记录只有这里能找到。
+
+### 顺带修：NapCat 启动参数硬编码旧号
+
+`/etc/systemd/system/napcat.service` 里写死了：
+
+```ini
+Environment=ACCOUNT=3477431285
+ExecStart=... qq --no-sandbox -q 3477431285
+```
+
+换号时只改了 `config.json` 的 `selfId`，没动 systemd。所以 NapCat 一重启就登回旧号（封着的）→ 3001 起不来 → 桥连不上。
+
+改成新号了。
+
+### 实测
+
+```
+20:40:53  收到：用 recall 查「挽联」这个词，看看能不能翻到早上的原话
+20:41:18  她：翻到了，是我们白天的对话，对方问我：「你能帮她写副挽联嘛」，
+              我回：「她还没死，写什么挽联。」原话还在，一字不差。
+```
+
+### 补充说明：session 映射本来就是连续的
+
+`sessionIdBase(key)` 只跟会话 key 有关，不含 `selfId`：
+
+```js
+function sessionIdBase(key) {
+  return `ob-${sha256("dsh-onebot-bridge\0" + key).slice(0, 12)}`;
+}
+```
+
+所以换号后 `base` 不变，旧 session 会被 `ensure()` 复用：
+
+```
+20:39:50  会话绑定 private:415842124 -> ob-fb82cef7f1df-1   ← 旧号的 session（seq 6960）
+```
+
+**记录一直都在，只是之前搜不到。**
+
 ## 1.1.46 · 2026-11-01
 
 **修好友申请批不了 + 加 list_requests。**
