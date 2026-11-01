@@ -50,6 +50,9 @@ object ConnTest {
     }
 
     private var loggerReady = false
+    /** 最近一次测试用的私钥类型，humanize 里用来给针对性建议 */
+    @Volatile
+    var lastKeyType: String = "unknown"
 
     /** 打开 JSch 内部日志（Android 上出问题时唯一能看到内部步骤的办法） */
     fun initJsch() {
@@ -81,6 +84,53 @@ object ConnTest {
         return s
     }
 
+
+    /**
+     * 识别私钥类型。Android 上踩过的坑：
+     *   OpenSSH 新格式（-----BEGIN OPENSSH PRIVATE KEY-----）的 ed25519，
+     *   在 JDK 上 JSch 能正常解析，在 Android 上会静默算错密钥 → 报 Auth fail。
+     *   PEM 格式的 RSA（-----BEGIN RSA PRIVATE KEY-----）在两边都稳。
+     */
+    fun keyType(raw: String): String {
+        val t = raw.trim()
+        if (t.isEmpty()) return "empty"
+        if (t.contains("-----BEGIN RSA PRIVATE KEY-----")) return "rsa-pem"
+        if (t.contains("-----BEGIN PRIVATE KEY-----")) return "pkcs8"
+        if (!t.contains("-----BEGIN OPENSSH PRIVATE KEY-----")) return "unknown"
+        return try {
+            val body = t.lines()
+                .filter { it.isNotBlank() && !it.trimStart().startsWith("-----") }
+                .joinToString("")
+            val b = android.util.Base64.decode(body, android.util.Base64.DEFAULT)
+            val head = String(b, 0, minOf(b.size, 40), Charsets.US_ASCII)
+            when {
+                head.contains("ssh-ed25519") -> "ed25519"
+                head.contains("ssh-rsa") -> "rsa-openssh"
+                head.contains("ecdsa") -> "ecdsa"
+                else -> "openssh-unknown"
+            }
+        } catch (e: Exception) {
+            "openssh-unknown"
+        }
+    }
+
+    /** 非致命提醒：返回建议文案，null 表示这个格式没问题 */
+    fun keyWarning(raw: String): String? = when (keyType(raw)) {
+        "ed25519" ->
+            "⚠️ 这是 ed25519 私钥（OpenSSH 新格式）。实测在安卓上会报「认证失败」——JSch 在 Android 运行时里解析不了它。" +
+                "\n建议换成 PEM 格式的 RSA（下方「私钥」说明里有生成命令）。"
+        "rsa-openssh" ->
+            "⚠️ 这是 OpenSSH 新格式的 RSA。OpenSSH 格式在安卓上有解析风险，PEM 格式更稳。"
+        "ecdsa" ->
+            "⚠️ ECDSA 私钥在安卓上依赖 BouncyCastle，未必可用。建议换 RSA。"
+        else -> null
+    }
+
+    /** 推荐的生成命令（设置页显示给用户） */
+    const val KEY_HINT_CMD =
+        "ssh-keygen -t rsa -b 4096 -m PEM -f id_rsa_android\n" +
+            "cat id_rsa_android.pub >> ~/.ssh/authorized_keys"
+
     data class Result(val ok: Boolean, val text: String)
 
     /**
@@ -97,6 +147,8 @@ object ConnTest {
         return try {
             TLog.add("test", "开始测试 → $user@$host:$port")
             initJsch()
+            lastKeyType = keyType(key)
+            TLog.add("test", "私钥类型=" + lastKeyType + " 指纹=" + keyFingerprint(key) + " 长度=" + key.length)
             val jsch = JSch()
             TLog.add("test", "JSch 版本=" + JSch.VERSION + " keyLen=" + key.length)
             jsch.addIdentity("testkey", key.toByteArray(), null, null)
@@ -134,7 +186,15 @@ object ConnTest {
         val low = chain.toString().lowercase()
         return when {
             low.contains("auth fail") || low.contains("auth cancel") ->
-                "认证失败 —— 私钥不对，或者这把公钥没加进服务器的 authorized_keys"
+                if (lastKeyType == "ed25519" || lastKeyType == "rsa-openssh")
+                    "认证失败。\n\n**很可能就是私钥格式的问题**：你用的是 OpenSSH 新格式（$lastKeyType），" +
+                        "这种格式在安卓上 JSch 解析会出错（同样的私钥在电脑上能连）。\n\n" +
+                        "换 PEM 格式的 RSA：\n" +
+                        "  ssh-keygen -t rsa -b 4096 -m PEM -f id_rsa_android\n" +
+                        "  cat id_rsa_android.pub >> ~/.ssh/authorized_keys\n" +
+                        "然后把 id_rsa_android 当文件传到手机，全选复制粘进来。"
+                else
+                    "认证失败 —— 私钥不对，或者这把公钥没加进服务器的 authorized_keys"
 
             low.contains("invalid privatekey") || low.contains("invalidkey") ->
                 "私钥解析不了 —— 内容被复制坏了（换行/空格混进去了），重新完整复制一次"

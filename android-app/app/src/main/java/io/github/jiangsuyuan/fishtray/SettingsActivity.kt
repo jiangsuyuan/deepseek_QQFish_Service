@@ -37,11 +37,27 @@ class SettingsActivity : AppCompatActivity() {
         // 私钥指纹实时显示：粘贴完立刻能看出是不是同一把
         val tvFp = findViewById<TextView>(R.id.tvKeyFp)
         fun refreshFp() {
-            val fp = ConnTest.keyFingerprint(eKey.text.toString())
-            tvFp.text = if (fp.isBlank()) "" else "私钥指纹：$fp"
+            val k = eKey.text.toString()
+            val fp = ConnTest.keyFingerprint(k)
+            val warn = ConnTest.keyWarning(k)
+            val type = ConnTest.keyType(k)
+            val typeZh = when (type) {
+                "rsa-pem" -> "RSA / PEM（推荐）"
+                "pkcs8" -> "PKCS#8"
+                "ed25519" -> "ed25519 / OpenSSH ⚠️"
+                "rsa-openssh" -> "RSA / OpenSSH ⚠️"
+                "ecdsa" -> "ECDSA ⚠️"
+                "empty" -> ""
+                else -> type
+            }
+            val line1 = if (typeZh.isBlank() && fp.isBlank()) "" else "格式：$typeZh　指纹：$fp"
+            tvFp.text = if (warn != null) line1 + "\n" + warn else line1
             tvFp.setTextColor(
-                if (fp.isBlank()) 0xFF8B93A1.toInt()
-                else 0xFF4C8DFF.toInt()
+                when {
+                    warn != null -> 0xFFF79009.toInt()
+                    fp.isBlank() -> 0xFF8B93A1.toInt()
+                    else -> 0xFF12B76A.toInt()
+                }
             )
         }
         eKey.addTextChangedListener(object : TextWatcher {
