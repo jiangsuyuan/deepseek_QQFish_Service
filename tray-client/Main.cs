@@ -214,7 +214,11 @@ namespace FishTray
             }
             catch { }
             var c = new HttpClient();
-            c.Timeout = TimeSpan.FromSeconds(20);
+            // 图片消息一次可能十几二十张，默认连接池只有 2 个，
+            // 排在后面的会等到超时被取消（现象：一半图加载不出来）。
+            // 放宽到 16 个并发；单张超时给足 40 秒。
+            try { ServicePointManager.DefaultConnectionLimit = 16; } catch { }
+            c.Timeout = TimeSpan.FromSeconds(40);
             return c;
         }
 
@@ -759,6 +763,7 @@ namespace FishTray
 
         Timer pollTimer;
         long lastAt = 0;
+        bool bulkRendering = false;   // 全量渲染中（用于详细日志）
         int fails = 0;
         bool sending = false;
         bool reallyExit = false;
@@ -1489,7 +1494,9 @@ namespace FishTray
             Task.Run(delegate
             {
                 string body = Api.Get(cfg, "/history");
-                try { BeginInvoke((Action)delegate { Render(body, false); }); } catch { }
+                Log.W("Reload: /history 拿到 " + (body == null ? "null" : body.Length + " 字符") +
+                      (body != null && body.StartsWith("__ERR__") ? " (" + body + ")" : ""));
+                try { BeginInvoke((Action)delegate { Render(body, false); }); } catch (Exception e) { Log.W("Reload BeginInvoke 失败: " + e.Message); }
             });
         }
 
@@ -1499,7 +1506,11 @@ namespace FishTray
             List<Msg> items;
             try { items = new JavaScriptSerializer().Deserialize<List<Msg>>(body); }
             catch { return; }
-            if (items == null) return;
+            if (items == null) { Log.W("Render: 反序列化得到 null"); return; }
+
+            int imgCount = 0;
+            try { foreach (var x in items) if (!string.IsNullOrEmpty(x.image)) imgCount++; } catch { }
+            if (!onlyNew) Log.W("Render: 共 " + items.Count + " 条，带图 " + imgCount + " 条，body " + body.Length + " 字符");
 
             int viewW = scrollHost.ClientSize.Width;
             int maxW = (int)(viewW * 0.78);
@@ -1512,7 +1523,28 @@ namespace FishTray
                 bubbles.Clear();
                 lastAt = 0;
                 pendingMe = "";
-                foreach (var m in items) { if (m.at > lastAt) lastAt = m.at; AddBubble(m, maxW); }
+                int okCount = 0, failCount = 0;
+                bulkRendering = true;
+                foreach (var m in items)
+                {
+                    // 一条消息渲染失败不能拖垮整轮 —— 之前就是这样：
+                    // 前面 3 张图渲染完后，第 4 条抛异常，后面的图全没了，
+                    // 而且异常被 WinForms 吞掉，日志里一个字都没有
+                    try
+                    {
+                        if (m.at > lastAt) lastAt = m.at;
+                        AddBubble(m, maxW);
+                        okCount++;
+                    }
+                    catch (Exception ex)
+                    {
+                        failCount++;
+                        Log.W("渲染失败 at=" + m.at + " role=" + m.role +
+                              " img=" + (m.image ?? "-") + " : " + ex.GetType().Name + " " + ex.Message);
+                    }
+                }
+                bulkRendering = false;
+                if (failCount > 0) Log.W("渲染完成：成功 " + okCount + " 条，失败 " + failCount + " 条");
                 canvas.ResumeLayout();
                 Relayout();
                 ScrollEnd();
@@ -1534,8 +1566,15 @@ namespace FishTray
                     continue;
                 }
 
-                AddBubble(m, maxW);
-                added = true;
+                try
+                {
+                    AddBubble(m, maxW);
+                    added = true;
+                }
+                catch (Exception ex)
+                {
+                    Log.W("渲染失败(增量) at=" + m.at + " : " + ex.GetType().Name + " " + ex.Message);
+                }
             }
             canvas.ResumeLayout();
             if (added) { Relayout(); ScrollEnd(); }
@@ -1597,6 +1636,7 @@ namespace FishTray
 
         void AddImageBubble(string imgPath, string role, int maxW, string mark = "")
         {
+            if (!bulkRendering) Log.W("AddImageBubble 调用: " + imgPath + " role=" + role + " maxW=" + maxW);
             string url = imgPath;
             if (url.IndexOf("http", StringComparison.OrdinalIgnoreCase) != 0)
                 url = cfg.base_url.TrimEnd('/') + url;
@@ -1617,10 +1657,35 @@ namespace FishTray
                 {
                     string sep = u.IndexOf('?') >= 0 ? "&" : "?";
                     string full = u + sep + "token=" + Uri.EscapeDataString(cfg.token);
-                    var resp = Api.Http.GetAsync(full).GetAwaiter().GetResult();
-                    if (!resp.IsSuccessStatusCode) { Log.W("图片 404 " + label); return; }
 
-                    byte[] bytes = resp.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult();
+                    byte[] bytes = null;
+                    // 最多试 3 次：并发抢连接时偶发的超时不值得让这张图彻底消失
+                    for (int attempt = 1; attempt <= 3 && bytes == null; attempt++)
+                    {
+                        try
+                        {
+                            var resp = Api.Http.GetAsync(full).GetAwaiter().GetResult();
+                            if (!resp.IsSuccessStatusCode)
+                            {
+                                if (attempt >= 3) { Log.W("图片 " + (int)resp.StatusCode + " " + label); return; }
+                                System.Threading.Thread.Sleep(300 * attempt);
+                                continue;
+                            }
+                            var b = resp.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult();
+                            if (b != null && b.Length >= 100) bytes = b;
+                            else if (attempt >= 3) { Log.W("图片太小 " + label); return; }
+                        }
+                        catch (Exception rex)
+                        {
+                            if (attempt >= 3)
+                            {
+                                Log.W("图片失败 " + label + "（已试 3 次）" + rex.Message);
+                                throw;
+                            }
+                            System.Threading.Thread.Sleep(300 * attempt);
+                        }
+                    }
+                    if (bytes == null) { Log.W("图片失败 " + label + "（拿不到数据）"); return; }
                     if (bytes == null || bytes.Length < 100) { Log.W("图片太小 " + label); return; }
 
                     var ms = new MemoryStream(bytes);
