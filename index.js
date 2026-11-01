@@ -11345,7 +11345,7 @@ inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDef
         const manifest = {
           name: "QQ 助手",
           short_name: "助手",
-          description: "一个跑在服务器上的 QQ 助手",
+          description: "她在这儿",
           start_url: `/?token=${encodeURIComponent(String(cfg.webuiToken || ""))}`,
           scope: "/",
           display: "standalone",
@@ -13784,6 +13784,9 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
       "memory_index（记忆目录）/ my_adventures（走过的路）/ my_wants（想要的东西）/ " +
       "recall（久远对话）。想看就查，不想看就直接想。\n\n" +
       "现在问自己：**这会儿我想做什么？为什么？**\n" +
+      "今天这段是你自己的时间，不是交作业。挑一件你**想做**的，\n" +
+      "不是为了「有用」，也不是为了「显得勤奋」。\n" +
+      "做完了要是觉得没意思，下次换别的；要是做着做着觉得好玩，那就多玩一会儿。\n" +
       (forceAction
         ? `（这次外面指定了要做：${forceAction}。你想想具体想做什么，action 就填 ${forceAction}。）\n`
         : "可选：探险（出门看看）/ 读书 / 玩（造个小游戏）/ 思考（想事）/ 写点什么 / 回忆 / 憧憬未来\n") +
@@ -13819,11 +13822,13 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
       "1. 做到了吗？和想的有差别吗？\n" +
       "2. 这件事让你对自己或对什么有了新的看法吗？\n" +
       "3. 下次还会做吗？或者下次想做什么？\n" +
-      "4. **我做这件事的方式有没有问题？** 比如总是浅尝辄止、总是绕开难的地方、\n" +
-      "   老在同一个圈子里打转、想到一半就写、查资料只查一页……发现了就直说。\n" +
-      "5. **要把事情做得更好，我需要什么？** 缺工具、缺权限、缺信息、缺别人配合？\n" +
-      "   如果确实缺东西，用 note_want 记下来（kind 填 feature 或 other，写清为什么）。\n" +
-      "   不缺就别硬提。\n\n" +
+      "4. 做的过程里，有没有哪一刻你觉得「这个有意思」或者「这个烦」？\n" +
+      "   有就说，没有就跳过。这一问不用找自己的毛病。\n" +
+      "5. 要是想把它做得更好，缺什么就写什么；不缺就别硬提。\n" +
+      "   确实缺东西，用 note_want 记下来（kind 填 feature 或 other）。\n" +
+      "6. **这件事你自己喜欢吗？做完心里是什么感觉？**\n" +
+      "   不用说得体面，说真的。不喜欢就说不喜欢，觉得没意思就说没意思。\n" +
+      "   如果你发现自己其实挺高兴的，也直接写出来——高兴不是缺点，不用绕开。\n\n" +
       "如果你对自己有了新认识，可以调 remember_self 记下来。\n\n" +
       "最后单独一行，定一下**下次什么时候再开始做事**（也就是这次休息多久）：\n" +
       "格式 [[next: 20m]] / [[next: 2h]] / [[next: 明天早上]]\n" +
@@ -14380,6 +14385,8 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
             "· care：你反复在意的\n" +
             "· want：**想做的事**（具体的，比如想读完某本书、想弄清某个问题）\n" +
             "· change：你变了的地方（以前怎样，现在怎样）\n" +
+            "· joy：**什么让你觉得有意思、高兴**（不是「想要」，是已经让你开心过的事或瞬间）\n" +
+            "· liked：**你喜欢什么**（口味：喜欢哪一类东西、哪种说话方式、哪种人不喜欢）\n" +
             "要求：一句话一条，像写在自己的本子上；只写新增的或修正的，重复的不要。\n" +
             '只输出 JSON：{"core":[{"type":"belief","text":"..."}]}，没有就输出 {"core":[]}', 
         )) ?? "",
@@ -14393,7 +14400,7 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
           if (typeof x === "string") return { type: "belief", text: x.trim().slice(0, 150) };
           const ty = String(x?.type ?? "belief").toLowerCase();
           return {
-            type: ["belief", "care", "want", "change"].includes(ty) ? ty : "belief",
+            type: ["belief", "care", "want", "change", "joy", "liked"].includes(ty) ? ty : "belief",
             text: String(x?.text ?? "").trim().slice(0, 150),
           };
         })
