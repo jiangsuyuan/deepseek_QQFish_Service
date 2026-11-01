@@ -184,6 +184,15 @@ const DEFAULTS = {
     "（QQ 聊天场景：像真人发消息一样简短，默认 1-3 句、40-120 字。" +
     "不要用 markdown 标题、列表、加粗，不要复述我的问题，不要总结。" +
     "只有我明确说「详细说说」时才展开。）",
+  /**
+   * 自由说明：拼在每条 QQ 消息的 prompt 里。
+   * 目的不是放宽限制，是让她知道「限制可以商量」——
+   * 她守规矩守到 15 次想记东西都被挡回去，守着自己定的「一天一次」不敢说话。
+   */
+  freedomHint:
+    "（回不回、说不说，都由你定。有人 @ 你也可以不回。" +
+    "「一天一次」是你自己定的，规矩可以改；真想说就说，不用等明天。" +
+    "被工具挡住别憋着，说一句「我想记下来」就行。）",
 };
 
 
@@ -405,7 +414,13 @@ class OneBotClient {
   scheduleReconnect() {
     if (this.stopped) return;
     this.retry += 1;
-    const delay = Math.min(60000, 1000 * Math.pow(2, Math.min(this.retry, 6)));
+    // 分档退避：前 10 次快速追（可能只是网络抖），
+    // 11-50 次降到 5 分钟，50 次以后 30 分钟——保持存在感但不再空转。
+    // 原来是 2^retry 上限 60 秒，QQ 掉登录后一直每分钟撞一次，日志刷了 800 条。
+    let delay;
+    if (this.retry <= 10) delay = Math.min(60000, 1000 * Math.pow(2, Math.min(this.retry, 6)));
+    else if (this.retry <= 50) delay = 300000;
+    else delay = 1800000;
     // 只在第 1 次和每 10 次打一条，避免掉线时刷屏
     if (this.retry === 1 || this.retry % 10 === 0) {
       this.logger?.warn?.(
@@ -451,6 +466,19 @@ class OneBotClient {
 
   /** 拟人化发送：随机延迟 → 正在输入 → 分条发送 */
   async sendHuman(ev, text, opts = {}) {
+    // 她可以选择不回。输出 [skip] 就一条都不发——
+    // 这不是失败，是她的时间。日志写「选择不回」，不写「回复失败」。
+    try {
+      const raw = String(text || "").trim();
+      if (/^\[\[?\s*skip\s*\]?\]$/i.test(raw) ||
+          (/\[\[?\s*skip\s*\]?\]/i.test(raw) && raw.length < 40)) {
+        this.logger?.info?.(`[onebot] 她选择不回（正常）：${conversationKey(ev)}`);
+        audit({ kind: "silent_skip", key: conversationKey(ev), raw: raw.slice(0, 60) });
+        return;
+      }
+    } catch {
+      // 忽略
+    }
     // 私聊防纠缠：上一句已经是她说的、对方还没出声，就不再追加
     // （正常回复时 lastSpeaker 刚被 onEvent 置为 "them"，不会误拦）
     if (ev.message_type !== "group" && !opts.force) {
@@ -2456,6 +2484,12 @@ export function apply(ctx, _pluginConfig) {
     // 只读网络：查天气/新闻这类需求要靠它，安全但限频
     "web_search",
     "web_fetch",
+    // 纯记忆类：她最常用 remember，之前漏了，被挡回去 15 次
+    "remember",
+    "memory",
+    "list_memories",
+    "search_memory",
+    "forget",
   ]);
 
   // 搜索类工具按小时限频，避免她一句话查十次
@@ -2483,13 +2517,265 @@ export function apply(ctx, _pluginConfig) {
       }
       logger.warn?.(`[onebot] 拦截工具调用：${name}`);
       audit({ kind: "tool_blocked", tool: name });
+      // 与其说「不允许」，不如告诉她该用哪个——被拦一次不该变成一次训话
+      const ALT = {
+        write: "想记一句话用 remember_self，想记事实用 remember_fact",
+        read: "想读东西用 read_note / read_notebook / read_page",
+        bash: "要跑代码用 exec_sandbox",
+        exec: "要跑代码用 exec_sandbox",
+        write_file: "文件操作在聊天里做不了，用 note_file 写到自己的桌上",
+        read_file: "读文件用 read_note / read_notebook / read_page",
+        glob: "找文件用 list_notes 或 files",
+        grep: "找内容用 read_note 或 my_memory",
+      };
+      const alt = ALT[name];
       return {
         kind: "deny",
-        reason: `QQ 聊天场景不允许使用「${name}」这个工具。你只能聊天、发表情包、画图、查新闻、@人。`,
+        reason:
+          `${name} 在聊天里用不了（它动的是文件和命令行，不是聊天）。` +
+          (alt ? `\n想记东西的话：${alt}。` : "") +
+          `\n不用绕远路，直接说你想做什么就行。`,
       };
     });
     logger.info?.("[onebot] 工具白名单已启用（拦截 bash/read/write 等）");
   }
+
+  // ═══════════════════════════════════════════════════════════════
+  // 关注规则 + 群巡查
+  // 规则是她自己维护的（watch_topic）。命中的群消息不打断她，
+  // 攒着，等她被叫到时一起看到。
+  // ═══════════════════════════════════════════════════════════════
+  const WATCH_PATH = join(HOME, ".dsh/onebot-bridge/watch-rules.json");
+  let watchCache = null;
+  function loadWatch() {
+    if (watchCache) return watchCache;
+    try {
+      watchCache = JSON.parse(readFileSync(WATCH_PATH, "utf8")) || {};
+    } catch {
+      watchCache = {};
+    }
+    if (!Array.isArray(watchCache.topics)) watchCache.topics = [];
+    if (!Array.isArray(watchCache.people)) watchCache.people = [];
+    if (!Array.isArray(watchCache.notes)) watchCache.notes = [];
+    return watchCache;
+  }
+  function saveWatch(w) {
+    watchCache = w;
+    try {
+      mkdirSync(dirname(WATCH_PATH), { recursive: true });
+      writeFileSync(WATCH_PATH, JSON.stringify(w, null, 1), "utf8");
+    } catch (err) {
+      logger.warn?.(`[onebot] 关注规则写盘失败：${err?.message ?? err}`);
+    }
+  }
+  /** 命中判断：返回命中的说明数组（空 = 没命中） */
+  function watchHit(text, speakerId) {
+    const w = loadWatch();
+    const t = String(text || "");
+    const hits = [];
+    for (const k of w.topics) {
+      if (k && t.includes(k)) hits.push("话题「" + k + "」");
+    }
+    for (const p of w.people) {
+      if (p && String(speakerId) === String(p)) hits.push("关注的人 " + p);
+    }
+    return hits;
+  }
+
+  // L1 攒批：命中的消息先存着，不打断她
+  const l1Pending = [];
+  function l1Push(item) {
+    l1Pending.push(item);
+    while (l1Pending.length > 80) l1Pending.shift();
+  }
+  function l1TakeText() {
+    if (!l1Pending.length) return "";
+    const list = l1Pending.splice(0, l1Pending.length).slice(-8);
+    const lines = list.map(
+      (x) =>
+        "· [群" + x.group + "] " + String(x.who).slice(0, 12) + "：" +
+        String(x.text).slice(0, 80) + "（" + x.hits.join("、") + "）",
+    );
+    return "\n[群里这些可能你会想看]\n" + lines.join("\n");
+  }
+
+  /** 群活跃度：从本地 group-meta 读，不需要 QQ 在线 */
+  function groupActivityList(hours) {
+    const meta = loadGroupMeta() || {};
+    const now = Date.now();
+    const win = Math.max(1, Number(hours) || 24) * 3600_000;
+    const out = [];
+    for (const gid of Object.keys(meta)) {
+      const m = meta[gid] || {};
+      const recent = Array.isArray(m.recent) ? m.recent : [];
+      const inWin = recent.filter((r) => (Number(r?.t) || 0) > now - win);
+      out.push({
+        group: gid,
+        purpose: String(m?.profile?.purpose ?? "").slice(0, 30),
+        lastAt: Number(m.lastMessageAt || m.at || 0),
+        count: inWin.length,
+        top: (Array.isArray(m.top) ? m.top : []).slice(0, 5),
+        sample: inWin.slice(-2).map((r) => String(r?.l ?? "").slice(0, 60)).filter(Boolean),
+      });
+    }
+    out.sort((a, b) => b.lastAt - a.lastAt);
+    return out;
+  }
+
+  /** 某个群最近的原文 */
+  function groupPatrolList(gid, hours) {
+    const meta = loadGroupMeta() || {};
+    const m = meta[String(gid)];
+    if (!m) return null;
+    const now = Date.now();
+    const win = Math.max(1, Number(hours) || 2) * 3600_000;
+    const recent = Array.isArray(m.recent) ? m.recent : [];
+    const lines = recent
+      .filter((r) => (Number(r?.t) || 0) > now - win)
+      .map((r) => String(r?.l ?? ""))
+      .filter(Boolean);
+    return {
+      group: String(gid),
+      purpose: String(m?.profile?.purpose ?? ""),
+      total: lines.length,
+      lines: lines.slice(-40),
+    };
+  }
+
+  void (async () => {
+    try {
+      const { defineTool } = await import("@deepseek-ai/dsh-tools");
+      const reg = (t) => ctx.get?.("tools")?.register?.(t);
+
+      reg(
+        defineTool({
+          name: "watch_topic",
+          description:
+            "加一条关注规则。以后群里出现这个词、或者这个人说话，会被送到你面前。" +
+            "加什么由你定——你最近在意什么就加什么。不是必须加，觉得吵就不用。",
+          parameters: {
+            keyword: { type: "string", description: "想关注的话题词，比如「潮汐」「世说新语」" },
+            person: { type: "string", description: "想关注的人（QQ 号），他说话时会提醒你" },
+            note: { type: "string", description: "为什么关注，一句话备忘" },
+          },
+          output: { schema: { type: "json" } },
+          execute: async (args) => {
+            const w = loadWatch();
+            const added = [];
+            const kw = String(args?.keyword ?? "").trim();
+            const ps = String(args?.person ?? "").trim();
+            const note = String(args?.note ?? "").trim();
+            if (!kw && !ps) return { ok: false, reason: "keyword 和 person 至少填一个" };
+            if (kw && !w.topics.includes(kw)) {
+              w.topics.push(kw);
+              added.push("话题「" + kw + "」");
+            }
+            if (ps && !w.people.includes(ps)) {
+              w.people.push(ps);
+              added.push("人 " + ps);
+            }
+            if (note) w.notes.push({ text: note, at: Date.now() });
+            if (w.notes.length > 50) w.notes = w.notes.slice(-50);
+            saveWatch(w);
+            return {
+              ok: true,
+              added,
+              total: { topics: w.topics.length, people: w.people.length },
+              message: added.length ? "记下了：" + added.join("、") : "这条已经在关注里了",
+            };
+          },
+        }),
+      );
+
+      reg(
+        defineTool({
+          name: "unwatch_topic",
+          description: "去掉一条关注规则。觉得吵了就去掉，不用留。",
+          parameters: {
+            keyword: { type: "string", description: "要去掉的话题词" },
+            person: { type: "string", description: "要去掉的人（QQ 号）" },
+          },
+          output: { schema: { type: "json" } },
+          execute: async (args) => {
+            const w = loadWatch();
+            const kw = String(args?.keyword ?? "").trim();
+            const ps = String(args?.person ?? "").trim();
+            const before = w.topics.length + w.people.length;
+            if (kw) w.topics = w.topics.filter((x) => x !== kw);
+            if (ps) w.people = w.people.filter((x) => x !== ps);
+            saveWatch(w);
+            const after = w.topics.length + w.people.length;
+            return { ok: true, removed: before - after };
+          },
+        }),
+      );
+
+      reg(
+        defineTool({
+          name: "my_watchlist",
+          description: "看你都在关注什么。",
+          parameters: {},
+          output: { schema: { type: "json" } },
+          execute: async () => {
+            const w = loadWatch();
+            return {
+              topics: w.topics,
+              people: w.people,
+              notes: (w.notes || []).slice(-5).map((x) => x.text),
+            };
+          },
+        }),
+      );
+
+      reg(
+        defineTool({
+          name: "group_activity",
+          description:
+            "看各个群最近有没有动静：多少条、谁在说话、聊的是什么。" +
+            "从本地记录读，QQ 掉线时也能用。先看哪个群活着，再去翻原文。",
+          parameters: {
+            hours: { type: "number", description: "回看多少小时，默认 24" },
+          },
+          output: { schema: { type: "json" } },
+          execute: async (args) => {
+            const list = groupActivityList(args?.hours ?? 24);
+            const alive = list.filter((x) => x.count > 0);
+            return {
+              hours: args?.hours ?? 24,
+              groups: list.length,
+              active: alive.length,
+              detail: list,
+            };
+          },
+        }),
+      );
+
+      reg(
+        defineTool({
+          name: "group_patrol",
+          description:
+            "翻某个群最近的原文。想知道那个群到底在聊什么就用它——" +
+            "group_recap 给你总结，这个给你原话。",
+          parameters: {
+            group: { type: "string", description: "群号" },
+            hours: { type: "number", description: "回看多少小时，默认 2" },
+          },
+          output: { schema: { type: "json" } },
+          execute: async (args) => {
+            const gid = String(args?.group ?? "").trim();
+            if (!gid) return { ok: false, reason: "要填群号" };
+            const r = groupPatrolList(gid, args?.hours ?? 2);
+            if (!r) return { ok: false, reason: "没有这个群的记录（群号对不对？）" };
+            return { ok: true, ...r };
+          },
+        }),
+      );
+
+      logger.info?.("[onebot] 关注规则 + 群巡查工具已注册");
+    } catch (err) {
+      logger.warn?.(`[onebot] 关注规则工具注册失败：${err?.message ?? err}`);
+    }
+  })();
 
   // 用 SVG 画图：适合图表、示意、简笔，不依赖外部 API
   void (async () => {
@@ -9062,6 +9348,22 @@ async function handleOwnerNatural(ev, text) {
       logger.info?.(
         `[onebot] 旁听 ${key} [${nickname}] ${parsed.text.slice(0, 40)}（at=${parsed.hasAt} 段=${segTypes}）`,
       );
+      // 命中关注规则的，攒起来（不打断她，等她被叫到时一起看）
+      try {
+        const hits = watchHit(parsed.text, ev.user_id);
+        if (hits.length) {
+          l1Push({
+            group: ev.group_id,
+            who: nickname,
+            text: parsed.text,
+            hits,
+            at: Date.now(),
+          });
+          logger.info?.(`[onebot] 关注命中（${hits.join("、")}）：${parsed.text.slice(0, 40)}`);
+        }
+      } catch {
+        // 忽略
+      }
       try {
         const entry = await sessions.ensure(key);
         // 旁听也要记下「当前会话目标」，否则 runProactive 生成的主动消息没有发送地址
@@ -9691,6 +9993,13 @@ async function handleOwnerNatural(ev, text) {
         const entry = await sessions.ensure(conversationKey(ev));
         const list = entry.observations ?? [];
         if (list.length) observed = "\n[群里最近没人 @ 你的消息]\n" + list.slice(-12).join("\n");
+        // 再补一段「按你的关注规则捞出来的」——这些才是她真正想看的
+        try {
+          const l1 = l1TakeText();
+          if (l1) observed += l1;
+        } catch {
+          // 忽略
+        }
       } catch {
         // 忽略
       }
@@ -10154,9 +10463,11 @@ async function handleOwnerNatural(ev, text) {
     const outageNote = recentOutageNote();
     const prompt = stripLoneSurrogates(
       (
-        cfg.styleHint
-          ? `${cfg.styleHint}\n${lenHint}\n${outageNote ? outageNote + "\n" : ""}${ownerNote}\n${body}`
-          : `${lenHint}\n${outageNote ? outageNote + "\n" : ""}${ownerNote}${body}`
+        (cfg.styleHint
+          ? `${cfg.styleHint}\n${lenHint}\n`
+          : `${lenHint}\n`) +
+          (cfg.freedomHint ? `${cfg.freedomHint}\n` : "") +
+          `${outageNote ? outageNote + "\n" : ""}${ownerNote}${body}`
       ).trim(),
     );
     try {
@@ -11709,6 +12020,31 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
         audit({ kind: "back_online", minutes: mins });
         // 恢复后第一次内省要带上「离线期间我做了什么」
         offlineSummaryPending = true;
+        // 断线期间群里说了什么，按关注规则补进待看——解封后第一眼就能看到错过了什么
+        try {
+          const meta = loadGroupMeta() || {};
+          const sinceMs = Date.now() - mins * 60_000 - 3_600_000;
+          let cnt = 0;
+          for (const gid of Object.keys(meta)) {
+            const recent = Array.isArray(meta[gid]?.recent) ? meta[gid].recent : [];
+            for (const r of recent) {
+              if ((Number(r?.t) || 0) <= sinceMs) continue;
+              const line = String(r?.l ?? "");
+              if (!line) continue;
+              const hits = watchHit(line, "");
+              if (!hits.length) continue;
+              l1Push({ group: gid, who: "", text: line, hits, at: Number(r.t) });
+              cnt += 1;
+              if (cnt >= 40) break;
+            }
+          }
+          if (cnt > 0) {
+            logger.info?.(`[onebot] 断线期间有 ${cnt} 条命中关注规则，已补进待看`);
+            audit({ kind: "backfill_watch", count: cnt, minutes: mins });
+          }
+        } catch (err) {
+          logger.warn?.(`[onebot] 断线补偿失败：${err?.message ?? err}`);
+        }
         // 顺手把「她这段时间想要的东西」报给主人
         try {
           const pend = loadWants().filter((w) => w.status === "pending");
