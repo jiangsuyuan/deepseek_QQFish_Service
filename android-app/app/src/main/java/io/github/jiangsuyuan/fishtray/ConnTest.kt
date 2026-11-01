@@ -32,6 +32,23 @@ object ConnTest {
         return null
     }
 
+    /**
+     * 私钥指纹：归一化（统一换行、去首尾空白）后算 SHA-256，取前 16 位。
+     * 用来让用户核对「App 里这份」和「电脑上那份」是不是同一把——
+     * 只看格式校验不够，坏掉的私钥也可能格式对但内容不一样。
+     */
+    fun keyFingerprint(raw: String): String {
+        if (raw.isBlank()) return ""
+        return try {
+            val norm = raw.replace("\r\n", "\n").replace('\r', '\n').trim()
+            val md = java.security.MessageDigest.getInstance("SHA-256")
+            val d = md.digest(norm.toByteArray(Charsets.UTF_8))
+            d.joinToString("") { "%02x".format(it) }.take(16)
+        } catch (e: Exception) {
+            ""
+        }
+    }
+
     data class Result(val ok: Boolean, val text: String)
 
     /**

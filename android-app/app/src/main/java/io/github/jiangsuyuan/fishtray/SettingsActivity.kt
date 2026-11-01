@@ -4,7 +4,10 @@ import android.app.ProgressDialog
 import android.os.Bundle
 import android.widget.Button
 import android.widget.EditText
+import android.widget.TextView
 import android.widget.Toast
+import android.text.Editable
+import android.text.TextWatcher
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 
@@ -29,6 +32,23 @@ class SettingsActivity : AppCompatActivity() {
         eKey.setText(Prefs.key)
         eToken.setText(Prefs.token)
         eWebPort.setText(Prefs.webPort.toString())
+
+        // 私钥指纹实时显示：粘贴完立刻能看出是不是同一把
+        val tvFp = findViewById<TextView>(R.id.tvKeyFp)
+        fun refreshFp() {
+            val fp = ConnTest.keyFingerprint(eKey.text.toString())
+            tvFp.text = if (fp.isBlank()) "" else "私钥指纹：$fp"
+            tvFp.setTextColor(
+                if (fp.isBlank()) 0xFF8B93A1.toInt()
+                else 0xFF4C8DFF.toInt()
+            )
+        }
+        eKey.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: Editable?) = refreshFp()
+        })
+        refreshFp()
 
         fun collect(): Triple<String, Int, String>? {
             val host = eHost.text.toString().trim()
@@ -70,7 +90,12 @@ class SettingsActivity : AppCompatActivity() {
             Thread {
                 // 临时把 webPort 设进去，测试要用
                 Prefs.webPort = webPort
-                val r = ConnTest.test(c.first, c.second, user, c.third)
+                val r0 = ConnTest.test(c.first, c.second, user, c.third)
+                val fp = ConnTest.keyFingerprint(c.third)
+                val r = ConnTest.Result(
+                    r0.ok,
+                    r0.text + "\n\n本次用的私钥指纹：$fp",
+                )
                 runOnUiThread {
                     runCatching { dlg.dismiss() }
                     AlertDialog.Builder(this)
