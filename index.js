@@ -13166,7 +13166,7 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
   }
 
   async function dailyReflect(force = false) {
-    if (!cfg.selfReflect) return { ok: false, reason: "自我反思已被配置关闭" };
+    if (!cfg.selfReflect) return { ok: false, reason: "回看已被配置关闭" };
     try {
       const picked = pickTarget();
       if (!picked) return { ok: false, reason: "现在没有可复盘的对话" };
@@ -13178,13 +13178,13 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
           (dialog ? `【今天的对话】\n${dialog}\n` : "") +
           (views ? `【你之前的看法】${views}\n` : "") +
           "想一想：1) 有没有哪句话说得不合适、太冲或太敷衍？2) 对某个人的态度要不要调整？" +
-          "3) 你对某件事的看法有没有变？用两三句话写下来，像日记。只输出反思本身，不要解释。\n" +
+          "3) 你对某件事的看法有没有变？用两三句话写下来，像日记。只输出回看本身，不要解释。\n" +
           "如果你形成了新的明确看法，可以调 remember_self 记下来。）",
       );
       const content = String(text || "").trim();
       if (!content) return { ok: false, reason: "这次没写出东西来" };
       selfViews.addReflection(content);
-      logger.info?.(`[onebot] 今日反思：${content.slice(0, 60)}`);
+      logger.info?.(`[onebot] 今日回看：${content.slice(0, 60)}`);
       audit({ kind: "reflect", text: content.slice(0, 300) });
       // 反思完看要不要微调「我是什么样的」——工具调用时等它结束，好把结果带回去
       let adjusted = null;
@@ -13195,7 +13195,7 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
       }
       return { ok: true, reflect: content, adjusted };
     } catch (err) {
-      logger.warn?.(`[onebot] 反思失败：${err?.message ?? err}`);
+      logger.warn?.(`[onebot] 回看失败：${err?.message ?? err}`);
       return { ok: false, reason: String(err?.message ?? err) };
     }
   }
@@ -14255,11 +14255,11 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
     };
   }
 
-  /** 第三段：反思——行动之后回头看 */
+  /** 第三段：回看——行动之后回头看一眼（不叫反思：反思是查错，回看只是看） */
   async function reflectPhase(plan, actOut) {
     const runKey = SELF_ACTIVITY_KEY;
     const prompt =
-      "（内部反思，不要发消息。你刚做完一件事。）\n\n" +
+      "（内部回看，不要发消息。你刚做完一件事。）\n\n" +
       `原本想做的：${plan.intent}\n` +
       `为什么：${plan.why}\n` +
       `实际做了：${String(actOut || "").slice(0, 2000)}\n\n` +
@@ -14278,8 +14278,8 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
       "最后单独一行，定一下**下次什么时候再开始做事**（也就是这次休息多久）：\n" +
       "格式 [[next: 20m]] / [[next: 2h]] / [[next: 明天早上]]\n" +
       "凭感觉写：刚做完满足的事可以隔久一点，没想完的可以早点再来。\n" +
-      "只输出反思本身（最后一行的标记会保留）。";
-    logger.info?.("[onebot] 阶段3 反思");
+      "只输出回看本身（最后一行的标记会保留）。";
+    logger.info?.("[onebot] 阶段3 回看");
     try {
       const raw = String((await sessions.runSilent(runKey, prompt)) ?? "").trim();
       let delayMin = 0;
@@ -14303,7 +14303,7 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
     }
   }
 
-  /** 完整的一轮：思考 → 行动 → 反思 */
+  /** 完整的一轮：思考 → 行动 → 回看 */
   // 全局活动锁：自检、手动触发、定时触发可能同时来，同时跑会撞会话写锁
   let activityRunning = false;
   let activityRunningSince = 0;
@@ -14368,7 +14368,7 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
     }
     logger.info?.(`[onebot] 做完：${String(actOut).slice(0, 50)}`);
 
-    // ── 3. 反思 ──
+    // ── 3. 回看 ──
     const reflectRes = await reflectPhase(plan, actOut);
     const reflectOut = reflectRes.text;
 
@@ -14405,7 +14405,7 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
       }
     }
     audit({ kind: "reflect_cycle", action: plan.action, reflect: String(reflectOut).slice(0, 200) });
-    logger.info?.(`[onebot] 反思：${String(reflectOut).slice(0, 60)}`);
+    logger.info?.(`[onebot] 回看：${String(reflectOut).slice(0, 60)}`);
 
     // ── 后处理 ──
     try {
@@ -14421,9 +14421,9 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
     }
     // 下次什么时候，由反思决定
     if (reflectRes.delayMin) {
-      logger.info?.(`[onebot] 反思里定了：${Math.round(reflectRes.delayMin)} 分钟后再来`);
+      logger.info?.(`[onebot] 回看里定了：${Math.round(reflectRes.delayMin)} 分钟后再来`);
     } else {
-      logger.info?.("[onebot] 反思没说下次什么时候，用默认间隔");
+      logger.info?.("[onebot] 回看没说下次什么时候，用默认间隔");
     }
     // 注意：下一次的时间已经在 reflectPhase 里排过了（解析出 [[next:]] 就按她的，
     // 没解析出来就用默认）。这里再排一次会把她的时间覆盖掉 —— 之前就是这里
