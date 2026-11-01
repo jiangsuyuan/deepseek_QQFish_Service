@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -1453,9 +1454,75 @@ namespace FishTray
             catch { }
         }
 
+        // 显示器配置变化（插拔副屏、改分辨率、切换主屏）
+        const int WM_DISPLAYCHANGE = 0x007E;
+
+        protected override void WndProc(ref Message m)
+        {
+            base.WndProc(ref m);
+            if (m.Msg == WM_DISPLAYCHANGE)
+            {
+                try { EnsureVisibleAfterScreenChange(); } catch { }
+            }
+        }
+
+        /// <summary>
+        /// 副屏被拔掉后，窗口可能停在一块已经不存在的屏幕上（坐标为负数或超出范围），
+        /// 那样小球就"丢了"——看得见的是桌面，点不到它。这里把它挪回主屏。
+        /// </summary>
+        void EnsureVisibleAfterScreenChange()
+        {
+            var wa = Screen.PrimaryScreen.WorkingArea;
+            bool sc2 = false;
+
+            // ① 窗口本身还在不在一块真实存在的屏幕里
+            bool anyScreen = Screen.AllScreens.Any(sc => sc.WorkingArea.IntersectsWith(Bounds));
+            if (!anyScreen)
+            {
+                int nx = Math.Min(Math.Max(Left, wa.Left), Math.Max(wa.Left, wa.Right - Width));
+                int ny = Math.Min(Math.Max(Top, wa.Top), Math.Max(wa.Top, wa.Bottom - Height));
+                Location = new Point(nx, ny);
+                sc2 = true;
+                Log.W("显示器变化：窗口不在任何屏幕内，已挪回主屏 " + nx + "," + ny);
+            }
+
+            // ② 记住的小球位置是否还有效
+            if (hasCollapsedPos)
+            {
+                var pt = new Point(collapsedPos.X, collapsedPos.Y);
+                if (!Screen.AllScreens.Any(sc => sc.WorkingArea.Contains(pt)))
+                {
+                    collapsedPos = Point.Empty;
+                    hasCollapsedPos = false;
+                    sc2 = true;
+                    Log.W("显示器变化：记录的图标位置已失效，清除（下次收起回默认位）");
+                }
+            }
+
+            // ③ 配置文件里的位置也校验（否则下次启动还会试图还原到不存在的屏幕）
+            try
+            {
+                if (cfg.iconX != int.MinValue)
+                {
+                    var pt2 = new Point(cfg.iconX, cfg.iconY);
+                    if (!Screen.AllScreens.Any(sc => sc.WorkingArea.Contains(pt2)))
+                    {
+                        cfg.iconX = int.MinValue;
+                        cfg.iconY = int.MinValue;
+                        cfg.Save();
+                        sc2 = true;
+                        Log.W("显示器变化：已清除配置文件里的图标位置");
+                    }
+                }
+            }
+            catch { }
+
+            if (sc2) Log.W("显示器变化处理完成（当前屏幕数 " + Screen.AllScreens.Length + "）");
+        }
+
         void OnShown(object sender, EventArgs e)
         {
-            Log.W("OnShown");
+            Log.W("OnShown（屏幕数 " + Screen.AllScreens.Length + "）");
             UseSystemRoundCorner();
             // 恢复上次的图标位置（如果还在某块屏幕上）
             if (cfg.iconX != int.MinValue && cfg.iconY != int.MinValue)
