@@ -1,0 +1,73 @@
+name: build-android
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'android-app/**'
+      - '.github/workflows/build-android.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.7'
+
+      - name: 缓存
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.android/build-cache
+          key: gradle-${{ runner.os }}-${{ hashFiles('android-app/**/*.gradle.kts', 'android-app/gradle.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      - name: 编译
+        working-directory: android-app
+        run: gradle :app:assembleDebug --no-daemon --stacktrace
+
+      - name: 产物信息
+        working-directory: android-app
+        run: |
+          ls -lh app/build/outputs/apk/debug/
+          cp app/build/outputs/apk/debug/app-debug.apk "$GITHUB_WORKSPACE/fish-android.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fish-android-apk
+          path: fish-android.apk
+          retention-days: 90
+
+      # 挂到 release，手机浏览器直接下
+      - name: 发布到 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-latest
+          name: 安卓客户端（最新构建）
+          body: |
+            从 main 分支自动构建。
+
+            安装：下载 `fish-android.apk` → 手机允许「未知来源」→ 安装。
+            首次打开填：服务器地址 / SSH 端口 / 用户名 / 私钥 / WebUI token。
+          files: fish-android.apk
+          prerelease: true
+          make_latest: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

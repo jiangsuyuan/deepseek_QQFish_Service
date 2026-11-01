@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@color/bg">
+
+    <!-- 状态条：圆点 + 文字 + 重连 + 设置 -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingStart="12dp"
+        android:paddingEnd="6dp"
+        android:background="@color/bar">
+
+        <View
+            android:id="@+id/dot"
+            android:layout_width="10dp"
+            android:layout_height="10dp"
+            android:background="@drawable/dot"/>
+
+        <TextView
+            android:id="@+id/statusText"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginStart="8dp"
+            android:textColor="@color/fg"
+            android:textSize="12sp"
+            android:maxLines="1"
+            android:ellipsize="end"
+            android:text="@string/connecting"/>
+
+        <Button
+            android:id="@+id/btnReconnect"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:minWidth="0dp"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
+            android:text="@string/reconnect"
+            android:textSize="12sp"
+            android:textColor="@color/accent"
+            android:background="@drawable/btn_ghost"/>
+
+        <Button
+            android:id="@+id/btnSettings"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:minWidth="0dp"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
+            android:layout_marginStart="4dp"
+            android:text="@string/settings"
+            android:textSize="12sp"
+            android:textColor="@color/muted"
+            android:background="@drawable/btn_ghost"/>
+    </LinearLayout>
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <WebView
+            android:id="@+id/web"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"/>
+
+        <!-- 断线遮罩 -->
+        <LinearLayout
+            android:id="@+id/overlay"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:background="#E6101115"
+            android:visibility="gone"
+            android:clickable="true"
+            android:focusable="true">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/offline_icon"
+                android:textSize="42sp"
+                android:textColor="@color/muted"/>
+
+            <TextView
+                android:id="@+id/overlayText"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:text="@string/offline_hint"
+                android:textColor="@color/fg"
+                android:textSize="15sp"/>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:text="@string/offline_sub"
+                android:textColor="@color/muted"
+                android:textSize="12sp"/>
+        </LinearLayout>
+    </FrameLayout>
+</LinearLayout>

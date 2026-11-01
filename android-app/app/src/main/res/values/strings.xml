@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">肥鱼</string>
+    <string name="settings">设置</string>
+    <string name="reconnect">重连</string>
+    <string name="connecting">连接中…</string>
+    <string name="offline_icon">⌁</string>
+    <string name="offline_hint">连接断开 · 点这里重连</string>
+    <string name="offline_sub">或到通知栏点「重连」</string>
+
+    <string name="channel_name">隧道状态</string>
+
+    <string name="settings_title">连接设置</string>
+    <string name="settings_desc">填服务器的 SSH 信息和她的 WebUI token。私钥和 token 加密存在本机。</string>
+    <string name="l_host">服务器</string>
+    <string name="l_port">SSH 端口</string>
+    <string name="l_webport">WebUI 端口</string>
+    <string name="l_user">用户名</string>
+    <string name="l_key">SSH 私钥</string>
+    <string name="l_key_hint">把 id_ed25519 的全文粘进来（从 -----BEGIN 到 END-----）</string>
+    <string name="l_token">WebUI token</string>
+    <string name="l_token_hint">WebUI 地址里的 token 参数</string>
+    <string name="save">保存并连接</string>
+    <string name="cancel">取消</string>
+    <string name="settings_note">第一次用建议先在桌面端（WinForms 或浏览器）确认能连上，再把同样的信息填到这里。</string>
+</resources>
