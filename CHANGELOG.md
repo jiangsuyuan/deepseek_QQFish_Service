@@ -1,5 +1,96 @@
 # 更新日志
 
+## 1.1.46 · 2026-11-01
+
+**修好友申请批不了 + 加 list_requests。**
+
+### 问题
+
+有好友申请时，她回复主人：
+
+> 我手上没有那条好友申请的编号，点不了「同意」。
+> 得把待处理列表给我看，或者把 flag 报出来，我照着批。
+
+即使强行批，NapCat 回 `1200 No such request`。
+
+### 根因（两个错叠在一起）
+
+**① `flag` 用错了**
+
+`get_buddy_req` 返回的 `flag` 是 **`0`**（不是编号），真正的标识是 `friendUid`：
+
+```json
+{
+  "friendUid": "u_7V1gd6pJp2VtBzSp8O2xHg",
+  "flag": 0,
+  "friendNick": "某某",
+  "reqTime": "1793524007",
+  "extWords": "我是来自群聊「XX」的某某",
+  "groupCode": "578391484"
+}
+```
+
+原代码 `flag: String(r?.flag ?? r?.user_id ?? "")` 拿到的是 `"0"`。
+
+**② API 用错了**
+
+`set_friend_add_request` 是 OneBot 11 标准，**但 NapCat 的好友申请走 `set_buddy_req`**：
+
+```js
+class DshBuddyReqSet {
+  actionName = "set_buddy_req";
+  payloadSchema = {
+    friendUid: p.String(),
+    reqTime: p.Optional(p.String()),
+    approve: p.Boolean()
+  };
+}
+```
+
+### 修法
+
+```diff
+- flag: String(r?.flag ?? r?.user_id ?? "")
++ flag: String(r?.friendUid ?? r?.flag ?? "")
+- name: String(r?.nickname ?? r?.nick ?? "")
++ name: String(r?.friendNick ?? r?.nickname ?? r?.nick ?? "")
+
+- await client.call("set_friend_add_request", { flag, approve });
++ await client.call("set_buddy_req", { friendUid, reqTime, approve });
+```
+
+**同时 `handle_request` 支持不传 `flag`**——自动从待处理列表挑最近一条（按 `at` 倒序）。原来她拿不到 `flag`，现在不用拿了。
+
+### 新增 `list_requests`
+
+列出现在有哪些待处理的好友申请、群邀请：
+
+```json
+{ "ok": true, "count": 1, "requests": [
+  { "name": "某某", "uid": "u_xxx", "flag": "u_xxx",
+    "message": "我是来自群聊「XX」的某某", "source": "好友通知" }
+] }
+```
+
+### 实测
+
+```
+17:23:59  [onebot] 发现好友申请：某某（QQ群）
+17:24:24  [onebot] 好友申请 已同意：某某
+```
+
+```
+好友数: 3
+  竹叶不知秋 (xxx)      ← 主人
+  竹筒肥鱼二代 (xxx)    ← 她自己
+  某某 (xxx)            ← 刚加上的
+待处理申请: isDecide=true isAgreed=true
+```
+
+### 工具数
+
+77 个（新增 `list_requests`）。
+
 ## 1.1.45 · 2026-11-01
 
 **换号 + 打字时间封顶 + 日志分通道。**

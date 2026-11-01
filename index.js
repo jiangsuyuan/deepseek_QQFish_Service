@@ -2495,6 +2495,7 @@ export function apply(ctx, _pluginConfig) {
     "handle_request",
     "hot_news",
     "list_notes",
+    "list_requests",
     "list_stickers",
     "manage_group",
     "memory_index",
@@ -3027,8 +3028,9 @@ export function apply(ctx, _pluginConfig) {
             "主人自己的邀请可以直接同意。",
           parameters: {
             action: { type: "string", description: "approve 同意 或 reject 拒绝" },
-            flag: { type: "string", description: "申请的唯一标识" },
-            sub_type: { type: "string", description: "invite（邀请）或 add（申请）" },
+            flag: { type: "string", description: "申请的唯一标识（好友申请的 friendUid）。不填就自动选最近一条" },
+            sub_type: { type: "string", description: "friend（好友申请）或 invite（群邀请）。不填就自动判断" },
+            req_time: { type: "string", description: "申请的 reqTime（可选，好友申请要用）" },
           },
           output: {
             schema: { type: "json" },
@@ -3037,24 +3039,104 @@ export function apply(ctx, _pluginConfig) {
           execute: async (args, exec) => {
             if (!isOwner(exec)) return { ok: false, reason: "这个只有主人能让我做。" };
             const action = String(args?.action ?? "").trim().toLowerCase();
-            const flag = String(args?.flag ?? "").trim();
-            const subType = String(args?.sub_type ?? "invite").trim();
-            if (!flag) return { ok: false, reason: "要填 flag" };
+            let flag = String(args?.flag ?? "").trim();
+            const subType = String(args?.sub_type ?? "").trim();
             if (!["approve", "reject"].includes(action)) {
               return { ok: false, reason: "action 只能是 approve 或 reject" };
             }
             if (!client.connected) return { ok: false, reason: "QQ 现在没连上，等连上再做。" };
+
+            // 不传 flag 也能用：从待处理列表里挑最近一条
+            let target = null;
+            if (!flag) {
+              const list = Array.from(pendingFriends.values())
+                .sort((a, b) => (b.at || 0) - (a.at || 0));
+              if (!list.length) {
+                return {
+                  ok: false,
+                  reason: "现在没有待处理的好友申请。（群邀请用 sub_type=invite）",
+                };
+              }
+              target = list[0];
+              flag = target.flag || target.uid;
+              logger.info?.(
+                "[onebot] handle_request 自动选最近申请：" + (target.name || target.uid) + " flag=" + flag,
+              );
+            } else {
+              // 传了 flag，从待处理里找它的类型
+              for (const v of pendingFriends.values()) {
+                if (v.flag === flag || v.uid === flag) { target = v; break; }
+              }
+            }
+
+            // 判断是好友申请还是群邀请
+            const isFriend = subType ? subType === "friend" : !!(target && (target.uid || target.name));
             try {
+              if (isFriend) {
+                // 好友申请：NapCat 用 set_buddy_req（不是 OneBot 的 set_friend_add_request）
+                // friendUid 是申请的唯一标识，reqTime 也要带上
+                const friendUid = String(flag);
+                const reqTime = String(args?.req_time ?? target?.reqTime ?? "");
+                await client.call("set_buddy_req", {
+                  friendUid,
+                  reqTime,
+                  approve: action === "approve",
+                });
+                pendingFriends.delete(friendUid);
+                pendingFriends.delete(flag);
+                audit({ kind: "friend_request_handled", action, friendUid });
+                logger.info?.(
+                  "[onebot] 好友申请 " + (action === "approve" ? "已同意" : "已拒绝") +
+                  "：" + (target?.name || friendUid),
+                );
+                return {
+                  ok: true,
+                  action,
+                  kind: "好友申请",
+                  who: target?.name || "",
+                  uid: friendUid,
+                };
+              }
+              // 群邀请
               await client.call("set_group_add_request", {
                 flag,
-                sub_type: subType,
+                sub_type: subType || "invite",
                 approve: action === "approve",
               });
               audit({ kind: "group_request", action, flag, subType });
-              return { ok: true, action, flag };
+              return { ok: true, action, flag, kind: "群邀请" };
             } catch (e) {
               return { ok: false, reason: String(e?.message ?? e) };
             }
+          },
+        }),
+      );
+
+
+      reg(
+        defineTool({
+          name: "list_requests",
+          description:
+            "看现在有哪些待处理的好友申请、群邀请。\n\n" +
+            "有人要加你但还没批的时候，先用它看看是谁、要什么。\n" +
+            "看完可以用 handle_request 同意或拒绝。",
+          parameters: {},
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async () => {
+            const list = Array.from(pendingFriends.values())
+              .sort((a, b) => (b.at || 0) - (a.at || 0))
+              .map((v) => ({
+                name: v.name || "",
+                uid: v.uid || "",
+                flag: v.flag || "",
+                message: v.message || "",
+                source: v.source || "",
+                at: v.at || 0,
+              }));
+            return { ok: true, count: list.length, requests: list };
           },
         }),
       );
@@ -7981,13 +8063,13 @@ ${html}
         const raw = Array.isArray(res) ? res : (res?.data ?? []);
         if (Array.isArray(raw)) {
           arr = raw.map((r) => ({
-            uid: String(r?.user_id ?? r?.uid ?? r?.uin ?? ""),
-            flag: String(r?.flag ?? r?.user_id ?? ""),
+            uid: String(r?.friendUid ?? r?.user_id ?? r?.uid ?? r?.uin ?? ""),
+            flag: String(r?.friendUid ?? r?.flag ?? r?.user_id ?? ""),
             reqTime: String(r?.reqTime ?? ""),
-            name: String(r?.nickname ?? r?.nick ?? "").trim(),
-            message: String(r?.reason ?? r?.message ?? "").trim(),
+            name: String(r?.friendNick ?? r?.nickname ?? r?.nick ?? "").trim(),
+            message: String(r?.extWords ?? r?.reason ?? r?.message ?? "").trim(),
             groupCode: String(r?.groupCode ?? ""),
-            source: "可疑申请",
+            source: "好友通知",
           }));
         }
       } catch (err) {
