@@ -3704,21 +3704,61 @@ export function apply(ctx, _pluginConfig) {
         defineTool({
           name: "recall",
           description:
-            "回忆很久以前聊过的内容。对方说「你记得…吗」「上次那个」「之前提过」时调用。" +
-            "你的上下文会被定期压缩（节省开销），压缩掉的细节都还在这里，需要时尽管查。" +
-            "**默认会连别的群、别的会话一起搜**，而且覆盖整个时间跨度" +
-            "（不是只返回最近的——上周说的、上个月说的都能翻到）。" +
-            "结果按时间正序排，每条带日期，你能看出是哪天的。" +
-            "除非你明确只想搜当前会话，才传 all_sessions=false。" +
-            "query 填关键词（如「显卡」「书名」「那个约定」）。" +
-            "**搜不到不等于没有**——只是文字里没出现这个词，" +
-            "换个人名/QQ 号/当时聊到的具体东西再试。",
+            "**翻聊天原文**——谁在哪天说了什么，一字不差。" +
+            "对方说「你记得…吗」「上次那个」「之前提过」时调用。" +
+            "\n\n**可以按想法组合查：**" +
+            "\n· 只查某个词 → query（模糊匹配，任一命中就算）" +
+            "\n· 查某个人说过什么 → person（名字/QQ 号/昵称）" +
+            "\n· 只查和主人的对话 → with_me: true" +
+            "\n· 查某个群 → group（群号）" +
+            "\n· 查某段时间 → since / until（认「上周」「10-24」「昨天」）或 days: 7" +
+            "\n· 以上全都可以组合，是 AND 关系" +
+            "\n\n**搜不到不等于没有**——只是没匹配上。换个人名、QQ 号、" +
+            "或者当时聊到的具体东西再试。",
           parameters: {
-            query: { type: "string", description: "关键词，2-10 个字" },
-            all_sessions: { type: "boolean", description: "是否连其他群/私聊一起搜（默认只搜当前会话）" },
+            query: {
+              type: "string",
+              description: "关键词，模糊匹配（拆词后任一命中就算）。可以多个词",
+            },
+            person: {
+              type: "string",
+              description: "只看这个人说的：名字 / 昵称 / QQ 号",
+            },
+            with_me: {
+              type: "boolean",
+              description: "只看和主人的对话（等价于 person=主人）",
+            },
+            group: {
+              type: "string",
+              description: "只看这个群：群号",
+            },
+            since: {
+              type: "string",
+              description: "从哪天起：2026-10-24 / 10-24 / 上周 / 昨天 / 3天前",
+            },
+            until: {
+              type: "string",
+              description: "到哪天止，格式同 since",
+            },
+            days: {
+              type: "number",
+              description: "最近 N 天（等价于 since=N天前）",
+            },
+            scope: {
+              type: "string",
+              description: "all（全部会话，默认）/ current（只当前会话）/ groups / privates",
+            },
             only_user: {
               type: "boolean",
-              description: "只搜对方说的原话（要核对「他当时到底怎么说的」时用）",
+              description: "只搜对方说的（要核对「他当时到底怎么说的」时用）",
+            },
+            limit: {
+              type: "number",
+              description: "最多返回几条，默认 20",
+            },
+            context: {
+              type: "number",
+              description: "每条命中带前后各几条上下文（0-10，默认 0）。想看懂某句话在说什么时用",
             },
           },
           output: {
@@ -3727,26 +3767,33 @@ export function apply(ctx, _pluginConfig) {
           },
           execute: async (args, exec) => {
             const sid = exec?.agent?.session?.id;
-            // 默认跨会话搜——换号/重启后当前 session 是新的，
-            // 只搜当前会话等于「记录没了」。除非她显式传 false。
-            const cross = args?.all_sessions !== false && cfg.recallCrossSession !== false;
+            // scope 兼容旧参数 all_sessions
+            const scope =
+              args?.scope ||
+              (args?.all_sessions === false ? "current" : "all");
             const res = await recallSearch(sid, args?.query ?? "", {
-              cross,
+              cross: scope !== "current",
+              scope,
               onlyUser: args?.only_user === true,
+              person: args?.with_me ? String(cfg.ownerId) : (args?.person ?? ""),
+              group: args?.group ?? "",
+              since: args?.since ?? "",
+              until: args?.until ?? "",
+              days: args?.days ?? 0,
+              limit: args?.limit ?? 0,
+              context: args?.context ?? 0,
             });
             // 没搜到但跨会话了：给个提示，别让她以为真的没了
             if (res && res.ok !== false && (!res.hits || res.hits.length === 0)) {
+              const cond = (res.conditions || []).join(" ");
               return {
                 ...res,
                 hits: [],
                 total: 0,
                 hint:
-                  "跨了 " + (cross ? "全部" : "当前") + " 会话，关键词「" + (args?.query ?? "") +
-                  "」一条都没命中。\n" +
-                  "**这不代表没有记录**——只是文字里没出现这个词。换个人名、QQ 号、" +
-                  "或者当时聊到的具体东西再搜。\n" +
-                  "如果有人问「你还记得…」，先问清楚「记得什么」——" +
-                  "只说「你还记得」是搜不出东西的。",
+                  "按这些条件搜（" + (cond || "无条件") + "）一条都没命中。\n" +
+                  "**这不代表没有记录**——可能条件太窄，或者词没对上。\n" +
+                  "试试：换个人名/QQ 号、放宽时间、或者去掉 query 只按人+时间查。",
               };
             }
             return res;
@@ -4395,9 +4442,12 @@ export function apply(ctx, _pluginConfig) {
         defineTool({
           name: "my_memory",
           description:
-            "翻自己的记忆。type 可选 people（人物）/ facts（事实）/ views（观点）/ reflections（回看）/" +
-            "learnings（学到的）/ all（全都搜，每条标来源）/ notebook（本子）。" +
-            "query 可选关键词；all 模式会跨所有存储搜并标注每条来自哪儿。",
+            "翻你**记下来的东西**：人物、事实、观点、回看、学到的、本子。" +
+            "这些是提炼过的条目，**不是聊天原文**。" +
+            "\n\n**要翻「当时到底怎么说的」用 recall，不是这个。**" +
+            "这个查的是「我记下了什么」，recall 查的是「谁在哪天说了什么」。\n" +
+            "type 可选 people/facts/views/reflections/learnings/all/notebook。" +
+            "query 可选关键词；all 模式跨所有存储搜并标注来源。",
           parameters: {
             type: {
               type: "string",
@@ -7656,7 +7706,7 @@ ${html}
           if (mp) speaker = mp[1].trim();
         }
         const text = speaker ? speaker + "：" + real : real;
-        return { text, role: "对方" };
+        return { text, role: "对方", speaker, raw: real };
       }
       if (ev.type === "assistant/message") {
         const blocks = ev.data?.message?.content ?? [];
@@ -7665,7 +7715,7 @@ ${html}
           .map((b) => b.text ?? "")
           .join("")
           .trim();
-        return { text, role: "我" };
+        return { text, role: "我", speaker: "我", raw: text };
       }
     } catch {
       // 忽略
@@ -7705,108 +7755,202 @@ ${html}
   }
 
   async function recallSearch(currentSid, query, opts = {}) {
-    // 停用词：她常把整句当 query 传（「跟 149 有关的」），
-    // 不滤掉就会变成 ["149","有关"] 的 AND 匹配——「有关」当然搜不到。
+    // ═══════════════════════════════════════════════════════════
+    // 结构化回忆：关键词 / 人 / 群 / 时间段，全都可以组合
+    // ═══════════════════════════════════════════════════════════
+
+    // ── 1. 关键词：拆词后 OR（模糊），不是 AND（精确） ──
     const RECALL_STOP = new Set([
       "有关", "关于", "跟", "和", "与", "的", "那个", "这个", "这件事", "那件事",
       "上次", "之前", "以前", "记得", "回忆", "想起来", "查一下", "查查",
       "说了", "说过", "是什么", "什么时候", "哪里", "吗", "呢", "啊", "吧",
       "你", "我", "他", "她", "它", "们", "有", "没", "是", "在", "了",
       "关于那个", "跟那个", "那个号", "上个月", "这个月", "今天", "昨天",
+      "啥样", "什么样", "怎么样", "怎样", "如何", "干什么", "做什么",
     ]);
     const keys = String(query || "")
       .toLowerCase()
       .split(/[\s，,。！!？?、]+/)
       .map((x) => x.trim())
       .filter((x) => x.length >= 2 && !RECALL_STOP.has(x))
-      .slice(0, 4);
-    if (!keys.length) {
-      return {
-        ok: false,
-        reason: "关键词全是「有关」「之前」这类虚词。换成具体的东西再试——人名、QQ 号、聊过的内容。",
-      };
-    }
+      .slice(0, 6);
 
-    logger.info?.(
-      "[onebot] recall 查询：query=" + JSON.stringify(query) +
-      " cross=" + !!opts.cross +
-      " onlyUser=" + !!opts.onlyUser,
-    );
-    const all = listSessionFiles(opts.cross ? 60 : 20);
+    // ── 2. 时间范围 ──
+    function parseDay(str, isEnd) {
+      const t = String(str || "").trim();
+      if (!t) return null;
+      const now = new Date();
+      const ymd = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+      if (isEnd) {
+        // 包含当天
+      }
+      if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(t)) { const p = t.split("-").map(Number); return new Date(p[0], p[1]-1, p[2]); }
+      if (/^\d{1,2}-\d{1,2}$/.test(t)) { const p = t.split("-").map(Number); return new Date(now.getFullYear(), p[0]-1, p[1]); }
+      if (/^今天$/.test(t)) return ymd(now);
+      if (/^昨天$/.test(t)) { const d = ymd(now); d.setDate(d.getDate()-1); return d; }
+      if (/^前天$/.test(t)) { const d = ymd(now); d.setDate(d.getDate()-2); return d; }
+      if (/^上周$/.test(t)) { const d = ymd(now); d.setDate(d.getDate()-7); return d; }
+      if (/^上个月$/.test(t)) { const d = ymd(now); d.setMonth(d.getMonth()-1); return d; }
+      if (/^去年$/.test(t)) { const d = ymd(now); d.setFullYear(d.getFullYear()-1); return d; }
+      if (/^(\d+)\s*天前?$/.test(t)) { const d = ymd(now); d.setDate(d.getDate()-Number(RegExp.$1)); return d; }
+      return null;
+    }
+    let fromTs = 0, toTs = Number.MAX_SAFE_INTEGER;
+    if (opts.days) {
+      const d = new Date(); d.setDate(d.getDate() - Number(opts.days));
+      fromTs = d.getTime();
+    }
+    if (opts.since) { const d = parseDay(opts.since, false); if (d) fromTs = d.getTime(); }
+    if (opts.until) { const d = parseDay(opts.until, true); if (d) { d.setDate(d.getDate()+1); toTs = d.getTime(); } }
+
+    // ── 3. 选会话文件 ──
+    const all = listSessionFiles(opts.scope === "current" ? 20 : 60);
     let targets = [];
-    if (currentSid) {
+    if (opts.scope === "current" && currentSid) {
       const mine = all.find((x) => x.sid === String(currentSid));
-      if (mine) targets.push(mine);
-      if (opts.cross) targets = all;
-      else targets = targets.length ? targets : all.slice(0, 2);
+      targets = mine ? [mine] : [];
     } else {
-      targets = all.slice(0, 2);
+      targets = all;
     }
     if (!targets.length) return { ok: false, reason: "找不到会话文件" };
 
+    // ── 4. 逐条匹配 ──
     const hits = [];
     for (const t of targets) {
       try {
         const raw = zstdDecompressSync(readFileSync(t.file)).toString("utf8");
-        const lines = raw.split("\n");
-        for (const line of lines) {
-          if (!line || !line.includes(keys[0])) continue;
+        const rawLines = raw.split("\n");
+        for (let lineNo = 0; lineNo < rawLines.length; lineNo++) {
+          const line = rawLines[lineNo];
+          if (!line) continue;
           let ev;
-          try {
-            ev = JSON.parse(line);
-          } catch {
-            continue;
-          }
+          try { ev = JSON.parse(line); } catch { continue; }
+          const ts = Number(ev.time) || Number(ev.ts) || 0;
+          if (!ts || ts < fromTs || ts > toTs) continue;
           const got = textOfEvent(ev);
-          const text = got.text;
-          if (!text) continue;
-          const low = text.toLowerCase();
-          if (!keys.every((k) => low.includes(k))) continue;
-          // 只搜对方原话时，跳过自己说的
+          if (!got || !got.text) continue;
+          // 人过滤
+          if (opts.person) {
+            const p = String(opts.person).toLowerCase();
+            const who = String(got.speaker || "").toLowerCase();
+            const inText = String(got.text || "").toLowerCase().includes(p);
+            if (!who.includes(p) && !inText) continue;
+          }
+          // 群过滤
+          if (opts.group) {
+            const g = String(opts.group);
+            if (!String(t.sid).includes(g) && !String(got.text).includes(g)) continue;
+          }
+          // 只搜对方
           if (opts.onlyUser && got.role !== "对方") continue;
-          hits.push({
-            sid: t.sid,
-            role: got.role,
-            text: text.slice(0, 200),
-            at: Number(ev.time) || Number(ev.ts) || 0,
-          });
+          // 关键词 OR（模糊）
+          if (keys.length) {
+            const low = got.text.toLowerCase();
+            const matched = keys.filter((k) => low.includes(k));
+            if (!matched.length) continue;
+            hits.push({
+              sid: t.sid, role: got.role, speaker: got.speaker || "",
+              text: got.text.slice(0, 200), at: ts,
+              score: matched.length, lineNo,
+            });
+          } else {
+            hits.push({
+              sid: t.sid, role: got.role, speaker: got.speaker || "",
+              text: got.text.slice(0, 200), at: ts, score: 0, lineNo,
+            });
+          }
         }
       } catch (err) {
-        logger.warn?.(`[onebot] 读会话失败 ${t.sid}：${err?.message ?? err}`);
+        logger.warn?.("[onebot] 读会话失败 " + t.sid + "：" + (err?.message ?? err));
       }
     }
-    // ⚠️ 取样前必须先按时间排序——不能先按角色分组。
-    // 之前是「对方优先 + 组内时间倒序」，导致均匀取样总落在最近那一小段，
-    // 「上个月」永远取不到。改成先全部按时间正序，再等距取样。
-    hits.sort((a, b) => a.at - b.at);
-    const maxHits = Number(cfg.recallMaxHits) || 20;
+
+    // ── 5. 排序 + 等距取样 ──
+    // 有关键词时：先按命中词数（相关度）再按时间
+    if (keys.length) hits.sort((a, b) => (b.score - a.score) || (a.at - b.at));
+    else hits.sort((a, b) => a.at - b.at);
+
+    const maxHits = Number(opts.limit) || Number(cfg.recallMaxHits) || 20;
     let picked = hits;
     if (hits.length > maxHits) {
-      // 等距取样：从最早到最晚，每段取一条，保证覆盖整个时间跨度
-      picked = [];
-      const step = (hits.length - 1) / (maxHits - 1);
-      for (let i = 0; i < maxHits; i++) {
-        const idx = Math.min(hits.length - 1, Math.round(i * step));
-        picked.push(hits[idx]);
+      // 有时间过滤时不需要覆盖全跨度，直接取最相关 / 最近
+      if (fromTs > 0 || toTs < Number.MAX_SAFE_INTEGER) {
+        picked = hits.slice(0, maxHits);
+      } else {
+        picked = [];
+        const step = (hits.length - 1) / (maxHits - 1);
+        for (let i = 0; i < maxHits; i++) picked.push(hits[Math.round(i * step)]);
+        const seen = new Set();
+        picked = picked.filter((h) => {
+          const k = h.sid + "|" + h.at + "|" + h.text.slice(0, 20);
+          if (seen.has(k)) return false;
+          seen.add(k); return true;
+        });
       }
-      // 去重（等距可能取到同一条）
-      const seen = new Set();
-      picked = picked.filter((h) => {
-        const k = h.sid + "|" + h.at + "|" + h.text.slice(0, 20);
-        if (seen.has(k)) return false;
-        seen.add(k);
-        return true;
-      });
     }
-    // 返回时按时间正序：老的在前，她能看出「上个月 → 今天」的演进
     picked.sort((a, b) => a.at - b.at);
+
+    // ── 6. 上下文：每条命中带前后各 N 条 ──
+    const ctxN = Math.max(0, Math.min(10, Number(opts.context) || 0));
+    if (ctxN > 0 && picked.length) {
+      const bySid = {};
+      for (const h of picked) (bySid[h.sid] = bySid[h.sid] || []).push(h);
+      for (const sid of Object.keys(bySid)) {
+        const file = targets.find((x) => x.sid === sid);
+        if (!file) continue;
+        let rawLines;
+        try {
+          rawLines = zstdDecompressSync(readFileSync(file.file)).toString("utf8").split("\n");
+        } catch { continue; }
+        for (const h of bySid[sid]) {
+          const before = [], after = [];
+          for (let k = Math.max(0, h.lineNo - ctxN); k < h.lineNo; k++) {
+            try {
+              const e = JSON.parse(rawLines[k]);
+              const g = textOfEvent(e);
+              if (g && g.text) before.push(g.text.slice(0, 120));
+            } catch {}
+          }
+          for (let k = h.lineNo + 1; k <= Math.min(rawLines.length - 1, h.lineNo + ctxN); k++) {
+            try {
+              const e = JSON.parse(rawLines[k]);
+              const g = textOfEvent(e);
+              if (g && g.text) after.push(g.text.slice(0, 120));
+            } catch {}
+          }
+          h.context = { before, after };
+        }
+      }
+    }
+
+    const cond = [];
+    if (keys.length) cond.push("词=" + keys.join("/"));
+    if (opts.person) cond.push("人=" + opts.person);
+    if (opts.group) cond.push("群=" + opts.group);
+    if (fromTs) cond.push("从=" + new Date(fromTs).toLocaleDateString("zh-CN"));
+    if (toTs < Number.MAX_SAFE_INTEGER) cond.push("到=" + new Date(toTs).toLocaleDateString("zh-CN"));
     logger.info?.(
-      "[onebot] recall 结果：命中=" + hits.length + " 返回=" + picked.length +
-      (picked.length ? " 范围=" +
-        new Date(picked[0].at || 0).toLocaleDateString("zh-CN") + "~" +
-        new Date(picked[picked.length - 1].at || 0).toLocaleDateString("zh-CN") : ""),
+      "[onebot] recall 查询：" + (cond.length ? cond.join(" ") : "(无条件)") +
+      " 命中=" + hits.length + " 返回=" + picked.length,
     );
-    return { ok: true, hits: picked, total: hits.length };
+
+    return {
+      ok: true,
+      total: hits.length,
+      returned: picked.length,
+      conditions: cond,
+      hits: picked.map((h) => {
+        const o = {
+          at: h.at,
+          date: new Date(h.at).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }),
+          speaker: h.speaker,
+          role: h.role,
+          text: h.text,
+        };
+        if (h.context) o.context = h.context;
+        return o;
+      }),
+    };
   }
 
   /** 把检索结果排成提示词片段 */
