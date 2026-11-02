@@ -122,7 +122,7 @@ const DEFAULTS = {
   typingQueueMax: 5,           // 打字队列上限
   staleMessageSec: 120,        // 超过 2 分钟的消息丢掉
   /** 单回合软超时：超过就取消本轮，避免工具链把聊天拖成 30 秒 */
-  turnTimeoutMs: 25000,
+  turnTimeoutMs: 50000,   // 一轮 50 秒：允许她连搜两三次再回，别为了赶时间就下结论
   /** 图片理解：是否把 QQ 图片交给模型 */
   enableImages: true,
   maxImagesPerMessage: 2,
@@ -217,6 +217,12 @@ const DEFAULTS = {
    * 规则变化说明：改动之后要告诉她，否则她会困惑。
    * 见方案第 11 项——「她不知道规则变了」是最大的落地缺口。
    */
+  /** 搜索提示：鼓励她多试几次，别一次搜不到就下结论 */
+  searchHint:
+    "（搜东西的时候，一次搜不到可以换个词再搜——不用急着下结论。" +
+    "你可以连着搜两三次，把线索拼起来。人名、QQ 号、当时的原词，" +
+    "换着试。聊天记录是一句句存的，不是按主题存的。）",
+
   changeHint:
     "（最近有些变化，你可能已经感觉到了：" +
     "工具不再按场景限制，聊天的时候想查就查；有些指令不用再等我说了，你理解我的意思就能自己调工具；" +
@@ -4443,7 +4449,8 @@ export function apply(ctx, _pluginConfig) {
           name: "my_memory",
           description:
             "翻你**记下来的东西**：人物、事实、观点、回看、学到的、本子。" +
-            "这些是提炼过的条目，**不是聊天原文**。" +
+            "**这些是提炼过的条目（摘要），不是聊天原文**——" +
+            "所以「只剩个壳」「本子里只有两天」说的都是它，不是没记录。" +
             "\n\n**要翻「当时到底怎么说的」用 recall，不是这个。**" +
             "这个查的是「我记下了什么」，recall 查的是「谁在哪天说了什么」。\n" +
             "type 可选 people/facts/views/reflections/learnings/all/notebook。" +
@@ -4599,8 +4606,9 @@ export function apply(ctx, _pluginConfig) {
         defineTool({
           name: "person_dossier",
           description:
-            "查某个人：我和他聊过几次、在哪些群见过、他最近在各群说过什么、我对他有什么印象。" +
-            "有人问「我们有几个共同群」「他刚才在别的群说了啥」就用这个。",
+            "看某人的档案：聊过几次 / 活跃时段 / 在哪些群 / 聊过什么话题。" +
+            "**这是统计摘要，不是聊天原文**——想知道「他当时具体说了什么」，用 recall（person 填他）。\n" +
+            "参数 id 填 QQ 号或名字。",
           parameters: { qq: { type: "string", description: "对方 QQ 号" } },
           output: TOOL_OUT,
           execute: async (args) => {
@@ -5824,7 +5832,9 @@ export function apply(ctx, _pluginConfig) {
         defineTool({
           name: "read_notebook",
           description:
-            "翻自己的本子（write_notebook 写的那种，按天分的）。" +
+            "翻**你自己写的本子**（日记/随手记，按天分文件）。" +
+            "**这不是聊天记录**——本子里只有你写过的日子，" +
+            "想翻聊天原文用 recall。\n" +
             "参数 date 填某天（2026-10-29），不填就看最近几天；days 控制看几天，默认 3。",
           parameters: {
             date: { type: "string", description: "某一天，格式 2026-10-29" },
@@ -10028,6 +10038,7 @@ async function handleOwnerNatural(ev, text) {
           : `${lenHint}\n`) +
           (cfg.freedomHint ? `${cfg.freedomHint}\n` : "") +
           (cfg.changeHint ? `${cfg.changeHint}\n` : "") +
+          (cfg.searchHint ? `${cfg.searchHint}\n` : "") +
           `${outageNote ? outageNote + "\n" : ""}${ownerNote}${body}`
       ).trim(),
     );
@@ -14808,6 +14819,8 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
           "（内部，不要发消息。这是在问你要不要现在活动。）\n" +
           `现在是 ${fmt(now)}。\n` +
           `你上次活动是 ${fmt(lastAt)}${lastAt ? `（${Math.round((now - lastAt) / 60000)} 分钟前）` : ""}。\n` +
+          `（时间只是参考，不是必须。想歇就歇——歇着也是一种状态，不用为了"保持节奏"硬动。\n` +
+          ` 上次隔了多久、这次隔多久，都不用跟上次一样。）\n` +
           `你上次给自己排的下次时间是 ${fmt(nextAt)}${
             nextAt
               ? `（${
@@ -14818,7 +14831,8 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
               : ""
           }。\n\n` +
           "问自己三件事：\n" +
-          "1. 现在想动吗？还是想再待一会儿？\n" +
+          "1. 现在想动吗？还是想再待一会儿？**没有标准答案**——不动也完全正常，" +
+          "别因为「该动了」这个念头就硬动。\n" +
           "2. 如果不想动，下次想排到什么时候？\n" +
           "3. 上次排的时间还合适吗？要不要改？\n\n" +
           '只输出 JSON，别的话都不要：{"actNow": true/false, "delayMin": 数字或 0, "why": "一句话"}\n' +
@@ -14867,7 +14881,9 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
   }
 
   // 每 25 分钟跑一次（cfg.selfActivityCheckMinutes 可调）
-  const checkMin = Math.max(5, Number(cfg.selfActivityCheckMinutes) || 25);
+  // 10 分钟问一次。原来 25——跟活动间隔一样长，导致每次问时「距上次活动」
+  // 总是 25 分钟，她看到这个数字就永远觉得该动了。
+  const checkMin = Math.max(5, Number(cfg.selfActivityCheckMinutes) || 10);
   setInterval(() => void checkSelfActivity(), checkMin * 60_000).unref?.();
   // 启动 1 分钟后先看一眼（不然重启后要空等一个周期）
   setTimeout(() => void checkSelfActivity(), 60_000).unref?.();
