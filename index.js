@@ -712,16 +712,22 @@ class OneBotClient {
     // 她和别人的私聊是私事，不该出现在主人的界面上。
     try {
       const owner = String(this.cfg?.ownerId ?? "");
-      const isPrivateToOther =
-        ev?.message_type !== "group" && String(ev?.user_id ?? "") !== owner;
+      const uid = String(ev?.user_id ?? "");
+      const isPrivateToOther = ev?.message_type !== "group" && uid !== owner;
+      this.logger?.info?.(
+        "[onebot] sendText 推送判断：type=" + (ev?.message_type ?? "?") +
+        " user=" + uid + " owner=" + owner + " 推=" + (!isPrivateToOther) +
+        " fromWebUI=" + !!ev?.__fromWebUI,
+      );
       if (!isPrivateToOther) {
         const rawText = String(text ?? "");
         for (const p of rawText.split(/\[split\]/i).map((x) => x.trim()).filter(Boolean)) {
+          this.logger?.info?.("[onebot] sendText 推 WebUI：" + p.slice(0, 40));
           this.onWebReply?.(p, "qq");
         }
       }
-    } catch {
-      // 忽略
+    } catch (err) {
+      this.logger?.warn?.("[onebot] sendText 推送异常：" + (err?.message ?? err));
     }
     const params =
       ev.message_type === "group"
@@ -7745,11 +7751,20 @@ ${html}
     //   （QQ 聊天场景：像真人发消息一样简短…）
     //   [QQ私聊] 竹叶不知秋：你好
     // 开头是「（QQ 聊天」，但里面确实有真人说的话。
-    const m1 = t.match(/\[消息内容\]\s*([\s\S]*?)(?:\n\[|$)/);
-    if (m1 && m1[1].trim()) return m1[1].trim().slice(0, 8000);
+    const m1 = t.match(/\[消息内容\]\s*([\s\S]*?)(?:\n\[|\n（QQ |\n（内部|\n（这次|$)/);
+    if (m1 && m1[1].trim()) {
+      // 再兜一层：切掉可能残留的内部提示
+      let out = m1[1].trim();
+      out = out.split(/\n（QQ 聊天/)[0].split(/\n（内部/)[0].split(/\n（这次/)[0];
+      return out.trim().slice(0, 8000);
+    }
 
     const m3 = t.match(/\[(?:QQ群消息|QQ私聊|网页聊天|网页聊天·助手代发)\][^：:\n]*[：:]\s*([\s\S]*)/);
-    if (m3 && m3[1].trim()) return m3[1].trim().slice(0, 8000);
+    if (m3 && m3[1].trim()) {
+      let out = m3[1].trim();
+      out = out.split(/\n（QQ 聊天/)[0].split(/\n（内部/)[0];
+      return out.trim().slice(0, 8000);
+    }
 
     // DSH 自己注入的运行时说明，不是人说的话
     if (/^(Time sampled while preparing|Browser time zone for this request|Elapsed since the preceding|Current runtime context|Current DSH file policy|Approval prompts are disabled|Current DeepSeek Harness implementation checkout|Current working directory)/i.test(t)) {
@@ -11207,6 +11222,18 @@ async function handleOwnerNatural(ev, text) {
   function webPush(rec) {
     try {
       const item = { ...rec, at: Date.now(), id: "wh-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 6) };
+      // tool 记录不进历史文件（否则一刷新就混进聊天流里）
+      if (rec && rec.role === "tool") {
+        const line0 = "data: " + JSON.stringify(item) + "\n\n";
+        for (const res0 of webClients) {
+          try {
+            res0.write(line0);
+          } catch {
+            webClients.delete(res0);
+          }
+        }
+        return;
+      }
       webHistory.push(item);
       if (webHistory.length > 100) webHistory.shift();
       try {
@@ -11816,6 +11843,10 @@ inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDef
         // 「上个月的对话」在网页上就成了空白
         let list = loadWebHistory(2000);
         if (!list.length) list = webHistory.slice(-50);
+        // tool 记录（[send_sticker] / [my_memory] 之类）是工具调用的痕迹，
+        // 不是聊天内容。混在消息流里会被渲染成「发表情」这种怪气泡，
+        // 还会把真正的对话挤到错误位置。
+        list = list.filter((m) => m && m.role !== "tool");
         // 按时间排（回填过的旧记录会被追加到文件末尾，必须排序）
         list = list.slice().sort((a, b) => (a.at || 0) - (b.at || 0));
         res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(list));
