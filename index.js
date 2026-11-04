@@ -11206,7 +11206,7 @@ async function handleOwnerNatural(ev, text) {
 
   function webPush(rec) {
     try {
-      const item = { ...rec, at: Date.now() };
+      const item = { ...rec, at: Date.now(), id: "wh-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 6) };
       webHistory.push(item);
       if (webHistory.length > 100) webHistory.shift();
       try {
@@ -11214,7 +11214,9 @@ async function handleOwnerNatural(ev, text) {
       } catch {
         // 忽略
       }
-      const line = "data: " + JSON.stringify(rec) + "\n\n";
+      // 推 item 而不是 rec——item 带 at，客户端才能按时间排序。
+      // 之前推 rec（没 at），WinForms 收到的时间戳全空，消息就会错位堆积。
+      const line = "data: " + JSON.stringify(item) + "\n\n";
       for (const res of webClients) {
         try {
           res.write(line);
@@ -11228,6 +11230,16 @@ async function handleOwnerNatural(ev, text) {
   }
 
   function webHtml(token) {
+    // 读 NapCat 的 WebUI token（用来拼「QQ 登录」链接）
+    let napcatToken = "";
+    try {
+      const p = "/root/Napcat/opt/QQ/resources/app/app_launcher/napcat/config/webui.json";
+      const j = JSON.parse(readFileSync(p, "utf8"));
+      napcatToken = String(j?.token ?? "");
+    } catch {
+      // 读不到就让链接空着
+    }
+    const napcatJs = JSON.stringify(napcatToken);
     return `<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>QQ 助手</title>
@@ -11256,6 +11268,9 @@ header{padding:12px 16px;border-bottom:1px solid var(--line);display:flex;align-
 h1{font-size:15px;font-weight:600}
 #pg{margin-left:auto;font-size:13px;color:var(--accent);text-decoration:none;border:1px solid var(--input-line);border-radius:12px;padding:3px 10px}
 #pg:hover{background:var(--card)}
+#qq{font-size:13px;color:#f0a020;text-decoration:none;border:1px solid var(--input-line);border-radius:12px;padding:3px 10px}
+#qq:hover{background:var(--card)}
+#qq.warn{color:#f87171;border-color:#7f1d1d}
 #theme{font-size:15px;background:none;border:0;cursor:pointer;color:var(--muted);padding:2px 6px;line-height:1}
 #theme:hover{color:var(--fg)}
 .dot{width:8px;height:8px;border-radius:50%;background:#4ade80}
@@ -11320,7 +11335,7 @@ footer{padding:12px;padding-bottom:calc(12px + env(safe-area-inset-bottom,0px));
 #imgBtn{background:var(--card);border:1px solid var(--line);color:var(--fg);border-radius:8px;padding:0 12px;font:inherit;cursor:pointer;margin-right:6px}
 #imgBtn:hover{border-color:var(--me)}
 </style></head><body>
-<header><span class="dot" id="dot"></span><h1>QQ 助手</h1><span id="st" style="font-size:12px;color:#8b93a1"></span><a id="pg" href="/pages?token=${encodeURIComponent(token)}" target="_blank">页面</a><button id="theme" title="切换日夜">☾</button></header>
+<header><span class="dot" id="dot"></span><h1>QQ 助手</h1><a id="qq" href="#" target="_blank" rel="noopener" title="扫码登录 QQ（NapCat WebUI）">QQ 登录</a><span id="st" style="font-size:12px;color:#8b93a1"></span><a id="pg" href="/pages?token=${encodeURIComponent(token)}" target="_blank">页面</a><button id="theme" title="切换日夜">☾</button></header>
 <div id="live"></div>
 <div id="log"></div>
 <footer><textarea id="in" placeholder="说点什么…（Enter 发送，Shift+Enter 换行，可 Ctrl+V 贴图）"></textarea><button id="imgBtn" title="发一张图给她">图</button><input type="file" id="pickImg" accept="image/*" style="display:none"><button id="send">发送</button></footer>
@@ -11470,6 +11485,16 @@ fetch('/history?token='+T).then(r=>r.json()).then(list=>{
     else add('her',m.text||'');
   }
 });
+// QQ 登录：NapCat WebUI（6099），用当前页面的 host 拼
+(function(){
+  var qq=document.getElementById('qq');
+  if(!qq) return;
+  var nt=${napcatJs};
+  if(!nt){ qq.textContent='QQ 登录'; qq.href='#'; qq.title='没读到 NapCat token'; qq.onclick=function(e){e.preventDefault();alert('没读到 NapCat 的 webui.json，无法生成登录链接');}; return; }
+  var host=location.hostname||'127.0.0.1';
+  qq.href='http://'+host+':6099/webui?token='+encodeURIComponent(nt);
+  qq.title='扫码登录 QQ（新窗口打开 NapCat WebUI）';
+})();
 const es=new EventSource('/stream?token='+T);
 es.onopen=()=>{dot.className='dot';st.textContent='在线';};
 es.onerror=()=>{dot.className='dot off';st.textContent='断线重连中…';};

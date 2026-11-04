@@ -1,6 +1,33 @@
 # 更新日志
 
-## 2.0.1 · 2026-11-04
+## 2.0.2 · 2026-11-04
+
+**修复 WinForms 消息错位堆积 + WebUI 加 QQ 登录入口。**
+
+### ① webPush 的 SSE 推错了对象
+
+```js
+function webPush(rec) {
+  const item = { ...rec, at: Date.now() };
+  webHistory.push(item);
+  appendFileSync(WEBHIST_PATH, JSON.stringify(item) + "\n");
+  const line = "data: " + JSON.stringify(rec) + "\n\n";   // ← rec！不是 item
+}
+```
+
+**落盘的有 t，推给客户端的没有。** WinForms 收到的时间戳全空，没法排序，消息就错位堆积。
+
+改成推 item，并给每条加唯一 id（客户端可去重）。
+
+### ② WebUI 加「QQ 登录」入口
+
+header 里多一个橙色按钮，新窗口打开 NapCat 的扫码界面。
+
+token 从 `/root/Napcat/.../webui.json` 实时读，不用手抄。
+
+**注意**：链接用 `location.hostname` 拼——通过隧道访问 3081 的话，需要同时开 6099 的隧道。
+
+## 2.0.1 · 2026-11-04 · 2026-11-04
 
 **隐私修复：她和别人的私聊不再出现在主人的 WebUI 里。**
 
