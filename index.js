@@ -729,11 +729,22 @@ class OneBotClient {
     } catch (err) {
       this.logger?.warn?.("[onebot] sendText 推送异常：" + (err?.message ?? err));
     }
-    const params =
-      ev.message_type === "group"
-        ? { group_id: ev.group_id, message: segs }
-        : { user_id: ev.user_id, message: segs };
-    return this.call(ev.message_type === "group" ? "send_group_msg" : "send_private_msg", params);
+    // 群临时会话（群友私聊、非好友）必须用 send_group_temp_msg + 来源群号。
+    // 用 send_private_msg 发非好友会失败；把来源群号当 group_id 又会发进群。
+    const isGroup = ev.message_type === "group";
+    const tempGroup = Number(ev.__groupTemp) || 0;
+    let method, params;
+    if (isGroup) {
+      method = "send_group_msg";
+      params = { group_id: ev.group_id, message: segs };
+    } else if (tempGroup > 0) {
+      method = "send_group_temp_msg";
+      params = { group_id: tempGroup, user_id: ev.user_id, message: segs };
+    } else {
+      method = "send_private_msg";
+      params = { user_id: ev.user_id, message: segs };
+    }
+    return this.call(method, params);
   }
 }
 
@@ -3494,7 +3505,7 @@ export function apply(ctx, _pluginConfig) {
           execute: async (args, exec) => {
             const sid = String(exec?.agent?.session?.id ?? "");
             const entry = sid ? sessions.bySessionId(sid) : null;
-            const target = entry?.lastTarget ?? lastInbound;
+            const target = entry?.lastTarget;
             if (!target) return { ok: false, reason: "没有会话上下文" };
 
             let svg = String(args?.svg ?? "").trim();
@@ -3600,7 +3611,7 @@ export function apply(ctx, _pluginConfig) {
           execute: async (args, exec) => {
             const sid = String(exec?.agent?.session?.id ?? "");
             const entry = sid ? sessions.bySessionId(sid) : null;
-            const target = entry?.lastTarget ?? lastInbound;
+            const target = entry?.lastTarget;
             if (!target) return { ok: false, reason: "没有会话上下文" };
             const prompt = String(args?.prompt ?? "").trim().slice(0, 300);
             if (!prompt) return { ok: false, reason: "prompt 为空" };
@@ -4095,7 +4106,7 @@ export function apply(ctx, _pluginConfig) {
             execute: async (args, exec) => {
               const sid = exec?.agent?.session?.id;
               const entry = sid ? sessions.bySessionId(String(sid)) : null;
-              const target = entry?.lastTarget ?? lastInbound;
+              const target = entry?.lastTarget;
               if (!target || (!target.group_id && !target.user_id)) {
                 return { ok: false, reason: "当前没有 QQ 会话上下文" };
               }
@@ -7516,7 +7527,7 @@ ${html}
           execute: async (args, exec) => {
             const sid = String(exec?.agent?.session?.id ?? "");
             const entry = sid ? sessions.bySessionId(sid) : null;
-            const target = entry?.lastTarget ?? lastInbound;
+            const target = entry?.lastTarget;
             const uid = String(target?.user_id ?? "");
             if (!uid) return { ok: false, reason: "不知道这次是针对谁，先别登记" };
             if (cfg.ownerId && uid === String(cfg.ownerId)) {
@@ -7573,7 +7584,7 @@ ${html}
           execute: async (args, exec) => {
             const sid = String(exec?.agent?.session?.id ?? "");
             const entry = sid ? sessions.bySessionId(sid) : null;
-            const target = entry?.lastTarget ?? lastInbound;
+            const target = entry?.lastTarget;
             if (!target || (!target.group_id && !target.user_id)) {
               return { ok: false, reason: "当前没有 QQ 会话上下文" };
             }
@@ -10364,6 +10375,32 @@ async function handleOwnerNatural(ev, text) {
   }
   setInterval(() => flushInbox(), 30_000).unref?.();
 
+  /**
+   * 事件 -> 发送目标。
+   * ⚠️ 这是「回复谁」的唯一权威来源。
+   * 不能靠 lastInbound（那是全局最后一条，可能是别人的），
+   * 也不能靠 entry.lastTarget（wakeNow 用的 self:main 不是会话 session）。
+   */
+  function eventTarget(e) {
+    const src = e?.source || {};
+    const kind = e?.kind || "";
+    const isGroup = src.type === "group" || kind === "mentioned" || kind === "replied" || kind === "quiet_group";
+    if (isGroup) {
+      const gid = Number(src.groupId);
+      if (!gid) return null;
+      return { message_type: "group", group_id: gid, user_id: Number(src.userId) || 0 };
+    }
+    if (kind === "private_message") {
+      const uid = Number(src.userId);
+      if (!uid) return null;
+      const ev = { message_type: "private", user_id: uid };
+      // 群临时会话：来源群必须带上，否则 send_private_msg 发不出去
+      if (src.originGroup) ev.__groupTemp = Number(src.originGroup);
+      return ev;
+    }
+    return null;
+  }
+
   /** 把事件渲染成她看得懂的一段话 */
   function renderEventForAgent(e, idx) {
     const t = new Date(e.at).toLocaleTimeString("zh-CN", { hour12: false, hour: "2-digit", minute: "2-digit" });
@@ -10470,14 +10507,16 @@ async function handleOwnerNatural(ev, text) {
           "（比如 group:123456789 或 private:123456789）\n\n" +
           "工具：\n" +
           "· send_message({ target, text, sticker? }) —— 发消息；sticker 可选（大笑/无语/生气/委屈/震惊/开心/睡觉/random）\n" +
-          "· reply_to({ target, messageId, text }) —— 回复某条（带引用）\n" +
-          "· send_private({ qq, text }) —— 主动找好友私聊（不用拼 target）\n" +
+          "· reply_to({ target, messageId, text, groupTemp? }) —— 回复某条（带引用）\n" +
+          "· send_private({ qq, text, groupTemp? }) —— 主动找人私聊；群临时会话要带 groupTemp\n" +
           "· at_person({ target, qq, text }) —— 在群里 @ 第三方\n" +
           "· send_sticker({ target, mood }) —— 只发个表情\n" +
           "· run_activity({ kind?, note? }) —— 做点事（read/play/explore/think/write/watch_groups/dream…）\n" +
           "· schedule_activity({ afterMinutes, kind?, note? }) —— 排下次活动；0 = 取消\n" +
           "· my_context() —— 看自己的上下文用掉多少\n" +
           "\n例：send_message({ target: \"private:123456789\", text: \"在，咋了\" })\n" +
+          "\n**只回下面这一条事件。** target 一律从这条事件的 target: 行抄，" +
+          "不要凭记忆或上一条消息的号码填——填错就发给别人了。\n" +
           "\n这些是现在发生的事。怎么回应、要不要回应，你看着办。\n" +
           "不想回就不用调工具——这条会被标成「看过」。但想回就必须调工具，光说没用。）";
 
@@ -10489,6 +10528,21 @@ async function handleOwnerNatural(ev, text) {
           if (!entry.handle) entry.handle = await sessions.openAgent(entry.sessionId);
           agent = entry.handle?.agent ?? null;
           beforeSeq = agent?.session?.seq ?? 0;
+
+          // 把「当前这条事件的发送目标」绑到 entry 上。
+          // send_sticker / send_face / draw_* / refuse_person 都用 entry.lastTarget，
+          // 不绑的话它们会退到 lastInbound（全局最后一条），把表情包发到别人那儿去。
+          const t = eventTarget(e);
+          if (t) {
+            entry.lastTarget = t;
+            logger.info?.(
+              "[onebot] 本次事件目标：" +
+                (t.message_type === "group" ? "group:" + t.group_id : "private:" + t.user_id) +
+                (t.__groupTemp ? "（临时会话，来源群 " + t.__groupTemp + "）" : ""),
+            );
+          } else {
+            logger.info?.("[onebot] 本次事件没有发送目标（" + e.kind + "）");
+          }
         } catch (err) {
           logger.warn?.("[onebot] wakeNow 准备 agent 失败：" + (err?.message ?? err));
         }
@@ -10535,12 +10589,6 @@ async function handleOwnerNatural(ev, text) {
       const { defineTool } = await import("@deepseek-ai/dsh-tools");
       const reg = (t) => ctx.get?.("tools")?.register?.(t);
 
-      function resolveTarget(exec) {
-        const sid = String(exec?.agent?.session?.id ?? "");
-        const entry = sid ? sessions.bySessionId(sid) : null;
-        return entry?.lastTarget ?? lastInbound ?? null;
-      }
-
       reg(
         defineTool({
           name: "send_message",
@@ -10558,6 +10606,10 @@ async function handleOwnerNatural(ev, text) {
             text: { type: "string", description: "要说的话" },
             sticker: { type: "string", description: "可选，发完文字补一张表情" },
             quote: { type: "string", description: "可选，引用某条消息的 id" },
+            groupTemp: {
+              type: "number",
+              description: "可选。群临时会话（群友私聊、非好友）要填来源群号",
+            },
           },
           output: {
             schema: { type: "json" },
@@ -10574,6 +10626,8 @@ async function handleOwnerNatural(ev, text) {
               ev = { message_type: "group", group_id: Number(target.slice(6)), user_id: 0 };
             } else if (target.startsWith("private:")) {
               ev = { message_type: "private", user_id: Number(target.slice(8)) };
+              const gt = Number(args?.groupTemp) || 0;
+              if (gt > 0) ev.__groupTemp = gt;
             } else {
               return { ok: false, reason: "target 要写成 group:xxx 或 private:xxx" };
             }
@@ -10604,28 +10658,58 @@ async function handleOwnerNatural(ev, text) {
         defineTool({
           name: "reply_to",
           description:
-            "回复某一条具体的消息（带引用）。有人问了你什么、你想针对某一句话接，用这个。\n" +
-            "messageId 从事件里拿。",
+            "回复某一条具体的消息（带引用）。\n" +
+            "**target 必填**，从事件的 `target:` 行原样抄（group:群号 / private:QQ号）。\n" +
+            "如果是「群临时会话」（群友私聊、不是好友），还要带上事件里给的 groupTemp。\n" +
+            "不要凭印象填 target——填错就发给别人了。",
           parameters: {
-            messageId: { type: "string", description: "要回复的消息 id" },
+            target: {
+              type: "string",
+              description: "group:群号 或 private:QQ号。从事件的 target: 行抄",
+            },
+            messageId: { type: "string", description: "要回复的消息 id（从事件抄）" },
             text: { type: "string", description: "回复内容" },
+            groupTemp: {
+              type: "number",
+              description: "可选。群临时会话要填来源群号（事件里会写）",
+            },
           },
           output: {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args, exec) => {
+          execute: async (args) => {
+            const target = String(args?.target ?? "").trim();
             const mid = String(args?.messageId ?? "").trim();
             const text = String(args?.text ?? "").trim();
-            if (!mid || !text) return { ok: false, reason: "messageId 和 text 都要" };
+            const groupTemp = Number(args?.groupTemp) || 0;
+            if (!target) return { ok: false, reason: "target 必填（从事件的 target: 行抄）" };
+            if (!text) return { ok: false, reason: "text 不能空" };
             if (!client.connected) return { ok: false, reason: "QQ 现在没连上。" };
-            const base = resolveTarget(exec);
-            if (!base) return { ok: false, reason: "找不到会话上下文" };
-            const ev = { ...base, message_id: mid };
+
+            let ev;
+            if (target.startsWith("group:")) {
+              ev = { message_type: "group", group_id: Number(target.slice(6)), user_id: 0 };
+            } else if (target.startsWith("private:")) {
+              ev = { message_type: "private", user_id: Number(target.slice(8)) };
+              if (groupTemp > 0) ev.__groupTemp = groupTemp;
+            } else {
+              return { ok: false, reason: "target 要写成 group:xxx 或 private:xxx" };
+            }
+            // 只有真 QQ 消息 id 才当引用（webui- 开头的是网页内部 id）
+            if (mid && mid !== "0" && mid.length > 5 && !/^webui-/.test(mid)) {
+              ev.message_id = mid;
+            }
             try {
-              await client.sendHuman(ev, text, { force: true, quote: true });
-              audit({ kind: "reply_to", messageId: mid, text: text.slice(0, 120) });
-              return { ok: true, messageId: mid };
+              await client.sendHuman(ev, text, { force: true, quote: !!ev.message_id });
+              audit({
+                kind: "reply_to",
+                target,
+                groupTemp: groupTemp || undefined,
+                messageId: mid,
+                text: text.slice(0, 120),
+              });
+              return { ok: true, target, messageId: mid };
             } catch (err) {
               return { ok: false, reason: String(err?.message ?? err) };
             }
@@ -13240,9 +13324,9 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
             self_id: cfg.selfId,
             user_id: Number(from || uid),
             sender: m?.sender ?? { user_id: Number(from || uid) },
-            // NapCat 在私聊消息里塞的 group_id 是「共同群」，不是消息所在的群，
-            // 留着会被当成发送目标，把私聊的话发进群里
-            group_id: undefined,
+            // NapCat 在私聊消息里塞的 group_id 是「群临时会话的来源群」。
+            // 留着它（eventTarget 会把它变成 __groupTemp，走 send_group_temp_msg），
+            // 但绝不能被当成「发到哪个群」——makeEvent 那边只对 group 消息取 groupId。
           };
           logger.info?.(`[onebot] 补回复私聊：${from || uid} 消息 ${mid}`);
           audit({ kind: "catchup_private", key, messageId: mid });
