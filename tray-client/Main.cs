@@ -1860,11 +1860,7 @@ namespace FishTray
             b.MouseWheel += delegate (object s2, MouseEventArgs e2) { Wheel(e2.Delta); };
             if (m.at > 0)
             {
-                try
-                {
-                    b.SetTime(DateTimeOffset.FromUnixTimeMilliseconds(m.at).ToLocalTime().ToString("HH:mm"));
-                }
-                catch { }
+                b.SetTime(FmtTime(m.at));
             }
             InsertBubble(b, m.at);
             canvas.Controls.Add(b);

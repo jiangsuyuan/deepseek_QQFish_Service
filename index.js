@@ -10205,7 +10205,21 @@ async function handleOwnerNatural(ev, text) {
     enqueueEvent(
       makeEvent(
         target?.message_type === "group" ? "mentioned" : "private_message",
-        { type: target?.message_type, groupId: target?.group_id, userId: target?.user_id, nickname: target?.sender?.nickname },
+        {
+          type: target?.message_type,
+          // group_id 只在真·群消息时算"发到哪"。
+          // 私聊里 NapCat 也会带 group_id，但那是「群临时会话的来源群」，
+          // 不是发送目标——放进 groupId 她会把私聊的话发进群里。
+          groupId: target?.message_type === "group" ? target?.group_id : undefined,
+          // 临时会话的来源群单独存，回复时要用 send_group_temp_msg
+          originGroup:
+            target?.message_type === "private" && target?.sub_type === "group"
+              ? target?.group_id
+              : undefined,
+          subType: target?.sub_type,
+          userId: target?.user_id,
+          nickname: target?.sender?.nickname,
+        },
         {
           // merged 是完整 prompt（含内部说明），提取真正的正文给她看
           text: extractRealInbound(merged) || String(merged || "").slice(0, 500),
@@ -10224,7 +10238,17 @@ async function handleOwnerNatural(ev, text) {
           ev?.message_type === "group"
             ? (ev?.__hasAt ? "mentioned" : "replied")
             : "private_message",
-          { type: ev?.message_type, groupId: ev?.group_id, userId: ev?.user_id, nickname: ev?.sender?.nickname },
+          {
+            type: ev?.message_type,
+            groupId: ev?.message_type === "group" ? ev?.group_id : undefined,
+            originGroup:
+              ev?.message_type === "private" && ev?.sub_type === "group"
+                ? ev?.group_id
+                : undefined,
+            subType: ev?.sub_type,
+            userId: ev?.user_id,
+            nickname: ev?.sender?.nickname,
+          },
           { text: ev?.__parsedText || (ev?.raw_message ?? ""), messageId: ev?.message_id },
         ),
       );
@@ -10347,8 +10371,20 @@ async function handleOwnerNatural(ev, text) {
     lines.push("【" + (idx + 1) + "】" + t);
     const mid = e.payload && e.payload.messageId ? String(e.payload.messageId) : "";
     if (e.kind === "private_message") {
-      lines.push("私聊 · " + (e.source.nickname || e.source.userId || "某人") + "（" + (e.source.userId || "") + "）");
-      lines.push("target: private:" + (e.source.userId || ""));
+      const isTemp = e.source.subType === "group" || !!e.source.originGroup;
+      lines.push(
+        (isTemp ? "群临时会话（群友私聊，不是好友）" : "私聊") +
+          " · " +
+          (e.source.nickname || e.source.userId || "某人") +
+          "（" + (e.source.userId || "") + "）",
+      );
+      if (isTemp) {
+        lines.push("来源群: " + String(e.source.originGroup || "未知") + "（只是他从哪个群来，别把话发进群）");
+        lines.push("target: private:" + (e.source.userId || ""));
+        lines.push("⚠️ 回复要用 send_private({ qq: \"" + (e.source.userId || "") + "\", text, groupTemp: " + String(e.source.originGroup || 0) + " })");
+      } else {
+        lines.push("target: private:" + (e.source.userId || ""));
+      }
       if (mid) lines.push("messageId: " + mid);
       lines.push("「" + String(e.payload.text || "").slice(0, 500) + "」");
     } else if (e.kind === "mentioned") {
@@ -10620,8 +10656,12 @@ async function handleOwnerNatural(ev, text) {
             "qq 填好友的 QQ 号，不是昵称。只在好友列表里的人能发。\n" +
             "跟 send_message 的 private:xxx 是同一件事，但这个更直接（不用拼 target）。",
           parameters: {
-            qq: { type: "string", description: "好友的 QQ 号" },
+            qq: { type: "string", description: "对方的 QQ 号" },
             text: { type: "string", description: "要说的话" },
+            groupTemp: {
+              type: "number",
+              description: "可选。群临时会话（群友私聊、非好友）要填来源群号，否则发不出去",
+            },
           },
           output: {
             schema: { type: "json" },
@@ -10630,9 +10670,29 @@ async function handleOwnerNatural(ev, text) {
           execute: async (args) => {
             const qq = String(args?.qq ?? "").trim();
             const text = String(args?.text ?? "").trim();
+            const groupTemp = Number(args?.groupTemp) || 0;
             if (!/^\d{5,12}$/.test(qq)) return { ok: false, reason: "qq 不合法" };
             if (!text) return { ok: false, reason: "text 不能空" };
             if (!client.connected) return { ok: false, reason: "QQ 现在没连上。" };
+
+            // 群临时会话：群友私聊，走 send_group_temp_msg（send_private_msg 对非好友会失败）
+            if (groupTemp > 0) {
+              try {
+                await client.call(
+                  "send_group_temp_msg",
+                  {
+                    group_id: Number(groupTemp),
+                    user_id: Number(qq),
+                    message: [{ type: "text", data: { text } }],
+                  },
+                  15000,
+                );
+                audit({ kind: "send_private_temp", qq, groupTemp, text: text.slice(0, 120) });
+                return { ok: true, qq, groupTemp, temp: true, sent: true };
+              } catch (err) {
+                return { ok: false, reason: "群临时会话发送失败：" + String(err?.message ?? err) };
+              }
+            }
 
             // 确认是好友（不给陌生人发）
             try {
@@ -10642,8 +10702,8 @@ async function handleOwnerNatural(ev, text) {
               if (!isFriend) {
                 return {
                   ok: false,
-                  reason: "这个号不在好友列表里，发不了。",
-                  friends: list.map((f) => ({ qq: String(f.user_id), name: f.nickname })),
+                  reason:
+                    "这个号不在好友列表里。如果是群友私聊（群临时会话），要带 groupTemp: 来源群号。",
                 };
               }
             } catch {
@@ -13180,6 +13240,9 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
             self_id: cfg.selfId,
             user_id: Number(from || uid),
             sender: m?.sender ?? { user_id: Number(from || uid) },
+            // NapCat 在私聊消息里塞的 group_id 是「共同群」，不是消息所在的群，
+            // 留着会被当成发送目标，把私聊的话发进群里
+            group_id: undefined,
           };
           logger.info?.(`[onebot] 补回复私聊：${from || uid} 消息 ${mid}`);
           audit({ kind: "catchup_private", key, messageId: mid });
