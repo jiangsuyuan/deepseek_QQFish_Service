@@ -12067,6 +12067,35 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
 </body></html>`);
         return;
       }
+      // ── /qqlogin：给客户端「登录 QQ」用，返回带 token 的 NapCat WebUI 链接 ──
+      if (u.pathname === "/qqlogin") {
+        let tok = "";
+        let port = 6099;
+        try {
+          const p = "/root/Napcat/opt/QQ/resources/app/app_launcher/napcat/config/webui.json";
+          const j = JSON.parse(readFileSync(p, "utf8"));
+          tok = String(j?.token ?? "");
+          port = Number(j?.port) || 6099;
+        } catch {
+          // 读不到就返回失败
+        }
+        const body = tok
+          ? JSON.stringify({
+              ok: true,
+              url: "http://127.0.0.1:" + port + "/webui?token=" + encodeURIComponent(tok),
+              port,
+              note: "客户端需要同时转发 " + port + " 端口",
+            })
+          : JSON.stringify({ ok: false, reason: "没读到 NapCat 的 webui.json" });
+        res.writeHead(200, {
+          "content-type": "application/json; charset=utf-8",
+          "cache-control": "no-store",
+          "access-control-allow-origin": "*",
+        });
+        res.end(body);
+        return;
+      }
+
       if (u.pathname === "/send" && req.method === "POST") {
         let body = "";
         req.on("data", (c) => {

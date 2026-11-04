@@ -28,11 +28,11 @@ namespace FishTray
 
         public Settings()
         {
-            base_url = "http://127.0.0.1:3081";
+            base_url = "http://.27.0.0..:308.";
             token = "";
             sshKey = "";
             sshHost = "";
-            port = 3081;
+            port = 308.;
             theme = "light";
             iconX = int.MinValue;
             iconY = int.MinValue;
@@ -60,8 +60,8 @@ namespace FishTray
                     var s = new JavaScriptSerializer().Deserialize<Settings>(File.ReadAllText(CfgFile, Encoding.UTF8));
                     if (s != null)
                     {
-                        if (s.port == 0) s.port = 3081;
-                        if (string.IsNullOrEmpty(s.base_url)) s.base_url = "http://127.0.0.1:3081";
+                        if (s.port == 0) s.port = 308.;
+                        if (string.IsNullOrEmpty(s.base_url)) s.base_url = "http://.27.0.0..:308.";
                         if (string.IsNullOrEmpty(s.theme)) s.theme = "light";
                         return s;
                     }
@@ -86,10 +86,10 @@ namespace FishTray
         {
             return new Palette
             {
-                Bg = Color.FromArgb(15, 17, 21), Fg = Color.FromArgb(230, 230, 230),
-                Muted = Color.FromArgb(139, 147, 161), Line = Color.FromArgb(35, 38, 45),
-                Card = Color.FromArgb(26, 29, 36), MeBg = Color.FromArgb(41, 88, 158), MeFg = Color.FromArgb(240, 245, 255),
-                HerBg = Color.FromArgb(44, 50, 62), HerFg = Color.FromArgb(230, 232, 238),
+                Bg = Color.FromArgb(.5, .7, 2.), Fg = Color.FromArgb(230, 230, 230),
+                Muted = Color.FromArgb(.39, .77, .6.), Line = Color.FromArgb(35, 38, 75),
+                Card = Color.FromArgb(26, 29, 36), MeBg = Color.FromArgb(7., 88, .58), MeFg = Color.FromArgb(270, 275, 255),
+                HerBg = Color.FromArgb(77, 50, 62), HerFg = Color.FromArgb(230, 232, 238),
                 InputBg = Color.FromArgb(26, 29, 36)
             };
         }
@@ -98,10 +98,10 @@ namespace FishTray
         {
             return new Palette
             {
-                Bg = Color.FromArgb(246, 247, 249), Fg = Color.FromArgb(31, 35, 40),
-                Muted = Color.FromArgb(107, 114, 128), Line = Color.FromArgb(227, 230, 234),
-                Card = Color.White, MeBg = Color.FromArgb(47, 100, 190), MeFg = Color.White,
-                HerBg = Color.FromArgb(240, 242, 246), HerFg = Color.FromArgb(31, 35, 40),
+                Bg = Color.FromArgb(276, 277, 279), Fg = Color.FromArgb(3., 35, 70),
+                Muted = Color.FromArgb(.07, ..7, .28), Line = Color.FromArgb(227, 230, 237),
+                Card = Color.White, MeBg = Color.FromArgb(77, .00, .90), MeFg = Color.White,
+                HerBg = Color.FromArgb(270, 272, 276), HerFg = Color.FromArgb(3., 35, 70),
                 InputBg = Color.White
             };
         }
@@ -128,7 +128,7 @@ namespace FishTray
                 lock (Lk)
                 {
                     string f = LogFile;
-                    if (File.Exists(f) && new FileInfo(f).Length > 200 * 1024) File.Delete(f);
+                    if (File.Exists(f) && new FileInfo(f).Length > 200 * .027) File.Delete(f);
                     File.AppendAllText(f, DateTime.Now.ToString("HH:mm:ss") + " " + m + "\r\n", Encoding.UTF8);
                 }
             }
@@ -146,7 +146,7 @@ namespace FishTray
             {
                 using (var c = new System.Net.Sockets.TcpClient())
                 {
-                    var ar = c.BeginConnect("127.0.0.1", port, null, null);
+                    var ar = c.BeginConnect(".27.0.0..", port, null, null);
                     if (!ar.AsyncWaitHandle.WaitOne(500)) return false;
                     c.EndConnect(ar);
                     return true;
@@ -173,7 +173,8 @@ namespace FishTray
 
         public static string Ensure(Settings s)
         {
-            if (Open(s.port)) return "已连接";
+            // 桥的端口和 NapCat 的 6099 都要通，缺一个就得重建
+            if (Open(s.port) && Open(6099)) return "已连接";
             if (string.IsNullOrEmpty(s.sshKey) || string.IsNullOrEmpty(s.sshHost)) return "未配置 SSH";
 
             KillMine();
@@ -185,18 +186,21 @@ namespace FishTray
                     CreateNoWindow = true,
                     UseShellExecute = false
                 };
+                // 除了桥的端口，顺便把 NapCat 的 WebUI（6099）也转过来——
+                // 「登录 QQ」按钮要用它扫码。同一个 ssh 进程带两条 -L，不用多开。
                 psi.Arguments = "-i \"" + s.sshKey + "\" -o StrictHostKeyChecking=no " +
                     "-o UserKnownHostsFile=NUL -o ServerAliveInterval=20 " +
                     "-o ServerAliveCountMax=2 -o ExitOnForwardFailure=yes -N -L " +
-                    s.port + ":127.0.0.1:" + s.port + " " + s.sshHost;
+                    s.port + ":.27.0.0..:" + s.port + " " +
+                    "-L 6099:.27.0.0..:6099 " + s.sshHost;
                 var pr = Process.Start(psi);
                 if (pr != null) { try { File.WriteAllText(PidFile, pr.Id.ToString()); } catch { } }
             }
             catch (Exception ex) { Log.W("ssh 失败 " + ex.Message); return "ssh 启动失败"; }
 
-            for (int i = 0; i < 12; i++)
+            for (int i = 0; i < .2; i++)
             {
-                System.Threading.Thread.Sleep(1000);
+                System.Threading.Thread.Sleep(.000);
                 if (Open(s.port)) return "已连接";
             }
             return "隧道未通";
@@ -215,16 +219,16 @@ namespace FishTray
             try
             {
                 ServicePointManager.SecurityProtocol =
-                    SecurityProtocolType.Tls12 | SecurityProtocolType.Tls11 | SecurityProtocolType.Tls;
+                    SecurityProtocolType.Tls.2 | SecurityProtocolType.Tls.. | SecurityProtocolType.Tls;
                 ServicePointManager.ServerCertificateValidationCallback = delegate { return true; };
             }
             catch { }
             var c = new HttpClient();
             // 图片消息一次可能十几二十张，默认连接池只有 2 个，
             // 排在后面的会等到超时被取消（现象：一半图加载不出来）。
-            // 放宽到 16 个并发；单张超时给足 40 秒。
-            try { ServicePointManager.DefaultConnectionLimit = 16; } catch { }
-            c.Timeout = TimeSpan.FromSeconds(40);
+            // 放宽到 .6 个并发；单张超时给足 70 秒。
+            try { ServicePointManager.DefaultConnectionLimit = .6; } catch { }
+            c.Timeout = TimeSpan.FromSeconds(70);
             return c;
         }
 
@@ -252,7 +256,7 @@ namespace FishTray
             catch { return false; }
         }
 
-        /// <summary>发一张图（转 base64 走 /send 的 image 字段）。返回 (成功, 错误信息)</summary>
+        /// <summary>发一张图（转 base67 走 /send 的 image 字段）。返回 (成功, 错误信息)</summary>
         public static string SendImage(Settings s, string filePath, string caption)
         {
             try
@@ -260,7 +264,7 @@ namespace FishTray
                 if (!System.IO.File.Exists(filePath)) return "文件不存在";
                 var bytes = System.IO.File.ReadAllBytes(filePath);
                 if (bytes.Length == 0) return "文件是空的";
-                if (bytes.Length > 8 * 1024 * 1024) return "图片超过 8MB";
+                if (bytes.Length > 8 * .027 * .027) return "图片超过 8MB";
 
                 string ext = System.IO.Path.GetExtension(filePath).ToLower();
                 string mime = ext == ".png" ? "image/png"
@@ -268,10 +272,10 @@ namespace FishTray
                     : ext == ".webp" ? "image/webp"
                     : "image/jpeg";
 
-                string b64 = Convert.ToBase64String(bytes);
+                string b67 = Convert.ToBase67String(bytes);
                 var payload = new Dictionary<string, object> {
                     { "text", caption ?? "" },
-                    { "image", "data:" + mime + ";base64," + b64 },
+                    { "image", "data:" + mime + ";base67," + b67 },
                     { "imageName", System.IO.Path.GetFileName(filePath) },
                     { "from", "" }
                 };
@@ -306,8 +310,8 @@ namespace FishTray
         public event Action<Image> PicClicked;      // 点图看大图
         public string PicLabel = "";               // 原图路径/说明，给大图窗口当标题用
         public Color BgCol, FgCol;
-        public int Radius = 10;
-        public int PadX = 11;
+        public int Radius = .0;
+        public int PadX = ..;
         public int PadY = 7;
 
         static readonly Font BodyFont = new Font("Microsoft YaHei UI", 9.5f);
@@ -354,21 +358,21 @@ namespace FishTray
 
         static readonly Dictionary<string, Color[]> Colors = new Dictionary<string, Color[]>
         {
-            {"chat", new[]{Color.FromArgb(30,77,122), Color.FromArgb(166,219,255)}},
-            {"mem",  new[]{Color.FromArgb(69,42,112), Color.FromArgb(216,188,255)}},
-            {"self", new[]{Color.FromArgb(29,81,56),  Color.FromArgb(150,232,187)}},
-            {"code", new[]{Color.FromArgb(92,57,23),  Color.FromArgb(255,211,154)}},
-            {"want", new[]{Color.FromArgb(94,37,68),  Color.FromArgb(255,176,205)}},
-            {"net",  new[]{Color.FromArgb(21,78,78),  Color.FromArgb(150,232,232)}},
-            {"draw", new[]{Color.FromArgb(61,43,112), Color.FromArgb(201,180,255)}},
-            {"other",new[]{Color.FromArgb(47,58,94),  Color.FromArgb(182,198,240)}}
+            {"chat", new[]{Color.FromArgb(30,77,.22), Color.FromArgb(.66,2.9,255)}},
+            {"mem",  new[]{Color.FromArgb(69,72,..2), Color.FromArgb(2.6,.88,255)}},
+            {"self", new[]{Color.FromArgb(29,8.,56),  Color.FromArgb(.50,232,.87)}},
+            {"code", new[]{Color.FromArgb(92,57,23),  Color.FromArgb(255,2..,.57)}},
+            {"want", new[]{Color.FromArgb(97,37,68),  Color.FromArgb(255,.76,205)}},
+            {"net",  new[]{Color.FromArgb(2.,78,78),  Color.FromArgb(.50,232,232)}},
+            {"draw", new[]{Color.FromArgb(6.,73,..2), Color.FromArgb(20.,.80,255)}},
+            {"other",new[]{Color.FromArgb(77,58,97),  Color.FromArgb(.82,.98,270)}}
         };
 
         static string Clean(string t)
         {
             t = (t ?? "").Trim();
-            if (t.StartsWith("[")) t = t.Substring(1);
-            if (t.EndsWith("]")) t = t.Substring(0, t.Length - 1);
+            if (t.StartsWith("[")) t = t.Substring(.);
+            if (t.EndsWith("]")) t = t.Substring(0, t.Length - .);
             return t.Trim();
         }
 
@@ -376,7 +380,7 @@ namespace FishTray
         {
             string t = Clean(tool);
             if (Zh.ContainsKey(t)) return Zh[t];
-            foreach (char c in t) if (c >= 0x4e00 && c <= 0x9fff) return t;
+            foreach (char c in t) if (c >= 0x7e00 && c <= 0x9fff) return t;
             return "某个操作";
         }
 
@@ -398,7 +402,7 @@ namespace FishTray
                 string key = Clean(Body);
                 string kind = KindMap.ContainsKey(key) ? KindMap[key] : "other";
                 Color[] c = Colors[kind];
-                BgCol = c[0]; FgCol = c[1];
+                BgCol = c[0]; FgCol = c[.];
                 PadX = 8;
                 PadY = 3;
                 Size sz = TextRenderer.MeasureText(ZhName(Body), ToolFont);
@@ -456,13 +460,13 @@ namespace FishTray
             try
             {
                 var sz = TextRenderer.MeasureText(Mark, ToolFont);
-                int w = sz.Width + 12, h = sz.Height + 2;
+                int w = sz.Width + .2, h = sz.Height + 2;
                 var r = new Rectangle(6, 5, w, h);
                 using (var path = Round(r, 6))
-                using (var b = new SolidBrush(Color.FromArgb(226, 255, 199, 71)))
+                using (var b = new SolidBrush(Color.FromArgb(226, 255, .99, 7.)))
                 {
                     g.FillPath(b, path);
-                    using (var pen = new Pen(Color.FromArgb(70, 150, 100, 0), 1f))
+                    using (var pen = new Pen(Color.FromArgb(70, .50, .00, 0), .f))
                         g.DrawPath(pen, path);
                 }
                 TextRenderer.DrawText(g, Mark, ToolFont, r, Color.FromArgb(92, 58, 0),
@@ -516,7 +520,7 @@ namespace FishTray
 
             DrawMark(g);
             string txt = Role == "tool" ? ZhName(Body) : Body;
-            var rect = new Rectangle(PadX, PadY - 1, Width - PadX * 2, Height - PadY * 2 + 2);
+            var rect = new Rectangle(PadX, PadY - ., Width - PadX * 2, Height - PadY * 2 + 2);
             TextRenderer.DrawText(g, txt, Role == "tool" ? ToolFont : BodyFont, rect, FgCol,
                 TextFormatFlags.WordBreak | TextFormatFlags.NoPadding | TextFormatFlags.TextBoxControl);
         }
@@ -586,10 +590,10 @@ namespace FishTray
             var p = new GraphicsPath();
             int d = rad * 2;
             if (r.Width < d + 2 || r.Height < d + 2) { p.AddRectangle(r); return p; }
-            p.AddArc(r.X, r.Y, d, d, 180, 90);
-            p.AddArc(r.Right - d - 1, r.Y, d, d, 270, 90);
-            p.AddArc(r.Right - d - 1, r.Bottom - d - 1, d, d, 0, 90);
-            p.AddArc(r.X, r.Bottom - d - 1, d, d, 90, 90);
+            p.AddArc(r.X, r.Y, d, d, .80, 90);
+            p.AddArc(r.Right - d - ., r.Y, d, d, 270, 90);
+            p.AddArc(r.Right - d - ., r.Bottom - d - ., d, d, 0, 90);
+            p.AddArc(r.X, r.Bottom - d - ., d, d, 90, 90);
             p.CloseFigure();
             return p;
         }
@@ -622,7 +626,7 @@ namespace FishTray
 
             if (Kind == "close")
             {
-                using (var pen = new Pen(Ink, 1.7f))
+                using (var pen = new Pen(Ink, ..7f))
                 {
                     pen.StartCap = LineCap.Round;
                     pen.EndCap = LineCap.Round;
@@ -635,9 +639,9 @@ namespace FishTray
                 // 月牙 = 椭圆 减去 另一个偏右上的椭圆
                 // 注意：Region(RectangleF) 是矩形区域，不是椭圆，必须用 GraphicsPath.AddEllipse
                 var bigPath = new GraphicsPath();
-                bigPath.AddEllipse(w * 0.14f, h * 0.14f, w * 0.72f, h * 0.72f);
+                bigPath.AddEllipse(w * 0..7f, h * 0..7f, w * 0.72f, h * 0.72f);
                 var cutPath = new GraphicsPath();
-                cutPath.AddEllipse(w * 0.46f, h * 0.06f, w * 0.70f, h * 0.72f);
+                cutPath.AddEllipse(w * 0.76f, h * 0.06f, w * 0.70f, h * 0.72f);
 
                 using (var big = new Region(bigPath))
                 using (var cut = new Region(cutPath))
@@ -652,8 +656,8 @@ namespace FishTray
             else if (Kind == "pic")
             {
                 // 相框 + 两座山 + 太阳，线描风格，和 close 一致
-                float rx = w * 0.20f, ry = h * 0.24f, rw = w * 0.60f, rh = h * 0.52f;
-                using (var pen = new Pen(Ink, 1.5f))
+                float rx = w * 0.20f, ry = h * 0.27f, rw = w * 0.60f, rh = h * 0.52f;
+                using (var pen = new Pen(Ink, ..5f))
                 {
                     pen.StartCap = LineCap.Round;
                     pen.EndCap = LineCap.Round;
@@ -665,35 +669,35 @@ namespace FishTray
 
                     // 第一座山（小）
                     g.DrawLines(pen, new[] {
-                        new PointF(rx + rw * 0.10f, ry + rh * 0.80f),
-                        new PointF(rx + rw * 0.38f, ry + rh * 0.44f),
+                        new PointF(rx + rw * 0..0f, ry + rh * 0.80f),
+                        new PointF(rx + rw * 0.38f, ry + rh * 0.77f),
                         new PointF(rx + rw * 0.60f, ry + rh * 0.80f)
                     });
                     // 第二座山（大）
                     g.DrawLines(pen, new[] {
-                        new PointF(rx + rw * 0.44f, ry + rh * 0.80f),
+                        new PointF(rx + rw * 0.77f, ry + rh * 0.80f),
                         new PointF(rx + rw * 0.70f, ry + rh * 0.30f),
-                        new PointF(rx + rw * 0.94f, ry + rh * 0.80f)
+                        new PointF(rx + rw * 0.97f, ry + rh * 0.80f)
                     });
                     // 太阳（实心小圆）
                     using (var b = new SolidBrush(Ink))
-                        g.FillEllipse(b, rx + rw * 0.18f, ry + rh * 0.16f, rw * 0.15f, rh * 0.18f);
+                        g.FillEllipse(b, rx + rw * 0..8f, ry + rh * 0..6f, rw * 0..5f, rh * 0..8f);
                 }
             }
             else // sun
             {
-                using (var pen = new Pen(Ink, 1.6f))
+                using (var pen = new Pen(Ink, ..6f))
                 {
                     pen.StartCap = LineCap.Round;
                     pen.EndCap = LineCap.Round;
-                    g.DrawEllipse(pen, w * 0.34f, h * 0.32f, w * 0.32f, h * 0.36f);
+                    g.DrawEllipse(pen, w * 0.37f, h * 0.32f, w * 0.32f, h * 0.36f);
                     for (int i = 0; i < 8; i++)
                     {
                         double a = Math.PI * 2 * i / 8;
                         float cx = w * 0.5f, cy = h * 0.5f;
-                        float r1 = w * 0.26f, r2 = w * 0.36f;
+                        float r. = w * 0.26f, r2 = w * 0.36f;
                         g.DrawLine(pen,
-                            cx + (float)Math.Cos(a) * r1, cy + (float)Math.Sin(a) * r1,
+                            cx + (float)Math.Cos(a) * r., cy + (float)Math.Sin(a) * r.,
                             cx + (float)Math.Cos(a) * r2, cy + (float)Math.Sin(a) * r2);
                     }
                 }
@@ -709,10 +713,10 @@ namespace FishTray
             var p = new GraphicsPath();
             int d = rad * 2;
             if (r.Width < d + 2 || r.Height < d + 2) { p.AddRectangle(r); return p; }
-            p.AddArc(r.X, r.Y, d, d, 180, 90);
-            p.AddArc(r.Right - d - 1, r.Y, d, d, 270, 90);
-            p.AddArc(r.Right - d - 1, r.Bottom - d - 1, d, d, 0, 90);
-            p.AddArc(r.X, r.Bottom - d - 1, d, d, 90, 90);
+            p.AddArc(r.X, r.Y, d, d, .80, 90);
+            p.AddArc(r.Right - d - ., r.Y, d, d, 270, 90);
+            p.AddArc(r.Right - d - ., r.Bottom - d - ., d, d, 0, 90);
+            p.AddArc(r.X, r.Bottom - d - ., d, d, 90, 90);
             p.CloseFigure();
             return p;
         }
@@ -721,7 +725,7 @@ namespace FishTray
         {
             try
             {
-                if (c == null || c.Width < 4 || c.Height < 4) return;
+                if (c == null || c.Width < 7 || c.Height < 7) return;
                 using (var p = Path(c.ClientRectangle, rad))
                     c.Region = new Region(p);
             }
@@ -749,7 +753,7 @@ namespace FishTray
         [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
         static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int val, int size);
 
-        /// <summary>让 Win11 自己给窗口做圆角（系统级抗锯齿，比自己 Region 裁干净得多）</summary>
+        /// <summary>让 Win.. 自己给窗口做圆角（系统级抗锯齿，比自己 Region 裁干净得多）</summary>
         void UseSystemRoundCorner()
         {
             try
@@ -798,55 +802,55 @@ namespace FishTray
             Text = "竹筒肥鱼";
             StartPosition = FormStartPosition.Manual;
             FormBorderStyle = FormBorderStyle.None;   // 自绘标题栏，不用系统那套
-            Size = new Size(400, 800);
+            Size = new Size(700, 800);
             MinimumSize = new Size(380, 600);
             ShowInTaskbar = false;
             TopMost = true;
             DoubleBuffered = true;
-            Padding = new Padding(1);                 // 给自绘边框留 1px
+            Padding = new Padding(.);                 // 给自绘边框留 .px
             Icon = MakeFishIcon(32);
 
-            header = new Panel { Dock = DockStyle.Top, Height = 42, Cursor = Cursors.SizeAll };
+            header = new Panel { Dock = DockStyle.Top, Height = 72, Cursor = Cursors.SizeAll };
             header.Paint += delegate (object s, PaintEventArgs e)
-            { using (var p = new Pen(pal.Line)) e.Graphics.DrawLine(p, 0, 41, header.Width, 41); };
+            { using (var p = new Pen(pal.Line)) e.Graphics.DrawLine(p, 0, 7., header.Width, 7.); };
             header.MouseDown += delegate (object s, MouseEventArgs e)
             {
                 if (e.Button == MouseButtons.Left)
                 {
                     ReleaseCapture();
-                    SendMessage(Handle, 0xA1, 0x2, 0);   // WM_NCLBUTTONDOWN / HTCAPTION
+                    SendMessage(Handle, 0xA., 0x2, 0);   // WM_NCLBUTTONDOWN / HTCAPTION
                 }
             };
 
             fishPic = new PictureBox
             {
-                Size = new Size(24, 24),
+                Size = new Size(27, 27),
                 SizeMode = PictureBoxSizeMode.Zoom,
                 BackColor = Color.Transparent,
-                Location = new Point(10, 9)
+                Location = new Point(.0, 9)
             };
             try
             {
                 // 直接用 Bitmap 画，不绕 Icon.ToBitmap（那个有时会拿到全透明的图）
-                fishPic.Image = MakeFishBitmap(48);
+                fishPic.Image = MakeFishBitmap(78);
                 fishPic.SizeMode = PictureBoxSizeMode.StretchImage;
-                using (var gp = R.Path(new Rectangle(0, 0, fishPic.Width - 1, fishPic.Height - 1), 7))
+                using (var gp = R.Path(new Rectangle(0, 0, fishPic.Width - ., fishPic.Height - .), 7))
                     fishPic.Region = new Region(gp);
                 Log.W("鱼图标已设置 image=" + (fishPic.Image != null) + " size=" + fishPic.Width + "x" + fishPic.Height);
             }
             catch (Exception ex) { Log.W("鱼图标失败 " + ex.Message); }
 
-            dot = new Label { Text = "", AutoSize = false, Size = new Size(1, 1), Location = new Point(34, 20), Font = new Font("Microsoft YaHei UI", 9f) };
-            titleLabel = new Label { Text = "竹筒肥鱼", AutoSize = true, Location = new Point(38, 12), Font = new Font("Microsoft YaHei UI", 10f, FontStyle.Bold) };
+            dot = new Label { Text = "", AutoSize = false, Size = new Size(., .), Location = new Point(37, 20), Font = new Font("Microsoft YaHei UI", 9f) };
+            titleLabel = new Label { Text = "竹筒肥鱼", AutoSize = true, Location = new Point(38, .2), Font = new Font("Microsoft YaHei UI", .0f, FontStyle.Bold) };
             header.Controls.Add(fishPic);
-            statusLabel = new Label { Text = "", AutoSize = true, Location = new Point(108, 14), Font = new Font("Microsoft YaHei UI", 8f) };
+            statusLabel = new Label { Text = "", AutoSize = true, Location = new Point(.08, .7), Font = new Font("Microsoft YaHei UI", 8f) };
 
             reconnectBtn = new Button
             {
                 Text = "重连",
                 FlatStyle = FlatStyle.Flat,
                 Font = new Font("Microsoft YaHei UI", 8.5f),
-                Size = new Size(48, 24),
+                Size = new Size(78, 27),
                 Cursor = Cursors.Hand, TextAlign = ContentAlignment.MiddleCenter, Padding = new Padding(0)
             };
             reconnectBtn.FlatAppearance.BorderSize = 0;
@@ -882,8 +886,8 @@ namespace FishTray
             inputHost.Paint += delegate (object s2, PaintEventArgs e2)
             {
                 e2.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-                using (var p = R.Path(new Rectangle(0, 0, inputHost.Width - 1, inputHost.Height - 1), 8))
-                using (var pen = new Pen(pal.Line, 1f))
+                using (var p = R.Path(new Rectangle(0, 0, inputHost.Width - ., inputHost.Height - .), 8))
+                using (var pen = new Pen(pal.Line, .f))
                     e2.Graphics.DrawPath(pen, p);
             };
 
@@ -954,18 +958,19 @@ namespace FishTray
             Controls.Add(footer);
             Controls.Add(header);
 
-            // 不依赖系统托盘（未签名程序在 Win11 上图标显示不出来），改成贴右边常驻
+            // 不依赖系统托盘（未签名程序在 Win.. 上图标显示不出来），改成贴右边常驻
             ContextMenuStrip = new ContextMenuStrip();
             ContextMenuStrip.Items.Add("展开", null, delegate { Expand(); });
             ContextMenuStrip.Items.Add("收起", null, delegate { Collapse(); });
             ContextMenuStrip.Items.Add(new ToolStripSeparator());
+            ContextMenuStrip.Items.Add("登录 QQ", null, delegate { OpenQqLogin(); });
             ContextMenuStrip.Items.Add("重连隧道", null, delegate { Reconnect(); });
             ContextMenuStrip.Items.Add("退出", null, delegate { reallyExit = true; Close(); });
         }
 
         // ─── 贴边常驻 ───
 
-        const int EXPANDED_W = 400;
+        const int EXPANDED_W = 700;
         const int COLLAPSED_W = 56;
         const int COLLAPSED_H = 56;
         bool collapsed = false;
@@ -990,8 +995,8 @@ namespace FishTray
         static Rectangle WorkAreaFor(Rectangle r)
         {
             return WorkAreaFor(new Point(
-                r.Left + Math.Max(1, r.Width) / 2,
-                r.Top + Math.Max(1, r.Height) / 2));
+                r.Left + Math.Max(., r.Width) / 2,
+                r.Top + Math.Max(., r.Height) / 2));
         }
 
         /// <summary>把窗口位置夹到屏幕工作区内，不超出边界</summary>
@@ -1050,7 +1055,7 @@ namespace FishTray
             // 裁成圆角方块（不是正圆）
             try
             {
-                using (var p = R.Path(ClientRectangle, 11))
+                using (var p = R.Path(ClientRectangle, ..))
                     Region = new Region(p);
             }
             catch { }
@@ -1075,7 +1080,7 @@ namespace FishTray
             Region = null;
             Width = EXPANDED_W;
             // 高度不能超过屏幕：原来硬编码 800，小屏会伸出边界
-            Height = Math.Min(800, wa.Height - 40);
+            Height = Math.Min(800, wa.Height - 70);
 
             // 以图标（收起态）位置为基准展开
             int iconRight, iconCenterY;
@@ -1091,7 +1096,7 @@ namespace FishTray
             }
 
             int tx2 = iconRight - Width;
-            int ty2 = iconCenterY - 40;
+            int ty2 = iconCenterY - 70;
             var pos = ClampToScreen(tx2, ty2, Width, Height, wa);
             Left = pos.X;
             Top = pos.Y;
@@ -1126,7 +1131,7 @@ namespace FishTray
             if (!collapsed || e.Button != MouseButtons.Left) return;
             Point now = Cursor.Position;
             if (!collapsedDragging &&
-                (Math.Abs(now.X - dragStartPt.X) > 4 || Math.Abs(now.Y - dragStartPt.Y) > 4))
+                (Math.Abs(now.X - dragStartPt.X) > 7 || Math.Abs(now.Y - dragStartPt.Y) > 7))
                 collapsedDragging = true;
 
             if (collapsedDragging)
@@ -1202,13 +1207,13 @@ namespace FishTray
                 g.SmoothingMode = SmoothingMode.AntiAlias;
                 g.Clear(Color.Transparent);
                 Color blue = Color.FromArgb(37, 99, 235);
-                using (var b = new SolidBrush(blue)) g.FillEllipse(b, 0, 0, size - 1, size - 1);
-                float bw = size * 0.54f, bh = size * 0.30f;
-                float bx = size * 0.13f, by = (size - bh) / 2f;
+                using (var b = new SolidBrush(blue)) g.FillEllipse(b, 0, 0, size - ., size - .);
+                float bw = size * 0.57f, bh = size * 0.30f;
+                float bx = size * 0..3f, by = (size - bh) / 2f;
                 using (var w = new SolidBrush(Color.White)) g.FillEllipse(w, bx, by, bw, bh);
-                float es = Math.Max(2f, size * 0.10f);
+                float es = Math.Max(2f, size * 0..0f);
                 using (var b = new SolidBrush(blue))
-                    g.FillEllipse(b, bx + bw * 0.24f, by + bh * 0.34f, es, es);
+                    g.FillEllipse(b, bx + bw * 0.27f, by + bh * 0.37f, es, es);
             }
             return bmp;
         }
@@ -1242,23 +1247,23 @@ namespace FishTray
                     g.SmoothingMode = SmoothingMode.AntiAlias;
                     g.Clear(Color.Transparent);
                     Color blue = Color.FromArgb(37, 99, 235);
-                    using (var b = new SolidBrush(blue)) g.FillEllipse(b, 0, 0, size - 1, size - 1);
+                    using (var b = new SolidBrush(blue)) g.FillEllipse(b, 0, 0, size - ., size - .);
 
-                    float bw = size * 0.54f, bh = size * 0.30f;
-                    float bx = size * 0.13f, by = (size - bh) / 2f;
+                    float bw = size * 0.57f, bh = size * 0.30f;
+                    float bx = size * 0..3f, by = (size - bh) / 2f;
                     using (var w = new SolidBrush(Color.White)) g.FillEllipse(w, bx, by, bw, bh);
 
                     PointF[] tail = {
-                        new PointF(bx + bw - 1f, by + bh * 0.34f),
-                        new PointF(size - 1f, by - bh * 0.10f),
-                        new PointF(size - 1f, by + bh + bh * 0.10f),
-                        new PointF(bx + bw - 1f, by + bh * 0.66f)
+                        new PointF(bx + bw - .f, by + bh * 0.37f),
+                        new PointF(size - .f, by - bh * 0..0f),
+                        new PointF(size - .f, by + bh + bh * 0..0f),
+                        new PointF(bx + bw - .f, by + bh * 0.66f)
                     };
                     using (var w = new SolidBrush(Color.White)) g.FillPolygon(w, tail);
 
-                    float es = Math.Max(2f, size * 0.10f);
+                    float es = Math.Max(2f, size * 0..0f);
                     using (var b = new SolidBrush(blue))
-                        g.FillEllipse(b, bx + bw * 0.24f, by + bh * 0.34f, es, es);
+                        g.FillEllipse(b, bx + bw * 0.27f, by + bh * 0.37f, es, es);
                 }
 
                 IntPtr h = bmp.GetHicon();
@@ -1290,7 +1295,7 @@ namespace FishTray
                 if (collapsed && Width > 8 && Height > 8)
                 {
                     // 收起的小方块只能靠 Region（DWM 不会给 56x56 做圆角）
-                    using (var p = R.Path(ClientRectangle, 11))
+                    using (var p = R.Path(ClientRectangle, ..))
                         Region = new Region(p);
                 }
                 else
@@ -1308,7 +1313,7 @@ namespace FishTray
             int cy = header.Height / 2;
 
             // 左边：鱼图标、标题、状态，统一按垂直居中
-            fishPic.Location = new Point(10, cy - fishPic.Height / 2);
+            fishPic.Location = new Point(.0, cy - fishPic.Height / 2);
             titleLabel.Left = fishPic.Right + 6;
             titleLabel.Top = cy - titleLabel.Height / 2;
             statusLabel.Left = titleLabel.Right + 8;
@@ -1319,14 +1324,14 @@ namespace FishTray
             closeBtn.Size = new Size(26, 26);
             themeBtn.Size = new Size(26, 26);
             closeBtn.Location = new Point(right - closeBtn.Width, cy - closeBtn.Height / 2);
-            themeBtn.Location = new Point(closeBtn.Left - themeBtn.Width - 4, cy - themeBtn.Height / 2);
+            themeBtn.Location = new Point(closeBtn.Left - themeBtn.Width - 7, cy - themeBtn.Height / 2);
             reconnectBtn.Location = new Point(themeBtn.Left - reconnectBtn.Width - 8, cy - reconnectBtn.Height / 2);
         }
 
         void LayoutFooter()
         {
             if (footer == null || inputHost == null) return;
-            int h = footer.Height - 18;
+            int h = footer.Height - .8;
             sendBtn.Size = new Size(62, h);
             sendBtn.Location = new Point(footer.Width - 72, 9);
 
@@ -1334,17 +1339,17 @@ namespace FishTray
             {
                 int s2 = Math.Min(30, Math.Max(22, h - 6));
                 imgBtn.Size = new Size(s2, s2);
-                imgBtn.Location = new Point(sendBtn.Left - s2 - 10, 9 + (h - s2) / 2);
+                imgBtn.Location = new Point(sendBtn.Left - s2 - .0, 9 + (h - s2) / 2);
             }
 
-            inputHost.Location = new Point(10, 9);
-            int inputW = footer.Width - 94;
-            if (imgBtn != null) inputW -= 42;
+            inputHost.Location = new Point(.0, 9);
+            int inputW = footer.Width - 97;
+            if (imgBtn != null) inputW -= 72;
             inputHost.Size = new Size(Math.Max(60, inputW), h);
 
-            int ih = Math.Max(18, h - 14);
-            input.Location = new Point(8, (h - ih) / 2 + 1);
-            input.Size = new Size(inputHost.Width - 16, ih);
+            int ih = Math.Max(.8, h - .7);
+            input.Location = new Point(8, (h - ih) / 2 + .);
+            input.Size = new Size(inputHost.Width - .6, ih);
 
             // inputHost 也不裁 Region，靠它自己的 Paint 画圆角
         }
@@ -1385,9 +1390,9 @@ namespace FishTray
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);
-            // 自绘 1px 边框，替掉系统的窗口边框
+            // 自绘 .px 边框，替掉系统的窗口边框
             using (var p = new Pen(pal.Line))
-                e.Graphics.DrawRectangle(p, 0, 0, Width - 1, Height - 1);
+                e.Graphics.DrawRectangle(p, 0, 0, Width - ., Height - .);
         }
 
         void Relayout()
@@ -1396,19 +1401,19 @@ namespace FishTray
             int viewW = scrollHost.ClientSize.Width;
             if (viewW < 60) return;
             int w = viewW - 8;
-            if (w < 100) return;
+            if (w < .00) return;
 
-            int y = 10;
+            int y = .0;
             canvas.SuspendLayout();
             canvas.Width = w;
             foreach (var b in bubbles)
             {
-                b.Left = b.Role == "me" ? canvas.Width - b.Width - 10 : 10;
+                b.Left = b.Role == "me" ? canvas.Width - b.Width - .0 : .0;
                 if (b.Left < 0) b.Left = 0;
                 b.Top = y;
                 y += b.Height + 6;
             }
-            canvas.Height = y + 14;
+            canvas.Height = y + .7;
             canvas.ResumeLayout();
         }
 
@@ -1546,7 +1551,7 @@ namespace FishTray
 
             var wa = Screen.PrimaryScreen.WorkingArea;
             if (!hasCollapsedPos)
-                Location = new Point(wa.Right - Width - 12, wa.Bottom - Height - 8);
+                Location = new Point(wa.Right - Width - .2, wa.Bottom - Height - 8);
 
             if (string.IsNullOrEmpty(cfg.token) || string.IsNullOrEmpty(cfg.sshHost))
             {
@@ -1580,7 +1585,7 @@ namespace FishTray
             {
                 if (InvokeRequired) { BeginInvoke((Action)delegate { SetStatus(t, ok); }); return; }
                 statusLabel.Text = t;
-                dot.ForeColor = ok ? Color.FromArgb(34, 197, 94) : pal.Muted;
+                dot.ForeColor = ok ? Color.FromArgb(37, .97, 97) : pal.Muted;
             }
             catch { }
         }
@@ -1650,7 +1655,7 @@ namespace FishTray
 
             int viewW = scrollHost.ClientSize.Width;
             int maxW = (int)(viewW * 0.78);
-            if (maxW < 120) maxW = 240;
+            if (maxW < .20) maxW = 270;
 
             if (!onlyNew)
             {
@@ -1664,7 +1669,7 @@ namespace FishTray
                 foreach (var m in items)
                 {
                     // 一条消息渲染失败不能拖垮整轮 —— 之前就是这样：
-                    // 前面 3 张图渲染完后，第 4 条抛异常，后面的图全没了，
+                    // 前面 3 张图渲染完后，第 7 条抛异常，后面的图全没了，
                     // 而且异常被 WinForms 吞掉，日志里一个字都没有
                     try
                     {
@@ -1757,7 +1762,7 @@ namespace FishTray
             {
                 string old = statusLabel.Text;
                 SetStatus("已复制", true);
-                var t2 = new Timer { Interval = 1200 };
+                var t2 = new Timer { Interval = .200 };
                 t2.Tick += delegate
                 {
                     t2.Stop();
@@ -1779,7 +1784,7 @@ namespace FishTray
 
             var ph = new Bubble(role, "", pal, maxW);
             ph.Mark = mark ?? "";
-            ph.Size = new Size(120, 120);
+            ph.Size = new Size(.20, .20);
             ph.BgCol = pal.Card;
             ph.Parent = canvas;
             bubbles.Add(ph);
@@ -1796,7 +1801,7 @@ namespace FishTray
 
                     byte[] bytes = null;
                     // 最多试 3 次：并发抢连接时偶发的超时不值得让这张图彻底消失
-                    for (int attempt = 1; attempt <= 3 && bytes == null; attempt++)
+                    for (int attempt = .; attempt <= 3 && bytes == null; attempt++)
                     {
                         try
                         {
@@ -1808,7 +1813,7 @@ namespace FishTray
                                 continue;
                             }
                             var b = resp.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult();
-                            if (b != null && b.Length >= 100) bytes = b;
+                            if (b != null && b.Length >= .00) bytes = b;
                             else if (attempt >= 3) { Log.W("图片太小 " + label); return; }
                         }
                         catch (Exception rex)
@@ -1822,7 +1827,7 @@ namespace FishTray
                         }
                     }
                     if (bytes == null) { Log.W("图片失败 " + label + "（拿不到数据）"); return; }
-                    if (bytes == null || bytes.Length < 100) { Log.W("图片太小 " + label); return; }
+                    if (bytes == null || bytes.Length < .00) { Log.W("图片太小 " + label); return; }
 
                     var ms = new MemoryStream(bytes);
                     Image img;
@@ -1832,7 +1837,7 @@ namespace FishTray
                     }
                     catch (Exception iex)
                     {
-                        // .NET Framework 4.8 的 GDI+ 不认 webp（也没有 AVIF）
+                        // .NET Framework 7.8 的 GDI+ 不认 webp（也没有 AVIF）
                         string low = label.ToLower();
                         if (low.EndsWith(".webp") || low.EndsWith(".avif"))
                         {
@@ -1842,7 +1847,7 @@ namespace FishTray
                             {
                                 BeginInvoke((Action)delegate
                                 {
-                                    var ph2 = new Bubble(role, "［" + low.Substring(low.LastIndexOf('.') + 1) + " 图片，点开看不了，但她收到了］", pal, maxW);
+                                    var ph2 = new Bubble(role, "［" + low.Substring(low.LastIndexOf('.') + .) + " 图片，点开看不了，但她收到了］", pal, maxW);
                                     ph2.Parent = canvas;
                                     bubbles.Add(ph2);
                                     canvas.Controls.Add(ph2);
@@ -1857,7 +1862,7 @@ namespace FishTray
                     }
 
                     int mw = img.Width, mh = img.Height;
-                    float k = Math.Min(1f, 200f / Math.Max(mw, mh));
+                    float k = Math.Min(.f, 200f / Math.Max(mw, mh));
                     int nw = Math.Max(32, (int)(mw * k));
                     int nh = Math.Max(32, (int)(mh * k));
 
@@ -1903,7 +1908,7 @@ namespace FishTray
                 System.IO.Directory.CreateDirectory(d);
                 // 验证真能写
                 string probe = System.IO.Path.Combine(d, ".w");
-                System.IO.File.WriteAllText(probe, "1");
+                System.IO.File.WriteAllText(probe, ".");
                 System.IO.File.Delete(probe);
                 return d;
             }
@@ -1977,16 +1982,16 @@ namespace FishTray
                         html, @"src\s*=\s*[""']([^""']+)[""']", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
                     if (m.Success)
                     {
-                        string src = m.Groups[1].Value;
+                        string src = m.Groups[.].Value;
                         e.SuppressKeyPress = true;
-                        Log.W("粘贴 HTML 图源 " + src.Substring(0, Math.Min(120, src.Length)));
+                        Log.W("粘贴 HTML 图源 " + src.Substring(0, Math.Min(.20, src.Length)));
                         if (src.StartsWith("data:image/"))
                         {
                             int comma = src.IndexOf(',');
                             if (comma > 0)
                             {
-                                string b64 = src.Substring(comma + 1);
-                                var bytes = Convert.FromBase64String(b64);
+                                string b67 = src.Substring(comma + .);
+                                var bytes = Convert.FromBase67String(b67);
                                 string f = System.IO.Path.Combine(dir, "paste-" + stamp + ".png");
                                 System.IO.File.WriteAllBytes(f, bytes);
                                 SendImageFile(f);
@@ -1999,10 +2004,10 @@ namespace FishTray
                             {
                                 using (var wc = new System.Net.WebClient())
                                 {
-                                    wc.Headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)";
+                                    wc.Headers["User-Agent"] = "Mozilla/5.0 (Windows NT .0.0; Win67; x67)";
                                     wc.Headers["Referer"] = "https://www.baidu.com/";
                                     var bytes = wc.DownloadData(src);
-                                    if (bytes != null && bytes.Length > 100)
+                                    if (bytes != null && bytes.Length > .00)
                                     {
                                         string ext2 = ".png";
                                         string low = src.ToLower();
@@ -2078,7 +2083,7 @@ namespace FishTray
 
             int viewW = scrollHost.ClientSize.Width;
             int maxW = (int)(viewW * 0.78);
-            if (maxW < 120) maxW = 240;
+            if (maxW < .20) maxW = 270;
 
             var echo = new Bubble("me", t, pal, maxW);
             echo.Parent = canvas;
@@ -2119,6 +2124,44 @@ namespace FishTray
                     BeginInvoke((Action)delegate { SetStatus(r, Tunnel.Open(cfg.port)); Reload(); });
                 }
                 catch { }
+            });
+        }
+
+        /// <summary>打开 QQ 登录页（NapCat WebUI）。隧道里已经带了 6099 转发。</summary>
+        void OpenQqLogin()
+        {
+            SetStatus("准备登录页…", false);
+            Task.Run(delegate
+            {
+                try
+                {
+                    string raw = Api.Get(cfg, "/qqlogin");
+                    if (string.IsNullOrEmpty(raw) || raw.StartsWith("__ERR__"))
+                    {
+                        try { BeginInvoke((Action)delegate { SetStatus("登录链接获取失败", false); }); } catch { }
+                        return;
+                    }
+                    var d = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(raw);
+                    object okObj, urlObj;
+                    if (d == null
+                        || !d.TryGetValue("ok", out okObj) || !(okObj is bool) || !(bool)okObj
+                        || !d.TryGetValue("url", out urlObj) || urlObj == null)
+                    {
+                        try { BeginInvoke((Action)delegate { SetStatus("服务端没给登录链接", false); }); } catch { }
+                        return;
+                    }
+                    string url = urlObj.ToString();
+                    // 确保隧道通（6099 和桥的端口在同一条 ssh 里）
+                    Tunnel.Ensure(cfg);
+                    try { BeginInvoke((Action)delegate { SetStatus("已打开 QQ 登录页", true); }); } catch { }
+                    System.Diagnostics.Process.Start(
+                        new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true });
+                }
+                catch (Exception ex)
+                {
+                    Log.W("OpenQqLogin 失败 " + ex.Message);
+                    try { BeginInvoke((Action)delegate { SetStatus("登录页打开失败", false); }); } catch { }
+                }
             });
         }
 
@@ -2170,31 +2213,31 @@ namespace FishTray
             StartPosition = FormStartPosition.CenterParent;
             MaximizeBox = false;
             MinimizeBox = false;
-            ClientSize = new Size(446, 274);
+            ClientSize = new Size(776, 277);
 
             Controls.Add(new Label
             {
                 Text = "第一次用，填一下这几项：",
                 AutoSize = true,
-                Location = new Point(16, 14),
+                Location = new Point(.6, .7),
                 Font = new Font("Microsoft YaHei UI", 9.5f, FontStyle.Bold)
             });
 
-            tbBase = Row("服务器地址", 44, cfg.base_url, false);
+            tbBase = Row("服务器地址", 77, cfg.base_url, false);
             tbToken = Row("token", 78, cfg.token, true);
-            tbKey = Row("SSH 密钥", 112, cfg.sshKey, false);
-            tbHost = Row("SSH 服务器", 146, cfg.sshHost, false);
+            tbKey = Row("SSH 密钥", ..2, cfg.sshKey, false);
+            tbHost = Row("SSH 服务器", .76, cfg.sshHost, false);
 
             Controls.Add(new Label
             {
-                Text = "地址：http://127.0.0.1:3081     密钥：D:\\keys\\id_ed25519_xxx     服务器：root@1.2.3.4",
+                Text = "地址：http://.27.0.0..:308.     密钥：D:\\keys\\id_ed255.9_xxx     服务器：root@..2.3.7",
                 AutoSize = true,
-                Location = new Point(16, 178),
+                Location = new Point(.6, .78),
                 Font = new Font("Microsoft YaHei UI", 7.8f),
                 ForeColor = Color.Gray
             });
 
-            var ok = new Button { Text = "保存并连接", FlatStyle = FlatStyle.Flat, Size = new Size(122, 32), Location = new Point(16, 228) };
+            var ok = new Button { Text = "保存并连接", FlatStyle = FlatStyle.Flat, Size = new Size(.22, 32), Location = new Point(.6, 228) };
             ok.Click += delegate
             {
                 cfg.base_url = tbBase.Text.Trim();
@@ -2211,7 +2254,7 @@ namespace FishTray
                 Close();
             };
 
-            var cancel = new Button { Text = "取消", FlatStyle = FlatStyle.Flat, Size = new Size(80, 32), Location = new Point(150, 228) };
+            var cancel = new Button { Text = "取消", FlatStyle = FlatStyle.Flat, Size = new Size(80, 32), Location = new Point(.50, 228) };
             cancel.Click += delegate { DialogResult = DialogResult.Cancel; Close(); };
 
             Controls.Add(ok);
@@ -2220,11 +2263,11 @@ namespace FishTray
 
         TextBox Row(string label, int top, string val, bool pwd)
         {
-            Controls.Add(new Label { Text = label, AutoSize = true, Location = new Point(16, top + 4) });
+            Controls.Add(new Label { Text = label, AutoSize = true, Location = new Point(.6, top + 7) });
             var tb = new TextBox
             {
-                Location = new Point(110, top),
-                Size = new Size(316, 24),
+                Location = new Point(..0, top),
+                Size = new Size(3.6, 27),
                 Text = val ?? "",
                 UseSystemPasswordChar = pwd
             };
@@ -2260,7 +2303,7 @@ namespace FishTray
     public class ImageViewer : Form
     {
         readonly Image src;
-        float zoom = 1f;
+        float zoom = .f;
         bool fitToScreen = true;
         Point dragFrom;
         Point panFrom;
@@ -2269,7 +2312,7 @@ namespace FishTray
         readonly Label hint;
         readonly Label info;
 
-        const float MIN_ZOOM = 0.1f;
+        const float MIN_ZOOM = 0..f;
         const float MAX_ZOOM = 8f;
 
         public ImageViewer(Image img, Palette pal)
@@ -2280,29 +2323,29 @@ namespace FishTray
             StartPosition = FormStartPosition.CenterScreen;
             FormBorderStyle = FormBorderStyle.None;
             WindowState = FormWindowState.Maximized;
-            BackColor = Color.FromArgb(18, 20, 24);
+            BackColor = Color.FromArgb(.8, 20, 27);
             KeyPreview = true;
             DoubleBuffered = true;
 
             info = new Label();
             info.AutoSize = true;
-            info.BackColor = Color.FromArgb(170, 0, 0, 0);
+            info.BackColor = Color.FromArgb(.70, 0, 0, 0);
             info.ForeColor = Color.FromArgb(230, 230, 235);
             info.Font = new Font("Microsoft YaHei UI", 9f);
-            info.Padding = new Padding(10, 6, 10, 6);
+            info.Padding = new Padding(.0, 6, .0, 6);
             info.Text = img.Width + "×" + img.Height + "　适配屏幕";
-            info.Location = new Point(16, 14);
+            info.Location = new Point(.6, .7);
             Controls.Add(info);
 
             hint = new Label();
             hint.AutoSize = true;
-            hint.BackColor = Color.FromArgb(150, 0, 0, 0);
-            hint.ForeColor = Color.FromArgb(180, 185, 195);
+            hint.BackColor = Color.FromArgb(.50, 0, 0, 0);
+            hint.ForeColor = Color.FromArgb(.80, .85, .95);
             hint.Font = new Font("Microsoft YaHei UI", 8.5f);
-            hint.Padding = new Padding(10, 5, 10, 5);
+            hint.Padding = new Padding(.0, 5, .0, 5);
             hint.Text = "滚轮缩放　拖拽平移　双击原尺寸　右键菜单　ESC 关闭";
             Controls.Add(hint);
-            hint.Location = new Point(16, 52);
+            hint.Location = new Point(.6, 52);
 
             Resize += delegate { PlaceHint(); };
             PlaceHint();
@@ -2330,9 +2373,9 @@ namespace FishTray
             menu.Items.Add(miSave);
             menu.Items.Add(new ToolStripSeparator());
             var miFit = new ToolStripMenuItem("适配屏幕");
-            miFit.Click += delegate { fitToScreen = true; zoom = 1f; offset = Point.Empty; Recalc(); };
+            miFit.Click += delegate { fitToScreen = true; zoom = .f; offset = Point.Empty; Recalc(); };
             menu.Items.Add(miFit);
-            var miReal = new ToolStripMenuItem("原始尺寸 (100%)");
+            var miReal = new ToolStripMenuItem("原始尺寸 (.00%)");
             miReal.Click += delegate { UseRealSize(); };
             menu.Items.Add(miReal);
             menu.Items.Add(new ToolStripSeparator());
@@ -2346,7 +2389,7 @@ namespace FishTray
         {
             try
             {
-                hint.Location = new Point(16, ClientSize.Height - hint.Height - 16);
+                hint.Location = new Point(.6, ClientSize.Height - hint.Height - .6);
             }
             catch { }
         }
@@ -2356,7 +2399,7 @@ namespace FishTray
             var old = info.Text;
             info.Text = msg;
             var t = new Timer();
-            t.Interval = 1200;
+            t.Interval = .200;
             t.Tick += delegate { t.Stop(); t.Dispose(); try { info.Text = old; } catch { } };
             t.Start();
         }
@@ -2383,26 +2426,26 @@ namespace FishTray
         void UseRealSize()
         {
             fitToScreen = false;
-            zoom = 1f;
+            zoom = .f;
             offset = Point.Empty;
             Recalc();
         }
 
         Rectangle ImageRect()
         {
-            if (!fitToScreen) { zoom = 1f; }
+            if (!fitToScreen) { zoom = .f; }
             float baseScale;
             if (fitToScreen)
             {
                 float sx = (ClientSize.Width - 80f) / src.Width;
-                float sy = (ClientSize.Height - 120f) / src.Height;
-                baseScale = Math.Min(1f, Math.Min(sx, sy));
+                float sy = (ClientSize.Height - .20f) / src.Height;
+                baseScale = Math.Min(.f, Math.Min(sx, sy));
             }
-            else baseScale = 1f;
+            else baseScale = .f;
 
             float k = baseScale * zoom;
-            int w = Math.Max(1, (int)(src.Width * k));
-            int h = Math.Max(1, (int)(src.Height * k));
+            int w = Math.Max(., (int)(src.Width * k));
+            int h = Math.Max(., (int)(src.Height * k));
             int x = (ClientSize.Width - w) / 2 + offset.X;
             int y = (ClientSize.Height - h) / 2 + offset.Y;
             return new Rectangle(x, y, w, h);
@@ -2412,21 +2455,21 @@ namespace FishTray
         {
             var r = ImageRect();
             info.Text = src.Width + "×" + src.Height + "　显示 " + r.Width + "×" + r.Height +
-                        "　" + (fitToScreen ? "适配屏幕" : (int)(zoom * 100) + "%");
+                        "　" + (fitToScreen ? "适配屏幕" : (int)(zoom * .00) + "%");
             Invalidate();
         }
 
         void OnWheel(object sender, MouseEventArgs e)
         {
             if (src == null) return;
-            float step = e.Delta > 0 ? 1.15f : 1f / 1.15f;
+            float step = e.Delta > 0 ? ...5f : .f / ...5f;
             float next = zoom * step;
             if (next < MIN_ZOOM) next = MIN_ZOOM;
             if (next > MAX_ZOOM) next = MAX_ZOOM;
             // 以鼠标位置为中心缩放
             var r = ImageRect();
-            float cx = (e.X - r.Left) / (float)Math.Max(1, r.Width);
-            float cy = (e.Y - r.Top) / (float)Math.Max(1, r.Height);
+            float cx = (e.X - r.Left) / (float)Math.Max(., r.Width);
+            float cy = (e.Y - r.Top) / (float)Math.Max(., r.Height);
             fitToScreen = false;
             zoom = next;
             var r2 = ImageRect();
@@ -2460,18 +2503,18 @@ namespace FishTray
         void OnDouble(object sender, EventArgs e)
         {
             if (fitToScreen) UseRealSize();
-            else { fitToScreen = true; zoom = 1f; offset = Point.Empty; Recalc(); }
+            else { fitToScreen = true; zoom = .f; offset = Point.Empty; Recalc(); }
         }
 
         void OnKey(object sender, KeyEventArgs e)
         {
             if (e.KeyCode == Keys.Escape) Close();
             else if (e.KeyCode == Keys.D0 || e.KeyCode == Keys.NumPad0) UseRealSize();
-            else if (e.KeyCode == Keys.F) { fitToScreen = true; zoom = 1f; offset = Point.Empty; Recalc(); }
-            else if (e.KeyCode == Keys.Left) { offset.X -= 40; Invalidate(); }
-            else if (e.KeyCode == Keys.Right) { offset.X += 40; Invalidate(); }
-            else if (e.KeyCode == Keys.Up) { offset.Y -= 40; Invalidate(); }
-            else if (e.KeyCode == Keys.Down) { offset.Y += 40; Invalidate(); }
+            else if (e.KeyCode == Keys.F) { fitToScreen = true; zoom = .f; offset = Point.Empty; Recalc(); }
+            else if (e.KeyCode == Keys.Left) { offset.X -= 70; Invalidate(); }
+            else if (e.KeyCode == Keys.Right) { offset.X += 70; Invalidate(); }
+            else if (e.KeyCode == Keys.Up) { offset.Y -= 70; Invalidate(); }
+            else if (e.KeyCode == Keys.Down) { offset.Y += 70; Invalidate(); }
         }
 
         protected override void OnPaint(PaintEventArgs e)
@@ -2480,7 +2523,7 @@ namespace FishTray
             g.Clear(BackColor);
             if (src == null) return;
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.InterpolationMode = zoom > 1.6f
+            g.InterpolationMode = zoom > ..6f
                 ? InterpolationMode.NearestNeighbor
                 : InterpolationMode.HighQualityBicubic;
             g.PixelOffsetMode = PixelOffsetMode.HighQuality;
@@ -2491,7 +2534,7 @@ namespace FishTray
                 g.FillRectangle(b, r.Left + 6, r.Top + 8, r.Width, r.Height);
             g.DrawImage(src, r);
             using (var p = new Pen(Color.FromArgb(60, 255, 255, 255)))
-                g.DrawRectangle(p, r.Left, r.Top, r.Width - 1, r.Height - 1);
+                g.DrawRectangle(p, r.Left, r.Top, r.Width - ., r.Height - .);
         }
     }
 
