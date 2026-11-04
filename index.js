@@ -638,7 +638,8 @@ class OneBotClient {
     if (!this.connected) {
       const txt = String(text || "");
       try {
-        this.onOfflineText?.(txt);
+        // 带上收件人：不然 WebUI 那边分不清这话是跟谁说的，也不知道该不该展示正文
+        this.onOfflineText?.(txt, String(userId || ""));
       } catch {
         // 忽略
       }
@@ -2321,10 +2322,24 @@ export function apply(ctx, _pluginConfig) {
   client.readyFn = () => agentReady;
   client.onOutage = (kind, ts) => noteOutageFromClient(kind, ts);
   client.onWebReply = (text, channel) => webPush({ role: "her", text, channel: channel || "qq" });
-  // QQ 离线时，本该私聊发出的内容改成推到 WebUI
-  client.onOfflineText = (text) => {
+  // QQ 离线时，本该私聊发出的内容改成推到 WebUI。
+  // 但要分清是发给谁的：发给主人的，主人本来就该看到；
+  // 发给第三方的，正文不能进 WebUI 历史（那是她的私聊内容，
+  // 而且 webui-history.jsonl 会被 /history 全量返回，见 2.0.1 的教训）。
+  client.onOfflineText = (text, toUid) => {
     try {
-      webPush({ role: "her", text: String(text || "").slice(0, 2000) });
+      const body = String(text || "");
+      const isOwner = !!toUid && String(toUid) === String(cfg.ownerId ?? "");
+      if (isOwner || !toUid) {
+        webPush({ role: "her", text: body.slice(0, 2000), channel: "qq", offline: true });
+      } else {
+        // tool 记录不进 history 文件（webPush 里就过滤了），只走 SSE 给当前打开的面板
+        webPush({
+          role: "tool",
+          text: "QQ 离线：有一条发给 " + toUid + " 的私聊没发出去（正文不展示）",
+        });
+        logger.info?.("[onebot] QQ 离线：发给他人(" + toUid + ")的内容不进 WebUI 历史，只留占位");
+      }
     } catch {
       // 忽略
     }
@@ -10476,6 +10491,9 @@ async function handleOwnerNatural(ev, text) {
       lines.push("你之前给自己留了句话：「" + String(e.payload.what || "").slice(0, 200) + "」");
     } else if (e.kind === "activity_due") {
       lines.push("你之前排的活动时间到了。");
+      // kind 以前只存不用：她 schedule_activity({kind:"read"}) 记下来的东西
+      // 到点根本不出现，等于白填。
+      if (e.payload.kind) lines.push("当时想做的：" + String(e.payload.kind).slice(0, 40));
       if (e.payload.note) lines.push("当时留的：" + String(e.payload.note).slice(0, 200));
     } else if (e.kind === "system") {
       lines.push("系统：" + String(e.payload.text || "").slice(0, 300));
@@ -10684,23 +10702,36 @@ async function handleOwnerNatural(ev, text) {
             }
             if (args?.quote) ev.message_id = String(args.quote);
 
+            // 文字和表情分开结算。
+            // 以前表情失败会把整条甩进 catch、返回 ok:false —— 文字明明已经出去了，
+            // 她以为整条没发，再发一遍，群里就出现重复。
             try {
               await client.sendHuman(ev, text, { force: true });
-              let stickerSent = null;
-              if (args?.sticker) {
+            } catch (err) {
+              return { ok: false, sent: false, reason: "文字没发出去：" + String(err?.message ?? err) };
+            }
+
+            let stickerSent = null;
+            let stickerErr = "";
+            if (args?.sticker) {
+              try {
                 const mood = String(args.sticker);
                 const picked = pickSticker(cfg.stickerDir, mood === "random" ? "" : mood);
-                if (picked) {
+                if (!picked) {
+                  stickerErr = "表情库里没挑到 " + mood;
+                } else {
                   await sleep(400 + Math.random() * 600);
                   await client.sendImage(ev, picked.path);
                   stickerSent = mood;
                 }
+              } catch (err) {
+                // 明确写清「文字已经发了」，不然她看到失败就想重发
+                stickerErr = "表情没发出去（文字已经发了，别再发一遍）：" +
+                  String(err?.message ?? err).slice(0, 80);
               }
-              audit({ kind: "send_message", target, text: text.slice(0, 120), sticker: stickerSent });
-              return { ok: true, target, stickerSent };
-            } catch (err) {
-              return { ok: false, reason: String(err?.message ?? err) };
             }
+            audit({ kind: "send_message", target, text: text.slice(0, 120), sticker: stickerSent, stickerErr });
+            return { ok: true, sent: true, target, stickerSent, stickerErr: stickerErr || undefined };
           },
         }),
       );
@@ -14818,10 +14849,17 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
     const reflectOut = reflectRes.text;
 
     // ── 记录 ──
-    // 下次活动什么时候：她想的 vs 实际会被压到多少
+    // 下次什么时候：这次真的排进去。
+    // 以前这里只算了个数写进活动记录，selfActivityNextAt 根本没人写，
+    // tickSelfActivity 的 before/after 恒等 → 永远走「兜底 40 分钟」，
+    // 她在 [[next: 2h]] 里定的时间一次都没生效过（日志还照打印，是假的）。
+    // 走 scheduleNextSelfActivity 而不是直接 patchSelfState：只有它带
+    // 「每日保底次数」的 maxGap 压缩，直接写状态会绕过保底。
     const wantDelay = Number(reflectRes.delayMin) || 0;
-    const actualDelay = Math.max(1, Math.min(40, wantDelay || 10 + Math.random() * 20));
-    const nextAtMs = Date.now() + actualDelay * 60_000;
+    scheduleNextSelfActivity(wantDelay);
+    const scheduledAt = Number(loadSelfState().selfActivityNextAt) || 0;
+    const realDelay =
+      scheduledAt > Date.now() ? Math.max(1, Math.round((scheduledAt - Date.now()) / 60_000)) : 0;
 
     appendActivity({
       at: Date.now(),
@@ -14831,9 +14869,9 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
       reflect: reflectOut,
       offline,
       byOwner,
-      nextDelayMin: Math.round(actualDelay),
+      nextDelayMin: realDelay,
       nextWantMin: Math.round(wantDelay),
-      nextAt: nextAtMs,
+      nextAt: scheduledAt,
     });
     appendMem({
       kind: plan.action,
@@ -14864,15 +14902,16 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
     } catch {
       // 忽略
     }
-    // 下次什么时候，由反思决定
-    if (reflectRes.delayMin) {
-      logger.info?.(`[onebot] 回看里定了：${Math.round(reflectRes.delayMin)} 分钟后再来`);
+    // 下次什么时候，由反思决定（上面已经真的排进去了，这里只如实报）
+    if (wantDelay) {
+      logger.info?.(
+        `[onebot] 回看里定了 ${Math.round(wantDelay)} 分钟，实际排 ${realDelay} 分钟后` +
+          (realDelay && Math.round(wantDelay) !== realDelay ? "（被每日保底压短）" : ""),
+      );
     } else {
-      logger.info?.("[onebot] 回看没说下次什么时候，用默认间隔");
+      logger.info?.(`[onebot] 回看没说下次什么时候，按默认排 ${realDelay} 分钟后`);
     }
-    // 注意：下一次的时间已经在 reflectPhase 里排过了（解析出 [[next:]] 就按她的，
-    // 没解析出来就用默认）。这里再排一次会把她的时间覆盖掉 —— 之前就是这里
-    // 导致「调度：」日志出现两条，后一条覆盖前一条。
+    if (!realDelay) logger.warn?.("[onebot] 这轮没排出下次时间（自主活动被关了？）");
   }
 
   /** 第二段：行动——按上一段想好的去做 */

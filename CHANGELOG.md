@@ -1,5 +1,68 @@
 # 更新日志
 
+## 2.0.10 · 2026-11-04
+
+**A 批：她自己审出来的三条静默失效 / 会出丑的地方。**
+
+她 22 条清单里的前三条（逐行核实过，不是照抄）。
+
+### ① 她定的「下次什么时候」终于生效了
+
+`reflectPhase()` 解析 `[[next: 2h]]` 只 `return delayMin`；`runThinkingCycleInner()`
+把它算成 `actualDelay`（还硬顶 40 分钟）写进活动记录，**从头到尾没人写 `selfActivityNextAt`**。
+而 `tickSelfActivity()` 的兜底判据是：
+
+```js
+const before = loadSelfState().selfActivityNextAt;   // activity_due 已把它清 0
+const ran = await runThinkingCycle();
+if (ran && after === before) scheduleNextSelfActivity(40);   // 永远相等
+```
+
+所以永远 40 分钟，日志「回看里定了 X 分钟后再来」是**假的**。
+
+```js
+// 以前：算个值，记进活动记录，然后丢掉
+const actualDelay = Math.max(1, Math.min(40, wantDelay || ...));
+// 现在：走 scheduleNextSelfActivity（只有它带「每日保底次数」的 maxGap 压缩）
+scheduleNextSelfActivity(wantDelay);
+const scheduledAt = Number(loadSelfState().selfActivityNextAt) || 0;
+const realDelay = scheduledAt > Date.now() ? Math.round((scheduledAt - Date.now()) / 60000) : 0;
+```
+
+日志改成如实：`回看里定了 480 分钟，实际排 480 分钟后`，被保底压短时明写「（被每日保底压短）」。
+顺带把 `activity_due` 里存了却从不显示的 `kind` 带进事件正文（`当时想做的：read`）。
+
+**实测**：触发一轮，`self-state.json` 里 `selfActivityNextAt` 真的变成 8 小时后，
+`兜底排 40 分钟` 的日志消失（此前每轮必现）。
+
+### ② QQ 离线时，发给第三方的私聊不再进 WebUI 历史
+
+`sendPrivate()` 掉线时把正文交给 `onOfflineText`，**收件人丢了**；那边不看是谁，直接
+
+```js
+webPush({ role: "her", text: ... });   // 进 webui-history.jsonl，/history 全量返回
+```
+
+2.0.1 立的「她和别人的私聊不进主人 WebUI」被这条旁路绕开，而且日志里也看不出是跟谁说的。
+
+现在 `onOfflineText(text, toUid)`：发给主人的照旧展示（带 `offline: true`），
+发给第三方的只推一条 `role:"tool"` 占位——**`tool` 不进 history 文件**，正文一个字节都不落盘，
+占位里带上收件人号码，主人知道「有件事没办成」就够。
+
+### ③ 表情发失败不再报成「整条失败」
+
+文字已发出、紧接着 `sendImage` 抛错时，整个 `execute` 掉进 catch 返回 `{ok:false}`——
+她以为整条没发，**重发一句，群里就出现重复**。而且那条 `audit` 也没写，日志里等于没发生。
+
+现在文字和表情分开结算：`ok` 只表示文字发出去了，表情失败走 `stickerErr`
+（文案里直接写「文字已经发了，别再发一遍」），audit 两种结果都记。
+
+### 验证
+
+- 单测（从源文件抠出函数、桩替换依赖）：离线分流 9 项、`send_message` 四种结局 14 项，全过
+- 线上：重启后触发一轮活动，`调度 → 下次自主活动约 480 分钟后 → 回看里定了 480 分钟，实际排 480 分钟后`
+- `node --check` 通过，`systemctl is-active dsh-web` = active
+
 ## 2.0.9 · 2026-11-04
 
 **修两处「她看不到全部 / 你看不到最新」。**
