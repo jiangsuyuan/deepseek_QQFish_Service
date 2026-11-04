@@ -9489,20 +9489,12 @@ async function handleOwnerNatural(ev, text) {
       // 忽略
     }
 
-    // 被明确点名（@ / 引用她 / 续聊窗口内）不参与限流——
-    // 限流是防刷屏，不是用来无视叫人的人
-    const addressedNow = !!parsed.hasAt || !!parsed.replyToMe || !!continuing;
-    const gate = addressedNow ? { ok: true } : allowRate(key, ev.user_id);
-    if (!gate.ok) {
-      audit({ kind: "rate_limited", key, userId: String(ev.user_id), why: gate.why });
-      logger.info?.(`[onebot] 限流（${gate.why}）：${key} 来自 ${ev.user_id}`);
-      if (ev.message_type !== "group" && gate.why === "hour") {
-        void client
-          .sendHuman(ev, "你说得有点多，让我歇会儿，过阵子再聊。")
-          .catch(() => {});
-      }
-      return;
-    }
+    // 不再做「每人每小时 N 次」的硬限流。
+    // 2.0 之后消息进 inbox 队列，wakeNow 串行处理、sendHuman 走单线程打字队列，
+    // 节奏本来就由打字速度自然控制。再叠一层硬限流只会丢消息：
+    //   · 群聊里静默丢弃（表现为「有人说话她没理」）
+    //   · 私聊里甩一句硬编码的「你说得有点多，让我歇会儿」——那不是她说的话
+    // 要限速，让队列和打字去限，别丢东西。
 
     // 有人评价她时，只记来源，不立刻改自我描述
     try {

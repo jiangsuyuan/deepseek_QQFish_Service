@@ -306,6 +306,7 @@ namespace FishTray
         public string Role = "her";
         public string Body = "";
         public long At = 0;            // 这条消息的时间戳（毫秒）——排序用
+        public string TimeText = "";   // 显示在气泡上方的时间（HH:mm）
         public Image Pic;              // 有图就画图，不画文字气泡
         public string Mark = "";       // 角标：非空就画在左上角（如「助手」）
         public event Action<Image> PicClicked;      // 点图看大图
@@ -317,6 +318,15 @@ namespace FishTray
 
         static readonly Font BodyFont = new Font("Microsoft YaHei UI", 9.5f);
         static readonly Font ToolFont = new Font("Microsoft YaHei UI", 8f);
+        static readonly Font TimeFont = new Font("Microsoft YaHei UI", 7.5f);
+        const int TimeH = 15;   // 顶部时间行的高度
+
+        /// <summary>设置要显示的时间文本（构造函数已经留好了这行的高度）</summary>
+        public void SetTime(string text)
+        {
+            TimeText = text ?? "";
+            Invalidate();
+        }
 
         static readonly Dictionary<string, string> Zh = new Dictionary<string, string>
         {
@@ -420,7 +430,8 @@ namespace FishTray
                 int w = Math.Min(wrap, Math.Max(26, sz.Width + 2));
                 Size inner = TextRenderer.MeasureText(Body, BodyFont, new Size(w, int.MaxValue),
                     TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl);
-                Size = new Size(w + PadX * 2, inner.Height + PadY * 2);
+                // 顶部留一行时间（重设 Size 时会再加，这里先按 0 算，由 TimeText 决定）
+                Size = new Size(w + PadX * 2, inner.Height + PadY * 2 + TimeH);
             }
 
             ApplyRegion();
@@ -452,6 +463,24 @@ namespace FishTray
         {
             base.OnResize(e);
             ApplyRegion();
+        }
+
+        /// <summary>图片气泡左上角的时间小标签（深底浅字，压在图上也看得清）</summary>
+        void DrawTimeBadge(Graphics g)
+        {
+            if (string.IsNullOrEmpty(TimeText)) return;
+            try
+            {
+                var sz = TextRenderer.MeasureText(TimeText, TimeFont);
+                int w = sz.Width + 8, h = sz.Height + 2;
+                var r = new Rectangle(5, 5, w, h);
+                using (var path = Round(r, 5))
+                using (var b = new SolidBrush(Color.FromArgb(170, 0, 0, 0)))
+                    g.FillPath(b, path);
+                TextRenderer.DrawText(g, TimeText, TimeFont, r, Color.FromArgb(235, 255, 255, 255),
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+            }
+            catch { }
         }
 
         /// <summary>左上角小角标（「助手」之类）。画在最上层，图片上也能看见。</summary>
@@ -511,6 +540,7 @@ namespace FishTray
                     g.DrawImage(Pic, ClientRectangle);
                     g.Clip = old;
                 }
+                DrawTimeBadge(g);
                 DrawMark(g);
                 return;
             }
@@ -520,8 +550,20 @@ namespace FishTray
                 g.FillPath(b, path);
 
             DrawMark(g);
+
+            // 顶部时间（灰色小字）
+            int timeH = 0;
+            if (!string.IsNullOrEmpty(TimeText) && Role != "tool")
+            {
+                timeH = TimeH;
+                var tr = new Rectangle(PadX, 2, Width - PadX * 2, timeH);
+                TextRenderer.DrawText(g, TimeText, TimeFont, tr,
+                    Color.FromArgb(150, 255, 255, 255),
+                    TextFormatFlags.NoPadding | TextFormatFlags.Left);
+            }
+
             string txt = Role == "tool" ? ZhName(Body) : Body;
-            var rect = new Rectangle(PadX, PadY - 1, Width - PadX * 2, Height - PadY * 2 + 2);
+            var rect = new Rectangle(PadX, PadY - 1 + timeH, Width - PadX * 2, Height - PadY * 2 + 2 - timeH);
             TextRenderer.DrawText(g, txt, Role == "tool" ? ToolFont : BodyFont, rect, FgCol,
                 TextFormatFlags.WordBreak | TextFormatFlags.NoPadding | TextFormatFlags.TextBoxControl);
         }
@@ -1816,6 +1858,14 @@ namespace FishTray
             b.Copied += delegate (string t) { FlashCopied(t); };
             b.Parent = canvas;
             b.MouseWheel += delegate (object s2, MouseEventArgs e2) { Wheel(e2.Delta); };
+            if (m.at > 0)
+            {
+                try
+                {
+                    b.SetTime(DateTimeOffset.FromUnixTimeMilliseconds(m.at).ToLocalTime().ToString("HH:mm"));
+                }
+                catch { }
+            }
             InsertBubble(b, m.at);
             canvas.Controls.Add(b);
         }
@@ -1852,6 +1902,14 @@ namespace FishTray
             ph.BgCol = pal.Card;
             ph.Parent = canvas;
             ph.MouseWheel += delegate (object s2, MouseEventArgs e2) { Wheel(e2.Delta); };
+            if (at > 0)
+            {
+                try
+                {
+                    ph.SetTime(DateTimeOffset.FromUnixTimeMilliseconds(at).ToLocalTime().ToString("HH:mm"));
+                }
+                catch { }
+            }
             InsertBubble(ph, at);
             canvas.Controls.Add(ph);
 
@@ -2152,32 +2210,52 @@ namespace FishTray
 
             var echo = new Bubble("me", t, pal, maxW);
             echo.Parent = canvas;
+            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            echo.At = now;                     // 让 InsertBubble 能定位
             bubbles.Add(echo);
             canvas.Controls.Add(echo);
             Relayout();
             ScrollEnd();
 
-            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            // 注意：不要把 lastAt 直接推到本地 now。
-            // 消息的 at 是服务器时间，本地时钟稍快就会把对方的新消息全跳过
-            // （现象：发了消息以后再也看不到回复）。
-            // 只往后挪"已画过的时间"，本地那条用 pendingMe 去重就够了。
-            pendingMe = t;
-            pendingAt = now;
+            pendingMe = "";
+            pendingAt = 0;
 
             Task.Run(delegate
             {
-                bool ok = Api.Send(cfg, t);
+                bool ok = false;
+                string err = "";
                 try
                 {
-                    BeginInvoke((Action)delegate
-                    {
-                        sending = false;
-                        sendBtn.Enabled = true;
-                        if (!ok) SetStatus("发送失败", false);
-                    });
+                    ok = Api.Send(cfg, t);
+                    if (!ok) err = "服务端返回失败";
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    err = ex.Message;
+                }
+                finally
+                {
+                    // 不管成功失败，sending 一定要复位——
+                    // 之前 BeginInvoke 抛一次就永远卡在 true，之后所有发送被静默吞掉
+                    sending = false;
+                    try
+                    {
+                        if (IsHandleCreated)
+                        {
+                            BeginInvoke((Action)delegate
+                            {
+                                sendBtn.Enabled = true;
+                                if (!ok) SetStatus("发送失败", false);
+                            });
+                        }
+                    }
+                    catch
+                    {
+                        // 窗口没了也无所谓，sending 已经复位
+                    }
+                }
+                if (!ok) Log.W("发送失败: " + t + " -> " + err);
+                else Log.W("已发送: " + t);
             });
         }
 
