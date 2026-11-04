@@ -721,10 +721,14 @@ class OneBotClient {
         " fromWebUI=" + !!ev?.__fromWebUI,
       );
       if (!isPrivateToOther) {
+        // 带上「这条是发到哪儿」：群聊和私聊混在同一条流里，面板上分不出她在跟谁说话
+        const isGroupEv = ev?.message_type === "group";
+        const ch = isGroupEv ? "group" : "private";
+        const peer = String(isGroupEv ? (ev?.group_id ?? "") : (ev?.user_id ?? ""));
         const rawText = String(text ?? "");
         for (const p of rawText.split(/\[split\]/i).map((x) => x.trim()).filter(Boolean)) {
           this.logger?.info?.("[onebot] sendText 推 WebUI：" + p.slice(0, 40));
-          this.onWebReply?.(p, "qq");
+          this.onWebReply?.(p, ch, peer);
         }
       }
     } catch (err) {
@@ -2321,7 +2325,26 @@ export function apply(ctx, _pluginConfig) {
   const client = new OneBotClient(cfg, logger);
   client.readyFn = () => agentReady;
   client.onOutage = (kind, ts) => noteOutageFromClient(kind, ts);
-  client.onWebReply = (text, channel) => webPush({ role: "her", text, channel: channel || "qq" });
+  client.onWebReply = (text, channel, peer) => {
+    const ch = String(channel || "qq");
+    let peerName = "";
+    if (ch === "group" && peer) {
+      try {
+        peerName = groupNames.get(String(peer)) || "";
+      } catch {
+        // 忽略
+      }
+      // 群名缓存空了就去拉一次（自带 10 分钟节流），拉不到就只显示群号
+      if (!peerName) {
+        try {
+          void ensureGroupNames().catch(() => {});
+        } catch {
+          // 忽略
+        }
+      }
+    }
+    webPush({ role: "her", text, channel: ch, peer: String(peer || ""), peerName });
+  };
   // QQ 离线时，本该私聊发出的内容改成推到 WebUI。
   // 但要分清是发给谁的：发给主人的，主人本来就该看到；
   // 发给第三方的，正文不能进 WebUI 历史（那是她的私聊内容，
@@ -8915,6 +8938,33 @@ async function handleOwnerNatural(ev, text) {
     }
     trace(`parsed text=${JSON.stringify(parsed.text)} hasAt=${parsed.hasAt} imgs=${parsed.images.length} segs=${Array.isArray(ev.message) ? ev.message.length : "无message"}`);
     ev.__hasAt = parsed.hasAt;
+
+    // 主人自己在 QQ 里打的字，也要进网页聊天历史。
+    // 以前只有「她说的话」会进来（/send 那条路也只管网页那边发出去的），
+    // 于是 WinForms/WebUI 面板上全是她的话，看着像她一个人自言自语。
+    // 只镜像「主人私聊」：群里的主人发言、以及她自己发的，都不在这儿处理。
+    try {
+      if (
+        !ev.__fromWebUI &&
+        ev.message_type === "private" &&
+        String(ev.user_id) === String(cfg.ownerId) &&
+        String(ev.user_id) !== String(cfg.selfId)
+      ) {
+        const otxt = String(parsed.text || "").slice(0, 500);
+        const hasImg = Array.isArray(parsed.images) && parsed.images.length > 0;
+        if (otxt || hasImg) {
+          webPush({
+            role: "me",
+            text: otxt || "[图片]",
+            channel: "private",
+            peer: String(ev.user_id),
+            ...(hasImg ? { viaImage: true } : {}),
+          });
+        }
+      }
+    } catch (err) {
+      logger.debug?.(`[onebot] 主人消息未记入网页历史：${err?.message ?? err}`);
+    }
     // 空文本也可能是「只 @ 不说话」，交给后面按 hasAt 判断
     if (!parsed.text && !parsed.hasAt) return;
 
@@ -12095,6 +12145,7 @@ inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDef
         // 网页聊天有自己独立的一份记录，不和 QQ/群/活动混
         // 返回全量——原来只给 300 条，文件里 740 条，
         // 「上个月的对话」在网页上就成了空白
+        const scope = String(u.searchParams.get("scope") || "all").toLowerCase();
         let list = loadWebHistory(2000);
         if (webHistReadError) {
           logger.warn?.("[onebot] /history 读取失败：" + webHistReadError);
@@ -12108,6 +12159,12 @@ inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDef
         // 不是聊天内容。混在消息流里会被渲染成「发表情」这种怪气泡，
         // 还会把真正的对话挤到错误位置。
         list = list.filter((m) => m && m.role !== "tool");
+        // scope=private 只看跟主人的私聊（群聊太吵，客户端默认就这个视图）
+        if (scope === "private") {
+          list = list.filter((m) => !String(m.channel || "").startsWith("group"));
+        } else if (scope === "group") {
+          list = list.filter((m) => String(m.channel || "").startsWith("group"));
+        }
         // 按时间排（回填过的旧记录会被追加到文件末尾，必须排序）
         list = list.slice().sort((a, b) => (a.at || 0) - (b.at || 0));
         res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(list));

@@ -1,5 +1,57 @@
 # 更新日志
 
+## 2.0.13 · 2026-11-04
+
+**面板上「全是她的话」：主人在 QQ 里说的话从来没进过历史。**
+
+`/history` 是网页聊天记录，写它的只有三处：`/send`（网页/客户端发出去的）、她自己的出站、
+以及工具记录。**主人在 QQ 里打的字一条都不进**——所以面板看着像她一个人自言自语。
+
+顺带一个结构问题：她的出站推 WebUI 时 `channel` 一律是 `"qq"`，
+**群聊和私聊混在同一条流里**，面板分不出她在跟谁说话。
+
+### ① 主人在 QQ 私聊里说的话，也记进历史
+
+```js
+// client.onEvent 里，解析完之后
+if (!ev.__fromWebUI && ev.message_type === "private" &&
+    String(ev.user_id) === String(cfg.ownerId) && String(ev.user_id) !== String(cfg.selfId)) {
+  webPush({ role: "me", text: parsed.text, channel: "private", peer: ev.user_id });
+}
+```
+
+只镜像「主人私聊」：群里的主人发言、以及她自己发的都不走这条。
+`__fromWebUI` 的跳过——那条 `/send` 已经记过了，不重复。
+
+### ② 她的每条出站都带上「发到哪儿」
+
+`sendText` 推 WebUI 时不再写死 `"qq"`：
+
+```js
+const ch = isGroupEv ? "group" : "private";       // channel
+const peer = String(isGroupEv ? ev.group_id : ev.user_id);   // 群号 / QQ 号
+this.onWebReply?.(p, ch, peer);
+```
+
+`onWebReply` 再从群名缓存里补一个 `peerName`（拉不到就只带群号）。
+
+### ③ 客户端加「私聊 / 全部」开关，默认只看私聊
+
+- 顶栏多一个按钮：`私聊` ⇄ `全部`
+- 「私聊」= 过滤掉 `channel` 以 `group` 开头的记录
+- 「全部」= 群聊气泡左上角标群名，一眼看得出她在哪个群说话
+- 切换用手上已有的 `/history` 重画，不重新请求
+- 服务端同时支持 `/history?scope=private|group|all`
+
+### 验证
+
+- 点按钮：日志 `视图切换：全部（含群聊）` / `只看私聊`，界面即时重排
+- `scope=all` 706 条、`scope=group` 0 条（目前还没有带 group 标记的新记录）、`scope=private` 706 条
+- 主人消息镜像要等你下次在 QQ 里说话才看得到
+
+**代价说清楚**：历史里的老记录 `channel` 都是 `"qq"`，**没法回溯**是群聊还是私聊，
+所以它们仍会出现在「私聊」视图里；从现在起的新消息才分得清。
+
 ## 2.0.12 · 2026-11-04
 
 **B 批前两条：`schedule_activity` 返回 1970；`/history` 读失败装成"没历史"。**

@@ -308,6 +308,9 @@ namespace FishTray
         public string image { get; set; }
         public string tool { get; set; }
         public string via { get; set; }      // "assistant" = 助手代发
+        public string channel { get; set; }  // private / group —— 这条是发到哪儿
+        public string peer { get; set; }     // 群号或 QQ 号
+        public string peerName { get; set; } // 群名（有就显示，没有就显示群号）
         public long at { get; set; }
     }
 
@@ -828,6 +831,9 @@ namespace FishTray
         IconBtn imgBtn;
         PictureBox fishStrip;     // 收起时显示的鱼图标条
         Button sendBtn;
+        Button scopeBtn;          // 「私聊 / 全部」切换
+        bool onlyPrivate = true;  // 默认只看跟主人的私聊，群聊要点「全部」
+        string lastBody = "";     // 最近一次拿到的 /history 原文，切视图时不用重新请求
 
         [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
         static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int val, int size);
@@ -961,6 +967,23 @@ namespace FishTray
             reconnectBtn.FlatAppearance.BorderSize = 0;
             reconnectBtn.Click += delegate { Reconnect(); };
 
+            // 视图：私聊 / 全部。面板里原来群聊和私聊混在一条流里，
+            // 一眼看过去全是她在各个群说的话，根本不像聊天。
+            scopeBtn = new Button
+            {
+                Text = "私聊",
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Microsoft YaHei UI", 8f),
+                Size = new Size(46, 24),
+                Cursor = Cursors.Hand, TextAlign = ContentAlignment.MiddleCenter, Padding = new Padding(0)
+            };
+            scopeBtn.FlatAppearance.BorderSize = 0;
+            scopeBtn.Click += delegate
+            {
+                onlyPrivate = !onlyPrivate;
+                ScopeChanged();
+            };
+
             themeBtn = new IconBtn
             {
                 Kind = light ? "sun" : "moon",
@@ -978,6 +1001,7 @@ namespace FishTray
             header.Controls.Add(dot);
             header.Controls.Add(titleLabel);
             header.Controls.Add(statusLabel);
+            header.Controls.Add(scopeBtn);
             header.Controls.Add(reconnectBtn);
             header.Controls.Add(themeBtn);
             header.Controls.Add(closeBtn);
@@ -1434,13 +1458,36 @@ namespace FishTray
             statusLabel.Left = titleLabel.Right + 8;
             statusLabel.Top = cy - statusLabel.Height / 2;
 
-            // 右边：三个按钮从右往左排，同样垂直居中
+            // 右边：按钮从右往左排，同样垂直居中
             int right = header.Width - 8;
             closeBtn.Size = new Size(26, 26);
             themeBtn.Size = new Size(26, 26);
             closeBtn.Location = new Point(right - closeBtn.Width, cy - closeBtn.Height / 2);
             themeBtn.Location = new Point(closeBtn.Left - themeBtn.Width - 4, cy - themeBtn.Height / 2);
             reconnectBtn.Location = new Point(themeBtn.Left - reconnectBtn.Width - 8, cy - reconnectBtn.Height / 2);
+            if (scopeBtn != null)
+                scopeBtn.Location = new Point(reconnectBtn.Left - scopeBtn.Width - 6, cy - scopeBtn.Height / 2);
+        }
+
+        /// <summary>群聊记录（channel=group）——这个标记决定「私聊视图」要不要过滤掉它</summary>
+        static bool IsGroupMsg(Msg m)
+        {
+            string c = m != null ? (m.channel ?? "") : "";
+            return c.StartsWith("group", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>切「私聊 / 全部」：用手上已有的 /history 重画，不重新请求</summary>
+        void ScopeChanged()
+        {
+            try
+            {
+                if (scopeBtn != null) scopeBtn.Text = onlyPrivate ? "私聊" : "全部";
+                atBottom = true;
+                if (!string.IsNullOrEmpty(lastBody)) Render(lastBody, false);
+                else Reload();
+                Log.W("视图切换：" + (onlyPrivate ? "只看私聊" : "全部（含群聊）"));
+            }
+            catch (Exception ex) { Log.W("切换视图失败 " + ex.Message); }
         }
 
         void LayoutFooter()
@@ -1485,8 +1532,9 @@ namespace FishTray
             if (fishStrip != null) fishStrip.BackColor = pal.Card;
             sendBtn.BackColor = pal.MeBg;
             sendBtn.ForeColor = Color.White;
-            foreach (var b in new Control[] { themeBtn, reconnectBtn, closeBtn })
+            foreach (var b in new Control[] { themeBtn, reconnectBtn, closeBtn, scopeBtn })
             {
+                if (b == null) continue;
                 b.BackColor = pal.Bg;
                 b.ForeColor = pal.Muted;
             }
@@ -1861,6 +1909,7 @@ namespace FishTray
 
             if (!onlyNew)
             {
+                lastBody = body;
                 lastItems = items;
                 renderedCount = items.Count;
                 long newest = 0;
@@ -1934,6 +1983,8 @@ namespace FishTray
             foreach (var m in lastItems)
             {
                 if (m == null || m.role == "tool") continue;
+                // 「私聊」视图里不画群聊：她和各个群说的话混进来，面板就只剩她一个人在那儿说
+                if (onlyPrivate && IsGroupMsg(m)) continue;
                 if (string.IsNullOrEmpty(m.image) && (m.text ?? "").Trim().Length == 0) continue;
                 msgs.Add(m);
             }
@@ -2046,6 +2097,12 @@ namespace FishTray
             string body = m.text ?? "";
             bool hasImg = !string.IsNullOrEmpty(m.image);
             string mark = (m.via == "assistant") ? "助手" : "";
+            // 看「全部」时，群聊气泡左上角标出是哪个群，不然分不清她在跟谁说话
+            if (!onlyPrivate && IsGroupMsg(m))
+            {
+                string g = string.IsNullOrEmpty(m.peerName) ? ("群" + (m.peer ?? "")) : m.peerName;
+                mark = string.IsNullOrEmpty(mark) ? g : "助手 · " + g;
+            }
 
             // 完全没有内容的条目直接跳过 —— 以前纯发图会推一条 text="" 的空记录，
             // 界面上就只剩一个空蓝条
