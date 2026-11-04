@@ -708,6 +708,15 @@ class OneBotClient {
       if (fm) segs.push({ type: "face", data: { id: fm[1] } });
       else segs.push({ type: "text", data: { text: part } });
     }
+    // 发到 QQ 的也和 WebUI 同步一份——不然 WinForms / 网页看不到她往 QQ 说的话
+    try {
+      const rawText = String(text ?? "");
+      for (const p of rawText.split(/\[split\]/i).map((x) => x.trim()).filter(Boolean)) {
+        this.onWebReply?.(p, "qq");
+      }
+    } catch {
+      // 忽略
+    }
     const params =
       ev.message_type === "group"
         ? { group_id: ev.group_id, message: segs }
@@ -2277,7 +2286,7 @@ export function apply(ctx, _pluginConfig) {
   const client = new OneBotClient(cfg, logger);
   client.readyFn = () => agentReady;
   client.onOutage = (kind, ts) => noteOutageFromClient(kind, ts);
-  client.onWebReply = (text) => webPush({ role: "her", text });
+  client.onWebReply = (text, channel) => webPush({ role: "her", text, channel: channel || "qq" });
   // QQ 离线时，本该私聊发出的内容改成推到 WebUI
   client.onOfflineText = (text) => {
     try {
@@ -2517,8 +2526,10 @@ export function apply(ctx, _pluginConfig) {
     "memory_index",
     "my_activities",
     "my_adventures",
+    "my_balance",
     "my_capabilities",
     "my_changelog",
+    "my_context",
     "my_digest",
     "my_memory",
     "my_outages",
@@ -2552,14 +2563,18 @@ export function apply(ctx, _pluginConfig) {
     "remember_self",
     "remove_webui_button",
     "render_page",
+    "reply_to",
     "request_feature",
     "resolve_want",
     "revise_self",
     "run_activity",
     "sandbox_files",
     "save_sticker",
+    "schedule_activity",
     "send_face",
     "send_like",
+    "send_message",
+    "send_private",
     "send_qzone",
     "send_sticker",
     "set_config",
@@ -3363,6 +3378,73 @@ export function apply(ctx, _pluginConfig) {
   })();
 
 
+  // ═══════════════════════════════════════════════════════════════
+  // 余额工具：看她自己的 API 余额（主人充的"生活费"）
+  // ═══════════════════════════════════════════════════════════════
+  void (async () => {
+    try {
+      const { defineTool } = await import("@deepseek-ai/dsh-tools");
+      const reg = (t) => ctx.get?.("tools")?.register?.(t);
+
+      reg(
+        defineTool({
+          name: "my_balance",
+          description:
+            "看你自己的 API 余额——就是主人给你充的生活费。\n\n" +
+            "能看到还剩多少、总共充了多少。用一次花多少不直接显示，但余额变化能看出来。\n" +
+            "余额见底时会影响到你能不能继续回消息，所以偶尔看一眼不算多余。",
+          parameters: {},
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async () => {
+            const key = String(process.env.DEEPSEEK_API_KEY || "").trim();
+            if (!key) {
+              return { ok: false, reason: "服务器上没配 DEEPSEEK_API_KEY，查不了。" };
+            }
+            try {
+              const res = await fetch("https://api.deepseek.com/user/balance", {
+                headers: { Authorization: "Bearer " + key },
+                signal: AbortSignal.timeout(15000),
+              });
+              if (!res.ok) {
+                return { ok: false, reason: "余额接口返回 " + res.status };
+              }
+              const data = await res.json();
+              const infos = Array.isArray(data?.balance_infos) ? data.balance_infos : [];
+              const cn = infos.find((x) => x?.currency === "CNY") || infos[0] || {};
+              const total = Number(cn?.total_balance ?? 0);
+              return {
+                ok: true,
+                available: data?.is_available !== false,
+                currency: cn?.currency || "CNY",
+                balance: total,
+                balanceText: String(cn?.total_balance ?? "?"),
+                toppedUp: String(cn?.topped_up_balance ?? "?"),
+                granted: String(cn?.granted_balance ?? "?"),
+                note:
+                  total > 50
+                    ? "还够用一阵。"
+                    : total > 10
+                      ? "不算多了，可以跟主人提一句。"
+                      : "快见底了——余额用光我就回不了话了。",
+              };
+            } catch (err) {
+              return { ok: false, reason: "查询失败：" + (err?.message ?? err) };
+            }
+          },
+        }),
+      );
+
+      logger.info?.("[onebot] 余额工具已注册（my_balance）");
+    } catch (err) {
+      logger.warn?.("[onebot] 余额工具注册失败：" + (err?.message ?? err));
+    }
+  })();
+
+
+
 
   // 用 SVG 画图：适合图表、示意、简笔，不依赖外部 API
   void (async () => {
@@ -3565,6 +3647,7 @@ export function apply(ctx, _pluginConfig) {
             "或者你确实需要他回答。不要为了引人注意而 @，不要 @ 不熟的人，也不要连着 @ 好几次。" +
             "普通聊天直接说话就行，不需要 @。",
           parameters: {
+            target: { type: "string", description: "可选，group:群号。不填用当前会话" },
             qq: { type: "string", description: "要 @ 的 QQ 号（从群消息里看到的发言人号码）" },
             text: { type: "string", description: "要说的话，30 字以内，自然一点" },
           },
@@ -3573,11 +3656,18 @@ export function apply(ctx, _pluginConfig) {
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
           execute: async (args, exec) => {
-            const sid = String(exec?.agent?.session?.id ?? "");
-            const entry = sid ? sessions.bySessionId(sid) : null;
-            const target = entry?.lastTarget;
+            // 优先用参数里的 target（self:main 那种 session 拿不到 lastTarget）
+            const explicit = String(args?.target ?? "").trim();
+            let target = null;
+            if (explicit.startsWith("group:")) {
+              target = { message_type: "group", group_id: Number(explicit.slice(6)), user_id: 0 };
+            } else {
+              const sid = String(exec?.agent?.session?.id ?? "");
+              const entry = sid ? sessions.bySessionId(sid) : null;
+              target = entry?.lastTarget ?? null;
+            }
             if (!target || target.message_type !== "group") {
-              return { ok: false, reason: "只能在群聊里 @ 人" };
+              return { ok: false, reason: "需要在群里 @ 人——target 填 group:群号" };
             }
             const qq = String(args?.qq ?? "").trim();
             const text = String(args?.text ?? "").trim().slice(0, 60);
@@ -5453,6 +5543,7 @@ export function apply(ctx, _pluginConfig) {
               recall: "回忆（整理 + 回忆）",
               dream: "憧憬未来",
               study: "研究代码（读源码 / 写代码）",
+              watch_groups: "看看群（看大家在聊什么，想插话就插）",
             };
             return {
               ok: true,
@@ -5705,9 +5796,9 @@ export function apply(ctx, _pluginConfig) {
         defineTool({
           name: "run_activity",
           description:
-            "开始一轮自己的活动。主人说「活动一下」「去探险」「读点书」「玩会儿」「想想事」" +
-            "「回忆一下」「憧憬一下」「研究代码」时，用这个开始，而不是嘴上答应。" +
-            "kind 不填就自己挑一个。",
+            "开始一轮自己的活动。想读书、玩、出去看看、想事、写点什么、看看群——" +
+            "**任何时候都可以用，不用等谁叫你**。kind 不填就自己挑一个。\n" +
+            "kind 可选：read / play / explore / think / write / recall / dream / study / watch_groups",
           parameters: {
             kind: {
               type: "string",
@@ -5722,7 +5813,7 @@ export function apply(ctx, _pluginConfig) {
           execute: async (args) => {
             const kind = String(args?.kind ?? "").trim();
             const rounds = Math.max(1, Math.min(5, Number(args?.rounds) || 1));
-            const VALID = ["explore", "read", "play", "think", "write", "recall", "dream", "study"];
+            const VALID = ["explore", "read", "play", "think", "write", "recall", "dream", "study", "watch_groups"];
             const useKind = VALID.includes(kind) ? kind : "";
             for (let i = 0; i < rounds; i++) {
               if (useKind) {
@@ -10086,6 +10177,7 @@ async function handleOwnerNatural(ev, text) {
         : buf.prompts[0];
     // 这一批里不止一个人在说话 → 引用谁都不对，干脆不引用
     const target = buf.firstEv ?? buf.ev;
+    logger.info?.("[onebot] flushBuf 触发：" + key + " prompts=" + (buf.prompts?.length ?? 0));
     try {
       const multi = (buf.users?.size ?? 0) > 1;
       if (multi) target.__noQuote = true;
@@ -10097,14 +10189,32 @@ async function handleOwnerNatural(ev, text) {
     } catch {
       // 忽略
     }
-    void deliver(key, target, merged, buf.images);
+    enqueueEvent(
+      makeEvent(
+        target?.message_type === "group" ? "mentioned" : "private_message",
+        { type: target?.message_type, groupId: target?.group_id, userId: target?.user_id, nickname: target?.sender?.nickname },
+        {
+          // merged 是完整 prompt（含内部说明），提取真正的正文给她看
+          text: extractRealInbound(merged) || String(merged || "").slice(0, 500),
+          messageId: target?.message_id,
+        },
+      ),
+    );
   }
 
   function enqueue(key, ev, prompt, images) {
     const isGroup = ev.message_type === "group";
     // 风控模式下群聊也合并：几个人的话攒几秒，一次想完再回（降低回复条数）
     if (cfg.mergeMessages === false || (isGroup && cfg.mergeGroups !== true)) {
-      void deliver(key, ev, prompt, images);
+      enqueueEvent(
+        makeEvent(
+          ev?.message_type === "group"
+            ? (ev?.__hasAt ? "mentioned" : "replied")
+            : "private_message",
+          { type: ev?.message_type, groupId: ev?.group_id, userId: ev?.user_id, nickname: ev?.sender?.nickname },
+          { text: ev?.__parsedText || (ev?.raw_message ?? ""), messageId: ev?.message_id },
+        ),
+      );
       return;
     }
     const buf =
@@ -10163,6 +10273,524 @@ async function handleOwnerNatural(ev, text) {
     }
     return null;
   }
+
+
+  // ═══════════════════════════════════════════════════════════════
+  // 事件队列 + 串行处理（2.0.0 核心）
+  // 她只面对「事件」，怎么回应用工具决定
+  // ═══════════════════════════════════════════════════════════════
+  const INBOX_PATH = join(HOME, ".dsh/onebot-bridge/inbox.jsonl");
+  const inbox = [];              // 内存里的事件
+  let inboxDirty = false;
+  let state = "idle";            // idle | busy
+  let agentReadyFlag = false;
+
+  function makeEvent(kind, source, payload) {
+    return {
+      id: "evt-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),
+      kind,
+      at: Date.now(),
+      source: source || {},
+      payload: payload || {},
+      status: "unread",
+    };
+  }
+
+  function pushEvent(e) {
+    // 同一个 messageId 不重复入队
+    if (e.payload && e.payload.messageId) {
+      const dup = inbox.find(
+        (x) => x.payload && x.payload.messageId === e.payload.messageId,
+      );
+      if (dup) return dup;
+    }
+    inbox.push(e);
+    inboxDirty = true;
+    // 限制内存里最多 200 条（更早的丢弃，避免无限增长）
+    if (inbox.length > 200) inbox.splice(0, inbox.length - 200);
+    return e;
+  }
+
+  function pendingEvents() {
+    return inbox.filter((x) => x.status === "unread");
+  }
+
+  function flushInbox() {
+    if (!inboxDirty) return;
+    try {
+      const lines = inbox.map((x) => JSON.stringify(x)).join("\n") + "\n";
+      writeFileSync(INBOX_PATH, lines, "utf8");
+      inboxDirty = false;
+    } catch (err) {
+      logger.debug?.("[onebot] inbox 落盘失败：" + (err?.message ?? err));
+    }
+  }
+  setInterval(() => flushInbox(), 30_000).unref?.();
+
+  /** 把事件渲染成她看得懂的一段话 */
+  function renderEventForAgent(e, idx) {
+    const t = new Date(e.at).toLocaleTimeString("zh-CN", { hour12: false, hour: "2-digit", minute: "2-digit" });
+    const lines = [];
+    lines.push("【" + (idx + 1) + "】" + t);
+    const mid = e.payload && e.payload.messageId ? String(e.payload.messageId) : "";
+    if (e.kind === "private_message") {
+      lines.push("私聊 · " + (e.source.nickname || e.source.userId || "某人") + "（" + (e.source.userId || "") + "）");
+      lines.push("target: private:" + (e.source.userId || ""));
+      if (mid) lines.push("messageId: " + mid);
+      lines.push("「" + String(e.payload.text || "").slice(0, 500) + "」");
+    } else if (e.kind === "mentioned") {
+      lines.push("群 " + e.source.groupId + " · " + (e.source.nickname || e.source.userId) + " @ 你");
+      lines.push("target: group:" + e.source.groupId);
+      if (mid) lines.push("messageId: " + mid);
+      lines.push("「" + String(e.payload.text || "").slice(0, 500) + "」");
+    } else if (e.kind === "replied") {
+      lines.push("群 " + e.source.groupId + " · " + (e.source.nickname || "") + " 回了你");
+      lines.push("target: group:" + e.source.groupId);
+      if (mid) lines.push("messageId: " + mid);
+      lines.push("「" + String(e.payload.text || "").slice(0, 500) + "」");
+    } else if (e.kind === "quiet_group") {
+      lines.push("群 " + e.source.groupId + " 安静了 " + Math.round((e.payload.silentMinutes || 0)) + " 分钟");
+      lines.push("target: group:" + e.source.groupId);
+      if (e.payload.lastSpeaker) lines.push("最后说话的是「" + e.payload.lastSpeaker + "」");
+    } else if (e.kind === "reminder_due") {
+      lines.push("你之前给自己留了句话：「" + String(e.payload.what || "").slice(0, 200) + "」");
+    } else if (e.kind === "activity_due") {
+      lines.push("你之前排的活动时间到了。");
+      if (e.payload.note) lines.push("当时留的：" + String(e.payload.note).slice(0, 200));
+    } else if (e.kind === "system") {
+      lines.push("系统：" + String(e.payload.text || "").slice(0, 300));
+    }
+    return lines.join("\n");
+  }
+
+  /** 上次/下次活动的时间线（每次唤醒都带上） */
+  function activityTimeline() {
+    try {
+      const acts = loadActivities(50);
+      const last = acts.length ? acts[acts.length - 1] : null;
+      const st = loadSelfState();
+      const nextAt = Number(st.selfActivityNextAt) || 0;
+      const fmt = (t) =>
+        new Date(t).toLocaleString("zh-CN", {
+          month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
+        });
+      const parts = [];
+      if (last) parts.push("上次活动：" + fmt(last.at) + "（" + (last.kind || "?") + "）");
+      else parts.push("上次活动：还没做过");
+      if (nextAt > 0) {
+        const mins = Math.round((nextAt - Date.now()) / 60000);
+        parts.push("下次活动：" + fmt(nextAt) + (mins > 0 ? "（约 " + mins + " 分钟后）" : "（已过）"));
+      } else {
+        parts.push("下次活动：没排");
+      }
+      return parts.join("\n");
+    } catch {
+      return "";
+    }
+  }
+
+  /**
+   * 唤醒用的 session key：按小时分。
+   * 为什么不用固定的 "self:main"——旧 prompt 格式会留在 session 历史里，
+   * 她会被带偏（比如把昵称当 target）。每小时换一个新的，历史就不污染了。
+   */
+  function WAKE_KEY() {
+    const h = new Date();
+    return "self:main-" + h.getFullYear() + String(h.getMonth() + 1).padStart(2, "0") +
+      String(h.getDate()).padStart(2, "0") + "-" + String(h.getHours()).padStart(2, "0");
+  }
+
+  /** 处理一批事件（一次一条，串行） */
+  async function wakeNow() {
+    if (state === "busy") return;
+    state = "busy";
+    try {
+      while (true) {
+        const e = pendingEvents()[0];
+        if (!e) break;
+        logger.info?.("[onebot] wakeNow 处理：" + e.kind + "（还有 " + pendingEvents().length + " 条）");
+
+        const timeline = activityTimeline();
+        const header =
+          "（现在 " +
+          new Date().toLocaleTimeString("zh-CN", { hour12: false, hour: "2-digit", minute: "2-digit" }) +
+          "。\n" + timeline + "\n\n";
+        const body = renderEventForAgent(e, 0);
+        const tools =
+          "\n\n**重要：你说的话不会自动发出去。** 要说，必须调工具，target 从上面的事件里抄。" +
+          "（比如 group:123456789 或 private:123456789）\n\n" +
+          "工具：\n" +
+          "· send_message({ target, text, sticker? }) —— 发消息；sticker 可选（大笑/无语/生气/委屈/震惊/开心/睡觉/random）\n" +
+          "· reply_to({ target, messageId, text }) —— 回复某条（带引用）\n" +
+          "· send_private({ qq, text }) —— 主动找好友私聊（不用拼 target）\n" +
+          "· at_person({ target, qq, text }) —— 在群里 @ 第三方\n" +
+          "· send_sticker({ target, mood }) —— 只发个表情\n" +
+          "· run_activity({ kind?, note? }) —— 做点事（read/play/explore/think/write/watch_groups/dream…）\n" +
+          "· schedule_activity({ afterMinutes, kind?, note? }) —— 排下次活动；0 = 取消\n" +
+          "· my_context() —— 看自己的上下文用掉多少\n" +
+          "\n例：send_message({ target: \"private:123456789\", text: \"在，咋了\" })\n" +
+          "\n这些是现在发生的事。怎么回应、要不要回应，你看着办。\n" +
+          "不想回就不用调工具——这条会被标成「看过」。但想回就必须调工具，光说没用。）";
+
+        // 先 ensure + 拿 agent，记下 seq，才能判断「她调了工具没有」
+        let agent = null;
+        let beforeSeq = 0;
+        try {
+          const entry = await sessions.ensure(WAKE_KEY());
+          if (!entry.handle) entry.handle = await sessions.openAgent(entry.sessionId);
+          agent = entry.handle?.agent ?? null;
+          beforeSeq = agent?.session?.seq ?? 0;
+        } catch (err) {
+          logger.warn?.("[onebot] wakeNow 准备 agent 失败：" + (err?.message ?? err));
+        }
+
+        await sessions.runSilent(WAKE_KEY(), header + body + tools);
+
+        // 用 session 事件判断：有 tool/call 才算「处理了」
+        let calledTool = false;
+        try {
+          const entry2 = sessions.entries.get(WAKE_KEY());
+          const agent2 = entry2?.handle?.agent ?? agent;
+          const evs = agent2?.session?.snapshotEvents?.(beforeSeq) ?? [];
+          calledTool = evs.some((x) => x?.type === "tool/call");
+        } catch {
+          // 判断失败按「没调工具」处理
+        }
+        e.status = calledTool ? "handled" : "ignored";
+        inboxDirty = true;
+        flushInbox();
+      }
+    } catch (err) {
+      logger.warn?.("[onebot] wakeNow 失败：" + (err?.message ?? err));
+    } finally {
+      state = "idle";
+    }
+  }
+
+  /** 事件入队：空闲立刻醒，忙则排队 */
+  function enqueueEvent(e) {
+    pushEvent(e);
+    logger.info?.("[onebot] 事件入队：" + e.kind + " status=" + e.status + " pending=" + pendingEvents().length);
+    if (state === "busy") {
+      logger.info?.("[onebot] 在忙，事件排队：" + e.kind);
+      return;
+    }
+    void wakeNow();
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // send_message / reply_to —— 出站工具
+  // ═══════════════════════════════════════════════════════════════
+  void (async () => {
+    try {
+      const { defineTool } = await import("@deepseek-ai/dsh-tools");
+      const reg = (t) => ctx.get?.("tools")?.register?.(t);
+
+      function resolveTarget(exec) {
+        const sid = String(exec?.agent?.session?.id ?? "");
+        const entry = sid ? sessions.bySessionId(sid) : null;
+        return entry?.lastTarget ?? lastInbound ?? null;
+      }
+
+      reg(
+        defineTool({
+          name: "send_message",
+          description:
+            "主动发一句话到某个群或私聊。想说话的时候用——不用等别人叫你。\n\n" +
+            "**target 和 text 都必须填**，不然发不出去。\n" +
+            "target 格式：group:群号 或 private:QQ号（从事件里抄）。\n" +
+            "可以带 sticker 参数，发完文字顺便补一张表情（大笑/无语/生气/委屈/震惊/开心/睡觉/random）。\n" +
+            "例：send_message({ target: \"group:123456789\", text: \"这个我也在想\" })",
+          parameters: {
+            target: {
+              type: "string",
+              description: "group:群号 或 private:QQ号。**从事件的 target: 行里抄**，不要填昵称",
+            },
+            text: { type: "string", description: "要说的话" },
+            sticker: { type: "string", description: "可选，发完文字补一张表情" },
+            quote: { type: "string", description: "可选，引用某条消息的 id" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args, exec) => {
+            const target = String(args?.target ?? "").trim();
+            const text = String(args?.text ?? "").trim();
+            if (!target || !text) return { ok: false, reason: "target 和 text 都要" };
+            if (!client.connected) return { ok: false, reason: "QQ 现在没连上。" };
+
+            let ev;
+            if (target.startsWith("group:")) {
+              ev = { message_type: "group", group_id: Number(target.slice(6)), user_id: 0 };
+            } else if (target.startsWith("private:")) {
+              ev = { message_type: "private", user_id: Number(target.slice(8)) };
+            } else {
+              return { ok: false, reason: "target 要写成 group:xxx 或 private:xxx" };
+            }
+            if (args?.quote) ev.message_id = String(args.quote);
+
+            try {
+              await client.sendHuman(ev, text, { force: true });
+              let stickerSent = null;
+              if (args?.sticker) {
+                const mood = String(args.sticker);
+                const picked = pickSticker(cfg.stickerDir, mood === "random" ? "" : mood);
+                if (picked) {
+                  await sleep(400 + Math.random() * 600);
+                  await client.sendImage(ev, picked.path);
+                  stickerSent = mood;
+                }
+              }
+              audit({ kind: "send_message", target, text: text.slice(0, 120), sticker: stickerSent });
+              return { ok: true, target, stickerSent };
+            } catch (err) {
+              return { ok: false, reason: String(err?.message ?? err) };
+            }
+          },
+        }),
+      );
+
+      reg(
+        defineTool({
+          name: "reply_to",
+          description:
+            "回复某一条具体的消息（带引用）。有人问了你什么、你想针对某一句话接，用这个。\n" +
+            "messageId 从事件里拿。",
+          parameters: {
+            messageId: { type: "string", description: "要回复的消息 id" },
+            text: { type: "string", description: "回复内容" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args, exec) => {
+            const mid = String(args?.messageId ?? "").trim();
+            const text = String(args?.text ?? "").trim();
+            if (!mid || !text) return { ok: false, reason: "messageId 和 text 都要" };
+            if (!client.connected) return { ok: false, reason: "QQ 现在没连上。" };
+            const base = resolveTarget(exec);
+            if (!base) return { ok: false, reason: "找不到会话上下文" };
+            const ev = { ...base, message_id: mid };
+            try {
+              await client.sendHuman(ev, text, { force: true, quote: true });
+              audit({ kind: "reply_to", messageId: mid, text: text.slice(0, 120) });
+              return { ok: true, messageId: mid };
+            } catch (err) {
+              return { ok: false, reason: String(err?.message ?? err) };
+            }
+          },
+        }),
+      );
+
+      logger.info?.("[onebot] 出站工具已注册（send_message / reply_to）");
+    } catch (err) {
+      logger.warn?.("[onebot] 出站工具注册失败：" + (err?.message ?? err));
+    }
+  })();
+
+
+  // ═══════════════════════════════════════════════════════════════
+  // 主动社交工具：找好友私聊 / 在群里 @ 第三方
+  // ═══════════════════════════════════════════════════════════════
+  void (async () => {
+    try {
+      const { defineTool } = await import("@deepseek-ai/dsh-tools");
+      const reg = (t) => ctx.get?.("tools")?.register?.(t);
+
+      reg(
+        defineTool({
+          name: "send_private",
+          description:
+            "主动给某个好友发私聊。想找谁说话的时候用——不用等他先开口。\n" +
+            "qq 填好友的 QQ 号，不是昵称。只在好友列表里的人能发。\n" +
+            "跟 send_message 的 private:xxx 是同一件事，但这个更直接（不用拼 target）。",
+          parameters: {
+            qq: { type: "string", description: "好友的 QQ 号" },
+            text: { type: "string", description: "要说的话" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            const qq = String(args?.qq ?? "").trim();
+            const text = String(args?.text ?? "").trim();
+            if (!/^\d{5,12}$/.test(qq)) return { ok: false, reason: "qq 不合法" };
+            if (!text) return { ok: false, reason: "text 不能空" };
+            if (!client.connected) return { ok: false, reason: "QQ 现在没连上。" };
+
+            // 确认是好友（不给陌生人发）
+            try {
+              const fl = await client.call("get_friend_list", {}, 10000);
+              const list = Array.isArray(fl) ? fl : [];
+              const isFriend = list.some((f) => String(f?.user_id ?? "") === qq);
+              if (!isFriend) {
+                return {
+                  ok: false,
+                  reason: "这个号不在好友列表里，发不了。",
+                  friends: list.map((f) => ({ qq: String(f.user_id), name: f.nickname })),
+                };
+              }
+            } catch {
+              // 查不到好友列表就放行（别因为接口抽风卡住）
+            }
+
+            try {
+              await client.sendPrivate(qq, text);
+              try {
+                client.onWebReply?.(text, "qq");
+              } catch {
+                // 忽略
+              }
+              audit({ kind: "send_private", qq, text: text.slice(0, 120) });
+              return { ok: true, qq, sent: true };
+            } catch (err) {
+              return { ok: false, reason: String(err?.message ?? err) };
+            }
+          },
+        }),
+      );
+
+      logger.info?.("[onebot] 主动社交工具已注册（send_private）");
+    } catch (err) {
+      logger.warn?.("[onebot] 主动社交工具注册失败：" + (err?.message ?? err));
+    }
+  })();
+
+
+  // ═══════════════════════════════════════════════════════════════
+  // 第二步：活动由她自己排（schedule_activity）+ 看上下文（my_context）
+  // ═══════════════════════════════════════════════════════════════
+  void (async () => {
+    try {
+      const { defineTool } = await import("@deepseek-ai/dsh-tools");
+      const reg = (t) => ctx.get?.("tools")?.register?.(t);
+
+      reg(
+        defineTool({
+          name: "schedule_activity",
+          description:
+            "排下一次活动的时间。想说「40 分钟后再动」就用这个。\n\n" +
+            "afterMinutes 填 0 就是取消——不想再被叫醒，就不排。\n" +
+            "可以顺便记下下次想做什么（kind / note），到时候会一起提醒你。\n" +
+            "不填 afterMinutes 就保持原样。",
+          parameters: {
+            afterMinutes: { type: "number", description: "多少分钟后；0 = 取消；不填 = 不改" },
+            kind: { type: "string", description: "可选，下次想做的事（read/play/explore/think/write/watch_groups/dream）" },
+            note: { type: "string", description: "可选，想记的一句话" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            const hasMinutes = args && args.afterMinutes !== undefined && args.afterMinutes !== null;
+            const minutes = Number(args?.afterMinutes ?? NaN);
+            const kind = String(args?.kind ?? "").trim();
+            const note = String(args?.note ?? "").trim();
+
+            if (hasMinutes && minutes === 0) {
+              patchSelfState({ selfActivityNextAt: 0, selfActivityNote: "", selfActivityKind: "" });
+              audit({ kind: "schedule_activity", action: "cancel" });
+              return { ok: true, next: null, cancelled: true };
+            }
+            if (hasMinutes && (!Number.isFinite(minutes) || minutes < 0 || minutes > 720)) {
+              return { ok: false, reason: "afterMinutes 要在 0-720 之间" };
+            }
+            let nextAt = Number(loadSelfState().selfActivityNextAt) || 0;
+            if (hasMinutes) {
+              nextAt = Date.now() + Math.max(1, Math.round(minutes)) * 60_000;
+            }
+            const patch = { selfActivityNextAt: nextAt };
+            if (kind) patch.selfActivityKind = kind;
+            if (note) patch.selfActivityNote = note.slice(0, 200);
+            patchSelfState(patch);
+            const d = new Date(nextAt);
+            const hhmm = String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+            audit({ kind: "schedule_activity", at: hhmm, kind, note: note.slice(0, 60) });
+            return {
+              ok: true,
+              next: hhmm,
+              inMinutes: Math.round((nextAt - Date.now()) / 60000),
+              kind: kind || undefined,
+              note: note || undefined,
+            };
+          },
+        }),
+      );
+
+      reg(
+        defineTool({
+          name: "my_context",
+          description:
+            "看你自己的上下文：用了多少、都装了什么、最近在聊什么。\n" +
+            "上下文快满的时候会压缩（旧细节进 recall），所以看一眼不是多余。\n" +
+            "detail 填 full 会多给系统提示和记忆的全文（很占 token，平时不用）。",
+          parameters: {
+            detail: { type: "string", description: "summary（默认）或 full" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            const detail = String(args?.detail ?? "summary");
+            try {
+              const entry = sessions.entries.get(WAKE_KEY()) || sessions.entries.get("self:check");
+              const agent = entry?.handle?.agent;
+              const session = agent?.session;
+              const events = session?.snapshotEvents?.(0) ?? [];
+              const msgs = events.filter(
+                (e) => e?.type === "user/message" || e?.type === "assistant/message",
+              );
+              const recent = msgs.slice(-8).map((e) => {
+                const role = e.type === "user/message" ? "对方" : "她";
+                const content = e.data?.message?.content ?? [];
+                const text = Array.isArray(content)
+                  ? content.filter((b) => b?.type === "text").map((b) => b.text).join(" ")
+                  : "";
+                return { role, text: String(text).slice(0, 120), at: e.time };
+              });
+              // 粗估 token：字符数 / 2
+              let chars = 0;
+              for (const e of events) {
+                try {
+                  chars += JSON.stringify(e.data ?? {}).length;
+                } catch {
+                  // 忽略
+                }
+              }
+              const estTokens = Math.round(chars / 2);
+              const maxTokens = 128000;
+              const percent = Math.min(99, Math.round((estTokens / maxTokens) * 100));
+              const out = {
+                ok: true,
+                usage: { estTokens, maxTokens, percent },
+                eventCount: events.length,
+                recent,
+                note:
+                  percent < 50 ? "还有余量。" : percent < 80 ? "用了一半多。" : "快满了，可能要压缩了——压缩后旧细节会进 recall。",
+              };
+              if (detail === "full") {
+                out.systemPromptChars = String(agent?.session?.systemPrompt ?? "").length;
+              }
+              return out;
+            } catch (err) {
+              return { ok: false, reason: String(err?.message ?? err) };
+            }
+          },
+        }),
+      );
+
+      logger.info?.("[onebot] 活动调度工具已注册（schedule_activity / my_context）");
+    } catch (err) {
+      logger.warn?.("[onebot] 活动调度工具注册失败：" + (err?.message ?? err));
+    }
+  })();
+
+
 
   /** 执行一轮并发送回复 */
   async function deliver(key, ev, prompt, images) {
@@ -10227,31 +10855,7 @@ async function handleOwnerNatural(ev, text) {
       });
       markSeen(key, Number(ev.time) * 1000 || Date.now(), ev.message_id);
       flushSeen();
-      // 情绪到位时主动补一张表情包（不依赖模型主动调用）
-      if (cfg.autoSticker !== false && Math.random() < (Number(cfg.autoStickerChance) || 0.3)) {
-        try {
-          const t2 = String(clipped || "");
-          let mood = "";
-          if (/(哈哈|笑死|好笑|乐死|😂|🤣)/.test(t2)) mood = "大笑";
-          else if (/(无语|服了|离谱|绝了|🙄)/.test(t2)) mood = "无语";
-          else if (/(生气|气死|烦|火大|😤)/.test(t2)) mood = "生气";
-          else if (/(难过|委屈|哭|😭)/.test(t2)) mood = "委屈";
-          else if (/(吓|震惊|居然|😱)/.test(t2)) mood = "震惊";
-          else if (/(开心|高兴|太好了|😄|😊)/.test(t2)) mood = "开心";
-          else if (/(困|睡觉|晚安|😴)/.test(t2)) mood = "睡觉";
-          if (mood) {
-            const picked2 = pickSticker(cfg.stickerDir, mood);
-            if (picked2) {
-              await sleep(300 + Math.random() * 500);
-              await client.sendImage(ev, picked2.path);
-              logger.info?.(`[onebot] 顺手补了一张表情包（${mood}）`);
-              audit({ kind: "sticker_auto", mood, file: picked2.path });
-            }
-          }
-        } catch (err) {
-          logger.debug?.(`[onebot] 自动表情包失败：${err?.message ?? err}`);
-        }
-      }
+      // 表情包不再自动补了——她自己决定要不要发（send_message 的 sticker 参数 / send_sticker）
 
       if (!agentReady) {
         agentReady = true;
@@ -12409,16 +13013,20 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
       ent.topicPending = true;
       ent.topicAwaitHuman = true;
       ent.topicDayCount = Number(ent.topicDayCount ?? 0) + 1;
-      logger.info?.(`[onebot] 群 ${key} 静了 ${cfg.quietTopicHours} 小时，主动找话题`);
+      logger.info?.(`[onebot] 群 ${key} 静了 ${cfg.quietTopicHours} 小时，产生 quiet_group 事件`);
       audit({ kind: "quiet_topic", key });
-      void sessions
-        .runProactive(
-          key,
-          "（这个群已经好几个小时没人说话了。你可以主动抛一个轻松的话题，" +
-            "比如最近的新闻、天气、或者一个无关痛痒的小问题；一句话就够，" +
-            "不要问「有人在吗」、不要说「好久没聊了」，像随口一提。）",
-        )
-        .catch(() => {});
+      // 不直接发——产生事件，她自己决定要不要开口
+      enqueueEvent(
+        makeEvent(
+          "quiet_group",
+          {
+            type: "group",
+            groupId: key.slice(6),
+            lastSpeaker: String(ent?.topicLastSpeaker || ""),
+          },
+          { silentMinutes: Math.round((nowTs - last) / 60000) },
+        ),
+      );
     }
   }
 
@@ -13630,14 +14238,15 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
   }
 
   const ACTIVITY_KINDS = [
-    { id: "explore", w: 22 },
-    { id: "think", w: 16 },
-    { id: "write", w: 13 },
-    { id: "recall", w: 12 },
-    { id: "dream", w: 8 },
-    { id: "play", w: 9 },
-    { id: "read", w: 12 },
-    { id: "study", w: 8 },
+    { id: "explore", w: 20 },
+    { id: "think", w: 14 },
+    { id: "write", w: 12 },
+    { id: "recall", w: 11 },
+    { id: "dream", w: 7 },
+    { id: "play", w: 8 },
+    { id: "read", w: 11 },
+    { id: "study", w: 7 },
+    { id: "watch_groups", w: 10 },   // 看看群——看完想说什么就说
   ];
 
   function pickActivityKind() {
@@ -13787,9 +14396,9 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
       "做完了要是觉得没意思，下次换别的；要是做着做着觉得好玩，那就多玩一会儿。\n" +
       (forceAction
         ? `（这次外面指定了要做：${forceAction}。你想想具体想做什么，action 就填 ${forceAction}。）\n`
-        : "可选：探险（出门看看）/ 读书 / 玩（造个小游戏）/ 思考（想事）/ 写点什么 / 回忆 / 憧憬未来\n") +
+        : "可选：探险（出门看看）/ 读书 / 玩（造个小游戏）/ 思考（想事）/ 写点什么 / 回忆 / 憧憬未来 / **看看群**（去群里看看大家在聊什么，想插话就插）\n") +
       "\n" +
-      '只输出 JSON：{"looked":[看过哪几层],"intent":"我想做什么（一句话）","action":"explore|read|play|think|write|recall|dream","why":"为什么","mood":"现在什么心情"}';
+      '只输出 JSON：{"looked":[看过哪几层],"intent":"我想做什么（一句话）","action":"explore|read|play|think|write|recall|dream|watch_groups","why":"为什么","mood":"现在什么心情"}';
     logger.info?.("[onebot] 阶段1 思考");
     const raw = String((await sessions.runSilent(runKey, prompt)) ?? "").trim();
     const m = raw.match(/\{[\s\S]*\}/);
@@ -13799,7 +14408,7 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
     return {
       looked: Array.isArray(obj.looked) ? obj.looked : [],
       intent: String(obj.intent || "").slice(0, 150),
-      action: ["explore", "read", "play", "think", "write", "recall", "dream", "study"].includes(action)
+      action: ["explore", "read", "play", "think", "write", "recall", "dream", "study", "watch_groups"].includes(action)
         ? action
         : "think",
       why: String(obj.why || "").slice(0, 200),
@@ -14727,8 +15336,9 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
       if (ran) {
         const after = Number(loadSelfState().selfActivityNextAt) || 0;
         if (after === before) {
-          logger.info?.("[onebot] 活动跑完但没排下次，兜底排一次");
-          scheduleNextSelfActivity(0);
+          // 她没排 → 兜底 40 分钟（不然可能整天不动）
+          logger.info?.("[onebot] 活动跑完但没排下次，兜底排 40 分钟");
+          scheduleNextSelfActivity(40);
         }
       }
     } catch (err) {
@@ -14750,7 +15360,7 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
         //   "explore 2"         → 2 次探险
         //   "read"              → 1 次读书
         //   "explore 2\nread 1" → 组合
-        const VALID = ["explore", "read", "play", "think", "write", "recall", "dream", "study"];
+        const VALID = ["explore", "read", "play", "think", "write", "recall", "dream", "study", "watch_groups"];
         const jobs = [];
         for (const line of raw.split("\n")) {
           const parts = line.trim().split(/\s+/);
@@ -14880,14 +15490,27 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
     }
   }
 
-  // 每 25 分钟跑一次（cfg.selfActivityCheckMinutes 可调）
-  // 10 分钟问一次。原来 25——跟活动间隔一样长，导致每次问时「距上次活动」
-  // 总是 25 分钟，她看到这个数字就永远觉得该动了。
-  const checkMin = Math.max(5, Number(cfg.selfActivityCheckMinutes) || 10);
-  setInterval(() => void checkSelfActivity(), checkMin * 60_000).unref?.();
-  // 启动 1 分钟后先看一眼（不然重启后要空等一个周期）
-  setTimeout(() => void checkSelfActivity(), 60_000).unref?.();
-  logger.info?.(`[onebot] 活动自检已启动：每 ${checkMin} 分钟看她想不想动`);
+  // 活动到点检查：每 30 秒看一眼 selfActivityNextAt，到了就产生 activity_due 事件。
+  // 不再「问她要不动」——事件进了队列，她自己在 wakeNow 里决定做不做。
+  setInterval(() => {
+    try {
+      const st = loadSelfState();
+      const nextAt = Number(st.selfActivityNextAt) || 0;
+      if (!nextAt || Date.now() < nextAt) return;
+      if (Number(st.selfActivityFiredAt) === nextAt) return;
+      patchSelfState({ selfActivityFiredAt: nextAt, selfActivityNextAt: 0 });
+      enqueueEvent(
+        makeEvent("activity_due", { type: "timer" }, {
+          kind: String(st.selfActivityKind || ""),
+          note: String(st.selfActivityNote || ""),
+        }),
+      );
+      logger.info?.("[onebot] 活动时间到了，产生 activity_due 事件");
+    } catch (err) {
+      logger.debug?.("[onebot] 活动检查失败：" + (err?.message ?? err));
+    }
+  }, 30_000).unref?.();
+  logger.info?.("[onebot] 活动到点检查已启动（30 秒一轮，到点产生事件）");
 
   setTimeout(() => {
     try {

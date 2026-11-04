@@ -1,5 +1,141 @@
 # 更新日志
 
+## 2.0.0 · 2026-11-04
+
+**架构重构：「事件 - 思考 - 反馈」。**
+
+**她不再「收到消息就自动回」，而是「看到事件，自己决定用哪个工具回应」。**
+
+---
+
+### 一、核心变化
+
+**之前**：
+
+```
+QQ 消息 → onEvent → sessions.run → 生成回复 → sendHuman 自动发
+                    ↑
+              回不回、怎么回，代码替她决定了
+```
+
+**之后**：
+
+```
+QQ 消息 / 定时 / 群冷了 / 活动到点
+        ↓
+    事件（7 种）
+        ↓
+    inbox 队列
+        ↓
+  空闲立刻 wakeNow（串行，一次一条）
+  在忙则排队
+        ↓
+    她看到事件（带 target / messageId / 正文）
+        ↓
+  调工具：send_message / reply_to / send_private / at_person /
+          send_sticker / run_activity / schedule_activity
+        ↓
+  说了算：不回就标「看过」
+```
+
+**关键区别**：**「回不回」归她了。**
+
+### 二、七种事件
+
+| 事件 | 触发 |
+|---|---|
+| `private_message` | 收到私聊 |
+| `mentioned` | 群里被 @ |
+| `replied` | 被回复 |
+| `quiet_group` | 群安静了 N 小时 |
+| `reminder_due` | 提醒到点 |
+| `activity_due` | 她自己排的活动时间到了 |
+| `system` | 掉线 / 重连 |
+
+**没有过期限制**——隔几小时回消息是正常的。
+
+### 三、串行处理
+
+```
+事件 A 入队 → wakeNow 取 A → LLM → 调 reply_to → 打字（15 秒）→ 发出
+  ↓ 打完字
+取 B → LLM → 调 send_message → 打字 → 发出
+  ↓
+...
+```
+
+**一次一条，等打字完成再下一条。** 10 条消息同时来，就是老老实实排 2 分钟队。
+
+**不是并发。**
+
+### 四、新工具
+
+| 工具 | 作用 |
+|---|---|
+| `send_message({target, text, sticker?})` | 发消息，可选带表情 |
+| `reply_to({target, messageId, text})` | 回复某条（带引用） |
+| `send_private({qq, text})` | **主动找好友私聊**（不用拼 target） |
+| `schedule_activity({afterMinutes, kind?, note?})` | 排/改/取消下次活动（0 = 取消） |
+| `my_context()` | 看自己的上下文用掉多少 |
+
+### 五、活动：由她自己排
+
+**去掉 `checkSelfActivity` 固定循环**（原来每 10 分钟问一次「要不要动」）。
+
+**改成**：
+
+```
+30 秒一轮检查 selfActivityNextAt
+  ↓ 到点
+产生 activity_due 事件
+  ↓
+她看到：「你之前排的活动时间到了。当时留的：想读《世说新语》」
+  ↓
+她决定：
+  ├─ run_activity("read") → 活动
+  └─ 不调 → 继续歇着
+  ↓
+活动结束：告诉她「下次排的是 15:30（40 分钟后）」
+  ↓
+她可以：改时间 / 定内容 / 取消 / 不管
+```
+
+**新活动类型 `watch_groups`**：**去群里看看大家在聊什么**，看完想插话就插。
+
+### 六、表情包：她自己决定
+
+**删掉 `autoSticker`**（原来 30% 概率自动补一张）。
+
+**改成**：
+
+```js
+send_message({
+  target: "group:xxx",
+  text: "这个我也在想",
+  sticker: "大笑"     // 可选，她自己决定
+})
+```
+
+**不带 `sticker` 就是纯文字。** 不想说话只想发表情，用 `send_sticker`。
+
+### 七、这次修掉的坑（都是真踩过的）
+
+| 坑 | 现象 |
+|---|---|
+| **`runSilent` 判断不出工具调用** | 事件永远标 handled |
+| **话不会自动发** | 她只说不发（`runSilent` 不发送） |
+| **`target` 填昵称** | 她填「某某」而不是 `private:xxx` |
+| **`messageId` 是假的** | 她编一个 `"0"` |
+| **正文为空** | 她「看不到正文」 |
+| **session 历史污染** | 旧 prompt 带偏她 → 改成 `self:main-{小时}` 每小时换新 |
+| **WinForms 收不到** | `onWebReply` 只在 WebUI 时调 → 改成所有消息都推，带 `channel` |
+
+### 八、顺带
+
+- `at_person` 加 `target` 参数（`wakeNow` 的 session 拿不到 `lastTarget`）
+- `run_activity` 的 description 去掉「主人说…」，改成「随时可用」
+- `ALLOWED_TOOLS` 重建：83 个
+
 ## 1.1.50 · 2026-11-02
 
 **让她能多轮搜索 + 活动自检不再「每次都动」。**
