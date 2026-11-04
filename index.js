@@ -708,11 +708,17 @@ class OneBotClient {
       if (fm) segs.push({ type: "face", data: { id: fm[1] } });
       else segs.push({ type: "text", data: { text: part } });
     }
-    // 发到 QQ 的也和 WebUI 同步一份——不然 WinForms / 网页看不到她往 QQ 说的话
+    // 发到 QQ 的也和 WebUI 同步一份——但只同步「发给主人」和「群聊」。
+    // 她和别人的私聊是私事，不该出现在主人的界面上。
     try {
-      const rawText = String(text ?? "");
-      for (const p of rawText.split(/\[split\]/i).map((x) => x.trim()).filter(Boolean)) {
-        this.onWebReply?.(p, "qq");
+      const owner = String(this.cfg?.ownerId ?? "");
+      const isPrivateToOther =
+        ev?.message_type !== "group" && String(ev?.user_id ?? "") !== owner;
+      if (!isPrivateToOther) {
+        const rawText = String(text ?? "");
+        for (const p of rawText.split(/\[split\]/i).map((x) => x.trim()).filter(Boolean)) {
+          this.onWebReply?.(p, "qq");
+        }
       }
     } catch {
       // 忽略
@@ -10639,10 +10645,12 @@ async function handleOwnerNatural(ev, text) {
 
             try {
               await client.sendPrivate(qq, text);
-              try {
-                client.onWebReply?.(text, "qq");
-              } catch {
-                // 忽略
+              if (String(qq) === String(cfg?.ownerId ?? "")) {
+                try {
+                  client.onWebReply?.(text, "qq");
+                } catch {
+                  // 忽略
+                }
               }
               audit({ kind: "send_private", qq, text: text.slice(0, 120) });
               return { ok: true, qq, sent: true };
@@ -11835,7 +11843,7 @@ inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDef
           });
         const manifest = {
           name: "QQ 助手",
-          short_name: "助手",
+          short_name: "肥鱼",
           description: "她在这儿",
           start_url: `/?token=${encodeURIComponent(String(cfg.webuiToken || ""))}`,
           scope: "/",
