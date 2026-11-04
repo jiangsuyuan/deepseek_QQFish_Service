@@ -13954,6 +13954,11 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
     const gid = bestKey.slice(6);
     logger.info?.(`[onebot] 内省：回顾最近一小时（${bestKey}）`);
     audit({ kind: "introspect", key: bestKey });
+    // backNote 从 1.1.7 起就是个没定义的标识符：走到「有活跃群的每小时回顾」这个分支
+    // 必抛 ReferenceError，被下面的 catch 吞成一行 warn —— 于是这条内省从来没跑成过
+    // （今天 20 次、0 次成功）。先给它一个空串把它救活；真要给她「回看素材」，
+    // 再拿 groupPatrolList(gid, 1) 去填，别再一次加一个没定义的变量。
+    const backNote = "";
     try {
       await sessions.runSilent(
         bestKey,
