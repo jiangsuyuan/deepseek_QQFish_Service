@@ -240,7 +240,17 @@ namespace FishTray
 
         public static string Get(Settings s, string p)
         {
-            try { return H.GetAsync(Url(s, p)).GetAwaiter().GetResult().Content.ReadAsStringAsync().GetAwaiter().GetResult(); }
+            try
+            {
+                var resp = H.GetAsync(Url(s, p)).GetAwaiter().GetResult();
+                string body = resp.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+                // 非 2xx 得能区分出来：以前 500 也被当成正常 JSON，
+                // 反序列化一失败就静默保持旧画面，状态还写着「在线」——
+                // 桥明明活着、只是历史读不出来，界面上一点提示都没有。
+                if (!resp.IsSuccessStatusCode)
+                    return "__ERRHTTP__" + (int)resp.StatusCode + " " + (body ?? "");
+                return body;
+            }
             catch (Exception ex) { return "__ERR__" + ex.Message; }
         }
 
@@ -1768,6 +1778,14 @@ namespace FishTray
 
         void AfterPoll(string body)
         {
+            // 桥是通的，只是 /history 读不出来（500）：别当成掉线去重启隧道，
+            // 更别默默保持旧画面还写着「在线」——直接把状态标出来。
+            if (body != null && body.StartsWith("__ERRHTTP__"))
+            {
+                SetStatus("历史读取失败", false);
+                Log.W("history 读取失败: " + body.Substring(0, Math.Min(160, body.Length)));
+                return;
+            }
             if (body != null && body.StartsWith("__ERR__"))
             {
                 fails++;

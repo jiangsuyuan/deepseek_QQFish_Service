@@ -10940,20 +10940,41 @@ async function handleOwnerNatural(ev, text) {
             if (hasMinutes && (!Number.isFinite(minutes) || minutes < 0 || minutes > 720)) {
               return { ok: false, reason: "afterMinutes 要在 0-720 之间" };
             }
-            let nextAt = Number(loadSelfState().selfActivityNextAt) || 0;
-            if (hasMinutes) {
-              nextAt = Date.now() + Math.max(1, Math.round(minutes)) * 60_000;
+            const fmtHhmm = (ts) => {
+              const d = new Date(ts);
+              return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+            };
+
+            // 没给 afterMinutes（只改 kind/note，或者根本没传）→ 保持原样，如实说「没改」。
+            // 以前这里直接拿 selfActivityNextAt（可能是 0）去 new Date()，
+            // 没排过的时候返回 next:"08:00"、inMinutes:-29000000 —— 看着像真排了个 1970 年的时间。
+            if (!hasMinutes) {
+              const cur = Number(loadSelfState().selfActivityNextAt) || 0;
+              const patch = {};
+              if (kind) patch.selfActivityKind = kind;
+              if (note) patch.selfActivityNote = note.slice(0, 200);
+              if (Object.keys(patch).length) patchSelfState(patch);
+              const inFuture = cur > Date.now();
+              audit({ kind: "schedule_activity", action: "unchanged", kind, note: note.slice(0, 60) });
+              return {
+                ok: true,
+                unchanged: true,
+                next: inFuture ? fmtHhmm(cur) : null,
+                inMinutes: inFuture ? Math.round((cur - Date.now()) / 60000) : null,
+                kind: kind || undefined,
+                note: note || undefined,
+              };
             }
+
+            const nextAt = Date.now() + Math.max(1, Math.round(minutes)) * 60_000;
             const patch = { selfActivityNextAt: nextAt };
             if (kind) patch.selfActivityKind = kind;
             if (note) patch.selfActivityNote = note.slice(0, 200);
             patchSelfState(patch);
-            const d = new Date(nextAt);
-            const hhmm = String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
-            audit({ kind: "schedule_activity", at: hhmm, kind, note: note.slice(0, 60) });
+            audit({ kind: "schedule_activity", at: fmtHhmm(nextAt), kind, note: note.slice(0, 60) });
             return {
               ok: true,
-              next: hhmm,
+              next: fmtHhmm(nextAt),
               inMinutes: Math.round((nextAt - Date.now()) / 60000),
               kind: kind || undefined,
               note: note || undefined,
@@ -11419,9 +11440,15 @@ async function handleOwnerNatural(ev, text) {
 
   const WEBHIST_PATH = join(HOME, ".dsh/onebot-bridge/webui-history.jsonl");
 
+  // 读不出来 ≠ 没有历史。以前 catch 里直接 return []，接口就回 200 + 空数组，
+  // WebUI 看到的是「没有历史」而不是「读失败」，客户端还会显示「在线」。
+  // 只有文件不存在（全新安装）才算真的没有；其它错误留在这里，让 /history 报 500。
+  let webHistReadError = "";
+
   function loadWebHistory(limit = 120) {
     try {
       const raw = readFileSync(WEBHIST_PATH, "utf8");
+      webHistReadError = "";
       const out = [];
       for (const line of raw.split("\n")) {
         if (!line) continue;
@@ -11432,7 +11459,12 @@ async function handleOwnerNatural(ev, text) {
         }
       }
       return out.slice(-limit);
-    } catch {
+    } catch (err) {
+      if (err && err.code === "ENOENT") {
+        webHistReadError = "";   // 还没写过历史文件，就是空的
+        return [];
+      }
+      webHistReadError = String(err?.code || "") + " " + String(err?.message || err);
       return [];
     }
   }
@@ -11717,7 +11749,8 @@ let pendingMeText = "";
 // 快捷入口不放在聊天页（占地方），统一放到右上角「页面」里
 
 
-fetch('/history?token='+T).then(r=>r.json()).then(list=>{
+fetch('/history?token='+T).then(r=>r.ok?r.json():r.json().then(e=>Promise.reject(e))).then(list=>{
+  if(!Array.isArray(list)) return;
   for(const m of list){
     if(m.image){
       const wrap=document.createElement('div');wrap.className='msg her';
@@ -11729,6 +11762,9 @@ fetch('/history?token='+T).then(r=>r.json()).then(list=>{
     else if(m.role==='tool') addTool(m.text||'');
     else add('her',m.text||'');
   }
+}).catch(function(e){
+  // 以前这里没有 catch：读失败了页面就是一片空白，看着像"没有历史"
+  addTool('历史读取失败：'+((e&&e.error)||(e&&e.message)||'接口异常')+'（不是没有记录，是读不出来）');
 });
 // QQ 登录：NapCat WebUI（6099），用当前页面的 host 拼
 (function(){
@@ -12060,6 +12096,13 @@ inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDef
         // 返回全量——原来只给 300 条，文件里 740 条，
         // 「上个月的对话」在网页上就成了空白
         let list = loadWebHistory(2000);
+        if (webHistReadError) {
+          logger.warn?.("[onebot] /history 读取失败：" + webHistReadError);
+          res
+            .writeHead(500, { "content-type": "application/json; charset=utf-8" })
+            .end(JSON.stringify({ error: "webui-history 读取失败", detail: webHistReadError }));
+          return;
+        }
         if (!list.length) list = webHistory.slice(-50);
         // tool 记录（[send_sticker] / [my_memory] 之类）是工具调用的痕迹，
         // 不是聊天内容。混在消息流里会被渲染成「发表情」这种怪气泡，

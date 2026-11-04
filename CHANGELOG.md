@@ -1,5 +1,56 @@
 # 更新日志
 
+## 2.0.12 · 2026-11-04
+
+**B 批前两条：`schedule_activity` 返回 1970；`/history` 读失败装成"没历史"。**
+
+### ① `schedule_activity` 不填 `afterMinutes` 时返回 1970
+
+```js
+let nextAt = Number(loadSelfState().selfActivityNextAt) || 0;   // 没排过 = 0
+...
+const d = new Date(nextAt);          // new Date(0) → 1970-01-01 08:00
+next: "08:00", inMinutes: -29000000  // 看着像真排了个 1970 年的时间
+```
+
+她不定时间、只想改 `kind`/`note` 的时候就会拿到这个。
+现在没给 `afterMinutes` 就**如实说「没改」**：
+
+```js
+if (!hasMinutes) {
+  const cur = Number(loadSelfState().selfActivityNextAt) || 0;
+  ...
+  return { ok: true, unchanged: true, next: inFuture ? fmtHhmm(cur) : null,
+           inMinutes: inFuture ? Math.round((cur - Date.now()) / 60000) : null, ... };
+}
+```
+
+`next` 只在真的有个未来时间时才给，否则 `null` —— 不会再出现 `"08:00"` 这种假时刻。
+
+### ② `/history` 读失败返回空数组，看着像"没有历史"
+
+`loadWebHistory()` 里 `catch { return []; }`，接口就回 200 + `[]`：
+
+- WebUI 页面是**一片空白**（而且 `fetch().then(r=>r.json()).then(...)` 连 `catch` 都没有，非数组直接炸在 `for...of` 里）
+- WinForms 客户端更糟：`Api.Get` 不看状态码，500 的 JSON 也能反序列化失败，然后**静默保持旧画面**，状态还写着「在线」
+
+现在：
+
+| 层 | 改法 |
+|---|---|
+| `loadWebHistory` | 区分 `ENOENT`（全新安装，真的是空的）和真读错误，后者记进 `webHistReadError` |
+| `/history` | 有错误就 **500** + `{error, detail}`，并且打一条 warn |
+| 网页端 | `r.ok ? r.json() : r.json().then(e => Promise.reject(e))` + `catch` 显示「历史读取失败：…（不是没有记录，是读不出来）」 |
+| WinForms | `Api.Get` 非 2xx 返回 `__ERRHTTP__<code> <body>`；`AfterPoll` 识别后标「历史读取失败」并写日志，**不再当成掉线去重启隧道** |
+
+**实测**（把历史文件换成目录逼出 `EISDIR`）：
+
+```
+HTTP 500 {"error":"webui-history 读取失败","detail":"EISDIR EISDIR: illegal operation on a directory, read"}
+客户端 run.log：20:43:24 history 读取失败: __ERRHTTP__500 {...}   （连续 6 次，没有重连风暴）
+恢复后：HTTP 200，138709 字符，客户端自动回到「在线」
+```
+
 ## 2.0.11 · 2026-11-04
 
 **修一个从 1.1.7 就存在的 `ReferenceError`：每小时「群内省」从来没跑成过。**
