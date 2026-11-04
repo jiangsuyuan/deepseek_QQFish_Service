@@ -10244,7 +10244,7 @@ async function handleOwnerNatural(ev, text) {
         },
         {
           // merged 是完整 prompt（含内部说明），提取真正的正文给她看
-          text: extractRealInbound(merged) || String(merged || "").slice(0, 500),
+          text: extractRealInbound(merged) || clipInbound(merged),
           messageId: target?.message_id,
         },
       ),
@@ -10412,6 +10412,18 @@ async function handleOwnerNatural(ev, text) {
     return null;
   }
 
+  // 单条入站正文最多给多少字。超了必须「明说被截断」——
+  // 以前这里是静默 slice(0, 500)：用户那条 1053 字的代码审视清单到她手里只剩 500 字，
+  // 她以为那就是全部，还回了句「剩下的模块清单我没收到」。
+  const INBOUND_TEXT_MAX = 4000;
+  function clipInbound(text, max) {
+    const s = String(text || "");
+    const lim = max || INBOUND_TEXT_MAX;
+    if (s.length <= lim) return s;
+    logger.info?.("[onebot] 入站正文被截断: " + s.length + " -> " + lim + " 字");
+    return s.slice(0, lim) + "……（后面还有 " + (s.length - lim) + " 字，超过单条上限被截断）";
+  }
+
   /** 把事件渲染成她看得懂的一段话 */
   function renderEventForAgent(e, idx) {
     const t = new Date(e.at).toLocaleTimeString("zh-CN", { hour12: false, hour: "2-digit", minute: "2-digit" });
@@ -10445,17 +10457,17 @@ async function handleOwnerNatural(ev, text) {
         lines.push("target: private:" + (e.source.userId || ""));
       }
       if (mid) lines.push("messageId: " + mid);
-      lines.push("「" + String(e.payload.text || "").slice(0, 500) + "」");
+      lines.push("「" + clipInbound(e.payload.text) + "」");
     } else if (e.kind === "mentioned") {
       lines.push("群 " + e.source.groupId + " · " + (e.source.nickname || e.source.userId) + " @ 你");
       lines.push("target: group:" + e.source.groupId);
       if (mid) lines.push("messageId: " + mid);
-      lines.push("「" + String(e.payload.text || "").slice(0, 500) + "」");
+      lines.push("「" + clipInbound(e.payload.text) + "」");
     } else if (e.kind === "replied") {
       lines.push("群 " + e.source.groupId + " · " + (e.source.nickname || "") + " 回了你");
       lines.push("target: group:" + e.source.groupId);
       if (mid) lines.push("messageId: " + mid);
-      lines.push("「" + String(e.payload.text || "").slice(0, 500) + "」");
+      lines.push("「" + clipInbound(e.payload.text) + "」");
     } else if (e.kind === "quiet_group") {
       lines.push("群 " + e.source.groupId + " 安静了 " + Math.round((e.payload.silentMinutes || 0)) + " 分钟");
       lines.push("target: group:" + e.source.groupId);

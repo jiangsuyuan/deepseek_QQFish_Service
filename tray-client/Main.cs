@@ -437,6 +437,24 @@ namespace FishTray
             ApplyRegion();
         }
 
+        /// <summary>
+        /// 只算高度、不建控件：翻页时用它决定「这次最多画多少像素」。
+        /// 量的方式和构造函数里对文字的两次 MeasureText 完全一致，
+        /// 不然预算算小了，画出来的总高还是会顶到 Win32 的上限。
+        /// </summary>
+        public static int MeasureHeight(string body, int maxWidth)
+        {
+            body = body ?? "";
+            if (body.Trim().Length == 0) return 0;
+            int wrap = Math.Max(90, maxWidth - 22);   // PadX * 2
+            Size sz = TextRenderer.MeasureText(body, BodyFont, new Size(wrap, int.MaxValue),
+                TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl);
+            int w = Math.Min(wrap, Math.Max(26, sz.Width + 2));
+            Size inner = TextRenderer.MeasureText(body, BodyFont, new Size(w, int.MaxValue),
+                TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl);
+            return inner.Height + 14 + TimeH;         // PadY*2 + 时间行
+        }
+
         /// <summary>换主题时重新套调色板（气泡颜色在构造时定死，必须重设）</summary>
         public void ApplyPalette(Palette p)
         {
@@ -463,6 +481,15 @@ namespace FishTray
         {
             base.OnResize(e);
             ApplyRegion();
+        }
+
+        /// <summary>时间文字的颜色跟着气泡底色走：浅底用深字，深底用浅字。
+        /// 之前这里写死半透明白，light 主题下她那条浅灰气泡（#F0F2F6）上等于看不见——
+        /// 用户报的「依然没有日期」有一半是这个原因。</summary>
+        Color TimeInk()
+        {
+            int lum = (BgCol.R * 299 + BgCol.G * 587 + BgCol.B * 114) / 1000;
+            return lum > 150 ? Color.FromArgb(125, 0, 0, 0) : Color.FromArgb(165, 255, 255, 255);
         }
 
         /// <summary>图片气泡左上角的时间小标签（深底浅字，压在图上也看得清）</summary>
@@ -551,14 +578,13 @@ namespace FishTray
 
             DrawMark(g);
 
-            // 顶部时间（灰色小字）
+            // 顶部时间（灰色小字，颜色按底色反差选）
             int timeH = 0;
             if (!string.IsNullOrEmpty(TimeText) && Role != "tool")
             {
                 timeH = TimeH;
                 var tr = new Rectangle(PadX, 2, Width - PadX * 2, timeH);
-                TextRenderer.DrawText(g, TimeText, TimeFont, tr,
-                    Color.FromArgb(150, 255, 255, 255),
+                TextRenderer.DrawText(g, TimeText, TimeFont, tr, TimeInk(),
                     TextFormatFlags.NoPadding | TextFormatFlags.Left);
             }
 
@@ -776,7 +802,7 @@ namespace FishTray
         }
     }
 
-    public class ChatForm : Form
+    public class ChatForm : Form, IMessageFilter
     {
         Settings cfg;
         Palette pal;
@@ -834,10 +860,36 @@ namespace FishTray
             ApplyPal();
             Shown += OnShown;
             FormClosing += OnClosing;
-            Resize += delegate { Relayout(); RoundEverything(); };
+            Resize += delegate { Relayout(); if (atBottom) ScrollEnd(); RoundEverything(); };
             MouseDown += OnFormMouseDown;
             MouseMove += OnFormMouseMove;
             MouseUp += OnFormMouseUp;
+            // 窗口没有焦点时 Wheel 事件根本到不了面板（它靠 WM_MOUSEWHEEL，
+            // 系统只发给焦点窗口），所以要自己拦一道，见 PreFilterMessage
+            Application.AddMessageFilter(this);
+        }
+
+        const int WM_MOUSEWHEEL = 0x020A;
+
+        /// <summary>
+        /// 鼠标滚轮只会发给「有焦点的窗口」。这个常驻面板大多数时候没焦点，
+        /// 于是滚轮完全没反应——以前用户说「滚不动」就是这个。
+        /// 这里在消息层拦下来，只要指针在聊天区就自己滚。
+        /// </summary>
+        public bool PreFilterMessage(ref Message m)
+        {
+            if (m.Msg != WM_MOUSEWHEEL) return false;
+            try
+            {
+                if (!Visible || collapsed || scrollHost == null || !scrollHost.Visible) return false;
+                if (canvas == null || bubbles.Count == 0) return false;
+                var host = scrollHost.RectangleToScreen(scrollHost.ClientRectangle);
+                if (!host.Contains(Cursor.Position)) return false;
+                int delta = (short)((m.WParam.ToInt64() >> 16) & 0xFFFF);
+                Wheel(delta);
+                return true;   // 吃掉，别再往下传
+            }
+            catch { return false; }
         }
 
         void Build()
@@ -974,12 +1026,16 @@ namespace FishTray
             {
                 canvas.Controls.Clear();
                 bubbles.Clear();
+                lastItems = null;
+                paintBudget = PAINT_INIT;
                 lastAt = 0;
+                atBottom = true;
                 Log.W("已清空显示");
             });
 
             scrollHost.Controls.Add(canvas);
-            scrollHost.Resize += delegate { Relayout(); };
+            // 尺寸变化后重排；原来停在底部就继续贴着底部（不然窗口一变高就露白）
+            scrollHost.Resize += delegate { Relayout(); if (atBottom) ScrollEnd(); };
             scrollHost.MouseWheel += delegate (object s2, MouseEventArgs e2) { Wheel(e2.Delta); };
             canvas.MouseWheel += delegate (object s2, MouseEventArgs e2) { Wheel(e2.Delta); };
 
@@ -1146,7 +1202,13 @@ namespace FishTray
             ResumeLayout();
             ApplyPal();
             Relayout();
-            Log.W("已展开");
+            // 展开后必须贴到最新一条。以前这里只 Relayout 不滚：
+            // 启动时是收起状态（视口 54px），Reload 拿回来的消息排完版 top 还是 0，
+            // 点开看到的就是整个对话的最开头（最旧的那几条）——用户两次报「不是最下面的最新条目」。
+            ScrollEnd();
+            Log.W("已展开 共" + bubbles.Count + "条 画布高" + canvas.Height +
+                  " 视口高" + scrollHost.ClientSize.Height + " offset=" + canvas.Top +
+                  " 末条y=" + (bubbles.Count > 0 ? bubbles[bubbles.Count - 1].Top : -1));
         }
 
         void HeaderShow()
@@ -1454,8 +1516,7 @@ namespace FishTray
         void Relayout()
         {
             if (canvas == null || bubbles.Count == 0) return;
-            int viewW = scrollHost.ClientSize.Width;
-            if (viewW < 60) return;
+            int viewW = ViewWidth();
             int w = viewW - 8;
             if (w < 100) return;
 
@@ -1472,6 +1533,20 @@ namespace FishTray
             }
             canvas.Height = y + 14;
             canvas.ResumeLayout();
+        }
+
+        /// <summary>
+        /// 排版用的视口宽度。收起状态下 scrollHost 只有 54px 宽，
+        /// 拿它排版会把气泡全挤到 0 位置（以前的 Relayout 干脆直接 return，
+        /// 于是 684 条气泡全叠在 y=0，展开后看到的是最上面那几条）。
+        /// 永远按展开宽度排，展开时只要重排一次就对得上。
+        /// </summary>
+        int ViewWidth()
+        {
+            int w = 0;
+            try { w = scrollHost.ClientSize.Width; } catch { }
+            if (w < 60) w = EXPANDED_W - 2;
+            return w;
         }
 
         void CopyAll()
@@ -1503,8 +1578,13 @@ namespace FishTray
                 h = last.Top + Math.Max(20, last.Height);
             }
             if (canvas != null && canvas.Height > h) h = canvas.Height;
-            return h + 14;
+            // 这里以前又 +14：canvas.Height 本身已经带了底部留白，再补一次
+            // 会让「滚到底」多滚 34px，看起来像没对准最后一条
+            return h;
         }
+
+        // 当前是否停在底部（新消息、展开、改尺寸时据此决定要不要跟到底）
+        bool atBottom = true;
 
         void ScrollEnd()
         {
@@ -1512,6 +1592,7 @@ namespace FishTray
             {
                 int maxOff = Math.Max(0, ContentHeight() - scrollHost.ClientSize.Height);
                 canvas.Top = -maxOff;
+                atBottom = true;
             }
             catch { }
         }
@@ -1520,11 +1601,19 @@ namespace FishTray
         {
             try
             {
+                // 已经在最上面还往上滚（Win32 里向前滚 delta 是正的）：接一段更早的进来
+                if (delta > 0 && canvas.Top >= 0 && paintBudget < PAINT_MAX)
+                {
+                    LoadOlder();
+                    return;
+                }
+
                 int maxOff = Math.Max(0, ContentHeight() - scrollHost.ClientSize.Height);
                 int next = canvas.Top + (delta > 0 ? 60 : -60);
                 if (next > 0) next = 0;
                 if (next < -maxOff) next = -maxOff;
                 canvas.Top = next;
+                atBottom = (next <= -maxOff + 1);
             }
             catch { }
         }
@@ -1752,49 +1841,21 @@ namespace FishTray
             try { foreach (var x in items) if (!string.IsNullOrEmpty(x.image)) imgCount++; } catch { }
             if (!onlyNew) Log.W("Render: 共 " + items.Count + " 条，带图 " + imgCount + " 条，body " + body.Length + " 字符");
 
-            int viewW = scrollHost.ClientSize.Width;
-            int maxW = (int)(viewW * 0.78);
-            if (maxW < 120) maxW = 240;
-
             if (!onlyNew)
             {
-                canvas.SuspendLayout();
-                canvas.Controls.Clear();
-                bubbles.Clear();
-                lastAt = 0;
-                pendingMe = "";
-                int okCount = 0, failCount = 0;
-                bulkRendering = true;
-                foreach (var m in items)
-                {
-                    // 工具调用记录（send_sticker / my_memory 之类）不是聊天内容，
-                    // 画出来会变成「发表情」这种怪气泡，还把真对话挤乱
-                    if (m != null && m.role == "tool") continue;
-                    // 一条消息渲染失败不能拖垮整轮 —— 之前就是这样：
-                    // 前面 3 张图渲染完后，第 4 条抛异常，后面的图全没了，
-                    // 而且异常被 WinForms 吞掉，日志里一个字都没有
-                    try
-                    {
-                        if (m.at > lastAt) lastAt = m.at;
-                        AddBubble(m, maxW);
-                        okCount++;
-                    }
-                    catch (Exception ex)
-                    {
-                        failCount++;
-                        Log.W("渲染失败 at=" + m.at + " role=" + m.role +
-                              " img=" + (m.image ?? "-") + " : " + ex.GetType().Name + " " + ex.Message);
-                    }
-                }
-                bulkRendering = false;
-                if (failCount > 0) Log.W("渲染完成：成功 " + okCount + " 条，失败 " + failCount + " 条");
+                lastItems = items;
                 renderedCount = items.Count;
-                renderedLastAt = lastAt;
-                canvas.ResumeLayout();
-                Relayout();
-                ScrollEnd();
+                long newest = 0;
+                for (int i = items.Count - 1; i >= 0; i--)
+                    if (items[i] != null && items[i].at > 0) { newest = items[i].at; break; }
+                renderedLastAt = newest;
+                RenderWindow(paintBudget, long.MinValue, 0);
                 return;
             }
+
+            int viewW = ViewWidth();
+            int maxW = (int)(viewW * 0.78);
+            if (maxW < 120) maxW = 240;
 
             bool added = false;
             canvas.SuspendLayout();
@@ -1824,7 +1885,140 @@ namespace FishTray
                 }
             }
             canvas.ResumeLayout();
-            if (added) { Relayout(); ScrollEnd(); }
+            if (added) { Relayout(); if (atBottom) ScrollEnd(); }
+        }
+
+        // 最近一次 /history 的解析结果（往上翻页时不用再请求服务器）
+        List<Msg> lastItems;
+
+        // 一次最多排多少像素。Win32 子窗口的坐标是 16 位的：Top 到 -32768 就被截断，
+        // 683 条消息排出来 64276px，怎么滚也只能停在中途（这就是「显示的不是最下面的最新条目」）。
+        // 所以只画最近的一段，往上翻再往前接一段。
+        const int PAINT_INIT = 6000;    // 启动时大约最近几十条
+        const int PAINT_STEP = 6000;    // 每次往上翻再接这么多
+        const int PAINT_MAX = 24000;    // 留足余量，别碰到 32767
+        int paintBudget = PAINT_INIT;
+
+        /// <summary>
+        /// 只从最近的消息往回排，累计高度到 budget 就停。
+        /// anchorAt &gt; 0 时表示「接更早的历史」：画完后让那条消息停在原来屏幕上位置。
+        /// </summary>
+        void RenderWindow(int budget, long anchorAt, int anchorViewY)
+        {
+            if (lastItems == null) return;
+
+            int viewW = ViewWidth();
+            int maxW = (int)(viewW * 0.78);
+            if (maxW < 120) maxW = 240;
+
+            // 先挑出真正要画的（工具记录不是聊天内容，空条目以前会变成空蓝条）
+            var msgs = new List<Msg>();
+            foreach (var m in lastItems)
+            {
+                if (m == null || m.role == "tool") continue;
+                if (string.IsNullOrEmpty(m.image) && (m.text ?? "").Trim().Length == 0) continue;
+                msgs.Add(m);
+            }
+
+            // 从最新往回攒高度，定出起点（至少画一条）
+            int start = msgs.Count;
+            int used = 0;
+            for (int i = msgs.Count - 1; i >= 0; i--)
+            {
+                int h = !string.IsNullOrEmpty(msgs[i].image)
+                    ? 206
+                    : Bubble.MeasureHeight(msgs[i].text, maxW) + 6;
+                if (used + h > budget && start < msgs.Count) break;
+                used += h;
+                start = i;
+            }
+
+            canvas.SuspendLayout();
+            canvas.Controls.Clear();
+            bubbles.Clear();
+            lastAt = 0;
+            pendingMe = "";
+            bulkRendering = true;
+            int okCount = 0, failCount = 0;
+            for (int i = start; i < msgs.Count; i++)
+            {
+                var m = msgs[i];
+                // 一条失败不能拖垮整轮（以前第 4 条抛异常，后面的图全没了）
+                try
+                {
+                    if (m.at > lastAt) lastAt = m.at;
+                    AddBubble(m, maxW);
+                    okCount++;
+                }
+                catch (Exception ex)
+                {
+                    failCount++;
+                    Log.W("渲染失败 at=" + m.at + " role=" + m.role +
+                          " img=" + (m.image ?? "-") + " : " + ex.GetType().Name + " " + ex.Message);
+                }
+            }
+            bulkRendering = false;
+            if (failCount > 0) Log.W("渲染完成：成功 " + okCount + " 条，失败 " + failCount + " 条");
+            canvas.ResumeLayout();
+            Relayout();
+
+            if (anchorAt > long.MinValue)
+            {
+                Bubble a = null;
+                foreach (var b in bubbles) if (b.At == anchorAt) { a = b; break; }
+                if (a != null)
+                {
+                    canvas.Top = anchorViewY - a.Top;
+                    atBottom = false;
+                }
+                else if (atBottom) ScrollEnd();
+            }
+            else if (atBottom) ScrollEnd();
+
+            Log.W("排版：画最近 " + (msgs.Count - start) + "/" + msgs.Count + " 条（预算 " + budget + "px）" +
+                  " 画布高=" + canvas.Height + " 视口高=" + scrollHost.ClientSize.Height +
+                  " offset=" + canvas.Top + " 末条y=" + (bubbles.Count > 0 ? bubbles[bubbles.Count - 1].Top : -1));
+        }
+
+        /// <summary>往上翻到头了：把更早的一段接进来</summary>
+        void LoadOlder()
+        {
+            try
+            {
+                if (lastItems == null || paintBudget >= PAINT_MAX || bubbles.Count == 0) return;
+
+                // 记下当前贴在视口最上沿的那条，接完让它别跳
+                long anchorAt = 0;
+                int anchorY = 0;
+                foreach (var b in bubbles)
+                {
+                    if (b.Top + b.Height > -canvas.Top) { anchorAt = b.At; anchorY = b.Top + canvas.Top; break; }
+                }
+                if (anchorAt <= 0) { anchorAt = long.MinValue; }
+
+                paintBudget = Math.Min(PAINT_MAX, paintBudget + PAINT_STEP);
+                RenderWindow(paintBudget, anchorAt, anchorY);
+            }
+            catch (Exception ex) { Log.W("接更早历史失败 " + ex.Message); }
+        }
+
+        /// <summary>
+        /// 消息时间：今天给「今天 HH:mm」，昨天给「昨天」，今年给「MM-dd HH:mm」，
+        /// 跨年给「yyyy-MM-dd HH:mm」。
+        /// 之前只画 HH:mm，隔天的对话根本分不清是哪天（用户报了两次）。
+        /// </summary>
+        static string FmtTime(long ms)
+        {
+            try
+            {
+                var dt = DateTimeOffset.FromUnixTimeMilliseconds(ms).ToLocalTime();
+                var now = DateTimeOffset.Now;
+                if (dt.Date == now.Date) return "今天 " + dt.ToString("HH:mm");
+                if (dt.Date == now.Date.AddDays(-1)) return "昨天 " + dt.ToString("HH:mm");
+                if (dt.Year == now.Year) return dt.ToString("MM-dd HH:mm");
+                return dt.ToString("yyyy-MM-dd HH:mm");
+            }
+            catch { return ""; }
         }
 
         void AddBubble(Msg m, int maxW)
@@ -1850,7 +2044,7 @@ namespace FishTray
                 textBubble.Parent = canvas;
                 InsertBubble(textBubble, m.at);
                 canvas.Controls.Add(textBubble);
-                if (!bulkRendering) { Relayout(); ScrollEnd(); }
+                if (!bulkRendering) { Relayout(); if (atBottom) ScrollEnd(); }
                 return;
             }
             var b = new Bubble(role, body, pal, maxW);
@@ -1902,7 +2096,7 @@ namespace FishTray
             {
                 try
                 {
-                    ph.SetTime(DateTimeOffset.FromUnixTimeMilliseconds(at).ToLocalTime().ToString("HH:mm"));
+                    ph.SetTime(FmtTime(at));
                 }
                 catch { }
             }
@@ -1994,7 +2188,7 @@ namespace FishTray
                             ph.PicClicked += ShowBigImage;
                             ph.Size = new Size(nw, nh);
                             Relayout();
-                            ScrollEnd();
+                            if (atBottom) ScrollEnd();
                             Log.W("图片已加载 " + label + " " + nw + "x" + nh);
                         });
                     }
