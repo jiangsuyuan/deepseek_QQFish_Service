@@ -738,8 +738,19 @@ class OneBotClient {
       method = "send_group_msg";
       params = { group_id: ev.group_id, message: segs };
     } else if (tempGroup > 0) {
-      method = "send_group_temp_msg";
-      params = { group_id: tempGroup, user_id: ev.user_id, message: segs };
+      // 群临时会话优先走专用接口；有些 NapCat 版本不实现它（1404 不支持的API），
+      // 那时退回普通私聊——总比整条消息发不出去好。
+      // sendText 不是 async，这里用 .catch 链，不引 await。
+      return this.call("send_group_temp_msg", {
+        group_id: tempGroup,
+        user_id: ev.user_id,
+        message: segs,
+      }).catch((err) => {
+        this.logger?.warn?.(
+          "[onebot] send_group_temp_msg 失败（" + (err?.message ?? err) + "），回退 send_private_msg",
+        );
+        return this.call("send_private_msg", { user_id: ev.user_id, message: segs });
+      });
     } else {
       method = "send_private_msg";
       params = { user_id: ev.user_id, message: segs };
@@ -10416,9 +10427,20 @@ async function handleOwnerNatural(ev, text) {
           "（" + (e.source.userId || "") + "）",
       );
       if (isTemp) {
-        lines.push("来源群: " + String(e.source.originGroup || "未知") + "（只是他从哪个群来，别把话发进群）");
-        lines.push("target: private:" + (e.source.userId || ""));
-        lines.push("⚠️ 回复要用 send_private({ qq: \"" + (e.source.userId || "") + "\", text, groupTemp: " + String(e.source.originGroup || 0) + " })");
+        const og = Number(e.source.originGroup) || 0;
+        if (og > 0) {
+          lines.push("来源群: " + og + "（只是他从哪个群来，别把话发进群）");
+          lines.push("target: private:" + (e.source.userId || ""));
+          lines.push(
+            "⚠️ 回复用 reply_to({ target: \"private:" + (e.source.userId || "") +
+              "\", messageId, text, groupTemp: " + og + " })",
+          );
+        } else {
+          // 来源群没拿到，就别编一个 0 出来——这会让层里以为是"发到群 0"
+          lines.push("来源群: 没拿到（NapCat 没给）");
+          lines.push("target: private:" + (e.source.userId || ""));
+          lines.push("⚠️ 这是群临时会话，但来源群未知。先直接 reply_to({ target: \"private:" + (e.source.userId || "") + "\", ... }) 试，发不出去就把失败原因如实说出来。");
+        }
       } else {
         lines.push("target: private:" + (e.source.userId || ""));
       }
@@ -10562,6 +10584,23 @@ async function handleOwnerNatural(ev, text) {
         e.status = calledTool ? "handled" : "ignored";
         inboxDirty = true;
         flushInbox();
+
+        // 记进 seenState。不记的话 catchUpPrivate 每轮轮询都会把这条当成
+        // "还没回"重新捞回来——今天同一个人被补回复了 56 遍就是这么来的。
+        try {
+          const mid = String(e.payload?.messageId ?? "");
+          if (mid) {
+            const src = e.source || {};
+            const key =
+              src.type === "group" || e.kind === "mentioned" || e.kind === "replied" || e.kind === "quiet_group"
+                ? "group:" + src.groupId
+                : "private:" + src.userId;
+            markSeen(key, Number(e.at) || Date.now(), mid);
+            flushSeen();
+          }
+        } catch (err) {
+          logger.debug?.("[onebot] wakeNow markSeen 失败：" + (err?.message ?? err));
+        }
       }
     } catch (err) {
       logger.warn?.("[onebot] wakeNow 失败：" + (err?.message ?? err));
