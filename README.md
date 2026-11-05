@@ -5,7 +5,7 @@
 基于 [OneBot 11](https://github.com/botuniverse/onebot-11) 协议，通过 [NapCat](https://github.com/NapNeko/NapCatQQ) 连接 QQ，
 让 DSH 的 Agent 能在私聊和群里说话——并且带记忆、有作息、会主动找你。
 
-> **当前版本 2.0.14**（2026-11-06）。变更见 [CHANGELOG.md](CHANGELOG.md)。
+> **当前版本 2.1.0**（2026-11-06）。变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 > 本项目是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的一个 Cordis 插件，
 > **不是独立程序**。你需要先有 DSH 和 NapCat。
