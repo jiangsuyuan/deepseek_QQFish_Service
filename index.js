@@ -14488,9 +14488,6 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
   // 统一用「活跃时段」：23-9 点不做任何主动行为
   const inQuietHours = () => !activeHoursOk();
 
-  // 每日简讯刚发过就别再主动分享，免得同一小时里两条主动消息撞车
-  let lastDailyBriefAt = 0;
-
   function scheduleProactive() {
     if (!cfg.proactiveEnabled || cfg.autoActionsEnabled === false) return;
     const min = Math.max(15, Number(cfg.proactiveMinMinutes) || 60);
@@ -14500,10 +14497,6 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
       void (async () => {
         try {
           if (inQuietHours()) return;
-          if (Date.now() - lastDailyBriefAt < 90 * 60 * 1000) {
-            logger.info?.("[onebot] 刚发过每日简讯，跳过本次主动分享");
-            return;
-          }
           if (Math.random() > (Number(cfg.proactiveChance) || 0.45)) return;
           const picked = pickTarget();
           if (!picked) return;
@@ -14548,16 +14541,18 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
     setTimeout(() => {
       void (async () => {
         try {
-          const picked = pickTarget();
-          if (picked) {
-            logger.info?.(`[onebot] 生成每日简讯：${picked[0]}`);
-            audit({ kind: "daily_brief", key: picked[0] });
-            lastDailyBriefAt = Date.now();
+          // 简讯只发给主人私聊（dailyBriefTarget 可覆盖成别的会话）
+          const briefKey =
+            String(cfg.dailyBriefTarget || "").trim() ||
+            (cfg.ownerId ? `private:${cfg.ownerId}` : "");
+          if (briefKey) {
+            logger.info?.(`[onebot] 生成每日简讯（私聊）→ ${briefKey}`);
+            audit({ kind: "daily_brief", key: briefKey });
             const y = new Date(Date.now() - 86400000);
             const ymd = `${y.getFullYear()}-${String(y.getMonth() + 1).padStart(2, "0")}-${String(y.getDate()).padStart(2, "0")}`;
             const statsLine = renderStats(summarizeDay(ymd));
             await sessions.runProactive(
-              picked[0],
+              briefKey,
               "（内部任务：生成今天的简讯。用三四句话报一下今天的天气、1-2 条值得知道的 AI/科技动态，" +
                 (statsLine ? `最后顺带提一句昨天的聊天情况：${statsLine} ` : "") +
                 "语气像朋友随口转述，不要标题、不要列表、不要「简讯」两个字。）",
