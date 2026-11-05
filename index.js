@@ -149,7 +149,7 @@ const DEFAULTS = {
   newsMaxItems: 8,
   /** 链接预览：抓前 N 字正文 */
   linkPreview: true,
-  linkPreviewChars: 600,
+  linkPreviewChars: 200,
   /** 说说：每天 0-3 条，9-23 点之间随机 */
   qzoneEnabled: true,
   qzonePerDayMax: 3,
@@ -9594,7 +9594,13 @@ async function handleOwnerNatural(ev, text) {
           nowTs - lastJudge >= 10000
         ) {
           switchJudgeAt.set(key, nowTs);
-          const v = await judgeSwitchTalk(
+          // 规则优先：叫了名字、或在引用谁说话 → 直接认定是冲她说，省一次模型调用
+          const hardCall =
+            /(肥鱼|大鱼|鱼鱼|阿鱼)/.test(String(parsed.text || "")) ||
+            (parsed.replyIds?.length ?? 0) > 0;
+          const v = hardCall
+            ? true
+            : await judgeSwitchTalk(
             key,
             lastTo,
             String(ev.user_id),
@@ -10128,7 +10134,7 @@ async function handleOwnerNatural(ev, text) {
         try {
           const hist = await client.call(
             "get_group_msg_history",
-            { group_id: ev.group_id, count: 10 },
+            { group_id: ev.group_id, count: 6 },
             6000,
           );
           const list = Array.isArray(hist?.messages) ? hist.messages : [];
@@ -10476,7 +10482,7 @@ async function handleOwnerNatural(ev, text) {
         const forwardImages = [];
         const lines = [];
         let nestedDone = false;
-        for (const m of msgs.slice(0, Number(cfg.forwardMaxItems) || 5)) {
+        for (const m of msgs.slice(0, Number(cfg.forwardMaxItems) || 2)) {
           const name = m?.sender?.card || m?.sender?.nickname || m?.sender?.user_id || "某人";
           const segs2 = Array.isArray(m?.content)
             ? m.content
@@ -10897,8 +10903,14 @@ async function handleOwnerNatural(ev, text) {
       );
       return;
     }
-    const buf =
-      mergeBuf.get(key) ??
+    let buf = mergeBuf.get(key);
+    // 默认只合并同一个人的连发：窗口里换了人说话，先把上一批冲掉，各回各的
+    if (buf && cfg.mergeMultiUser !== true && String(buf.ev?.user_id ?? "") !== String(ev.user_id ?? "")) {
+      flushBuf(key);
+      buf = null;
+    }
+    buf =
+      buf ??
       { prompts: [], images: [], ev, firstEv: ev, users: new Set(), timer: null };
     buf.firstEv = buf.firstEv ?? ev;
     try {
