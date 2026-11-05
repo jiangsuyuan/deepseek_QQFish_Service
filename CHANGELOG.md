@@ -266,7 +266,7 @@ function webPush(rec) {
 
 header 里多一个橙色按钮，新窗口打开 NapCat 的扫码界面。
 
-token 从 `/root/Napcat/.../webui.json` 实时读，不用手抄。
+token 从 `~/Napcat/.../webui.json` 实时读，不用手抄。
 
 **注意**：链接用 `location.hostname` 拼——通过隧道访问 3081 的话，需要同时开 6099 的隧道。
 
@@ -576,7 +576,7 @@ ExecStart=... qq --no-sandbox -q 3477431285
 | 模糊搜关键词 | `query`（**拆词后 OR**，任一命中就算） |
 | 搜某个人说过什么 | `person: "风声"` 或 QQ 号 |
 | 只搜和主人的 | `with_me: true` |
-| 搜某个群 | `group: "551907453"` |
+| 搜某个群 | `group: "123456789"` |
 | 搜时间段 | `since: "10-24"` / `until: "上周"` / `days: 7` |
 | 看上下文 | `context: 2`（每条前后各 2 条） |
 | 搜全部 | `scope: "all"`（默认）/ `current` |
@@ -685,7 +685,7 @@ return { hits: hits.slice(0, cfg.recallMaxHits || 8) }; // 配置是 5
 const m3 = t.match(/\[(?:QQ群消息|QQ私聊...)\][^：:\n]*[：:]\s*([\s\S]*)/);
 ```
 
-`[^：:\n]*` 把 `群号 551907453，发言人 149（476564034）` 整个吃掉，只留「看看批」。
+`[^：:\n]*` 把 `群号 123456789，发言人 149（100000004）` 整个吃掉，只留「看看批」。
 **搜 QQ 号永远搜不到。**
 
 **④ 取样先按角色分组**
@@ -755,7 +755,7 @@ const keys = query.split(/\s+/).filter(x => x.length >= 2);
 ### 实测
 
 ```
-20:54  再试一次：用 recall 查 476564034
+20:54  再试一次：用 recall 查 100000004
        她：这次翻到了，上个月还真有。10-24 21:12～21:20，149 在群里连着问了我四回
 
 21:02  用 recall 查「跟 149 有关的」
@@ -853,7 +853,7 @@ function sessionIdBase(key) {
 所以换号后 `base` 不变，旧 session 会被 `ensure()` 复用：
 
 ```
-20:39:50  会话绑定 private:415842124 -> ob-fb82cef7f1df-1   ← 旧号的 session（seq 6960）
+20:39:50  会话绑定 private:123456789 -> ob-fb82cef7f1df-1   ← 旧号的 session（seq 6960）
 ```
 
 **记录一直都在，只是之前搜不到。**
@@ -953,14 +953,14 @@ class DshBuddyReqSet {
 
 **换号 + 打字时间封顶 + 日志分通道。**
 
-### ① 换号：3477431285 → 1737401656
+### ① 换号：3477431285 → 100000001
 
 新号登录后有两个坑：
 
 **坑一：新号的 OneBot 配置是空的**
 
 ```
-onebot11_1737401656.json  →  websocketServers: []        ← 新号默认没有
+onebot11_100000001.json  →  websocketServers: []        ← 新号默认没有
 onebot11_3477431285.json  →  websocketServers: [3001]    ← 旧号有
 ```
 
@@ -970,7 +970,7 @@ onebot11_3477431285.json  →  websocketServers: [3001]    ← 旧号有
 **坑二：`prewarmGroups` 是旧号的群**
 
 ```
-['943851627'] → []
+['123456789'] → []
 ```
 
 新号没这个群，留着会一直报错，清掉。
@@ -1006,7 +1006,7 @@ const delay = Math.max(200, Math.min(rawDelay, capMs));
 现在：
 
 ```
-→ [网页] private:415842124 好的。
+→ [网页] private:123456789 好的。
 → [QQ]   group:xxx 号没了，也只能算门关上了
 ```
 
@@ -1018,8 +1018,8 @@ const delay = Math.max(200, Math.min(rawDelay, capMs));
 
 ```
 17:12:05  ← private  日志格式测试，回个好的。
-17:12:17  → [网页] private:415842124  好的。
-17:12:38  → [QQ]   private:415842124  那我等工具。有能改头像的，我就用那只蓝鲸。
+17:12:17  → [网页] private:123456789  好的。
+17:12:38  → [QQ]   private:123456789  那我等工具。有能改头像的，我就用那只蓝鲸。
 ```
 
 **WebUI 发的话推到网页，QQ 发的话发到 QQ，日志一眼分清。**
@@ -2480,7 +2480,7 @@ notebook/files/  基准面.md 1086 B、本子.md 474 B（内容完整）
   - `read_source({ keyword, start, count })`：读自己源码的**只读副本**（`/opt/fish-src/index.js`，权限 444）。
   - 隔离方式：`unshare -n`（断网）+ `sudo -u sandbox`（降权）+ `timeout`（限时）。**没有 bwrap/docker**（CentOS 8 EOL 装不了），用系统自带的三件套。
   - 实测：算数 ✅ / 联网 `Network is unreachable` ✅ / 读记忆 `Permission denied` ✅
-  - 静态检查拦 `subprocess`、`socket`、`/root/.dsh`、路径穿越等。
+  - 静态检查拦 `subprocess`、`socket`、`~/.dsh`、路径穿越等。
   - 额度：每小时 20 次，输出截断 4000 字。
 - **研究代码活动（`study`）**：第八种自主活动。用 `read_source` 看自己的一段实现，搞清楚它怎么做成这件事，发现问题就 `note_want` 记下来。
 - **需求本整理**：

@@ -204,7 +204,7 @@ vi ~/.dsh/onebot-bridge/config.json
 ```bash
 python3 -c "
 import json
-d=json.load(open('/root/.dsh/onebot-bridge/config.json'))
+d=json.load(open('~/.dsh/onebot-bridge/config.json'))
 for k in ('selfId','ownerId','token'):
     v=d.get(k)
     print(k, '=', v, '✅' if v else '❌ 未填')
@@ -377,7 +377,7 @@ bash scripts/configure-plugins.sh
 python3 -c "
 import json
 for p in ('fish-memory-config.json','speak-up-config.json'):
-    d=json.load(open('/root/.dsh/'+p))
+    d=json.load(open('~/.dsh/'+p))
     print(p, '->', d.get('sessions') or d.get('目标会话'))
 "
 ```

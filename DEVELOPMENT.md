@@ -93,7 +93,7 @@ ls -la ~/.dsh/onebot-bridge/patch-proposals/
 
 ```powershell
 # 群号 → 占位
-$t = $t.Replace('943851627', '123456789')
+$t = $t.Replace('123456789', '123456789')
 # 昵称 → 通用
 $t = $t.Replace('(竹筒肥鱼|肥鱼|大鱼|鱼鱼)', '(肥鱼|大鱼|鱼鱼)')
 # 注释里的昵称

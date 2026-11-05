@@ -14,7 +14,8 @@ import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync, copyFileSync, chmodSync, chownSync } from "node:fs";
-import { join, join as pathJoin } from "node:path";
+import { join, join as pathJoin, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { SessionId } from "@deepseek-ai/dsh-session";
 import { zstdDecompressSync } from "node:zlib";
@@ -25,6 +26,8 @@ export const name = "dsh-onebot-bridge";
 export const inject = [];
 
 const HOME = process.env.HOME || homedir();
+/** 插件自己所在的目录（发布版不再写死绝对路径） */
+const HERE = dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = join(HOME, ".dsh/onebot-bridge/config.json");
 
 /**
@@ -262,62 +265,357 @@ function sessionIdBase(key) {
 // ── OneBot 消息解析 ───────────────────────────────────────────────────
 
 /** 从 OneBot 消息段数组提取纯文本；返回 {text, hasAt, images} */
-function parseMessage(ev, selfId) {
-  const segs = Array.isArray(ev.message) ? ev.message : [];
-  let text = "";
-  let hasAt = false;
+/** 不认识的段类型：留个中文标签，渲染占位用（不解析内容） */
+const SEG_LABEL = {
+  video: "视频",
+  record: "语音",
+  audio: "语音",
+  json: "卡片",
+  xml: "卡片",
+  markdown: "卡片",
+  light_app: "卡片",
+  ark: "卡片",
+  share: "链接卡片",
+  music: "音乐",
+  location: "位置",
+  contact: "名片",
+  poke: "戳一戳",
+  dice: "骰子",
+  rps: "猜拳",
+  shake: "窗口抖动",
+  mface: "表情",
+  face: "表情",
+};
+
+/** 段数据转字符串：任何结构都不能把解析炸掉 */
+function safeSegData(data) {
+  try {
+    const s = JSON.stringify(data ?? {});
+    return s.length > 400 ? s.slice(0, 400) : s;
+  } catch {
+    return "";
+  }
+}
+
+/** CQ 码字符串兜底（有的实现 message 不是数组） */
+function parseCqString(raw, selfId) {
+  const unesc = (s) =>
+    String(s)
+      .replace(/&#91;/g, "[")
+      .replace(/&#93;/g, "]")
+      .replace(/&#44;/g, ",")
+      .replace(/&amp;/g, "&");
   const images = [];
-  const forwards = [];
-  const files = [];
   const replyIds = [];
-  let replySummary = "";
-  for (const seg of segs) {
-    if (!seg || typeof seg !== "object") continue;
-    const type = seg.type;
-    const data = seg.data ?? {};
-    if (type === "text") {
-      text += String(data.text ?? "");
-    } else if (type === "at") {
-      if (String(data.qq) === String(selfId) || data.qq === "all") hasAt = true;
-      // 把 @ 的人名也加进文本——不然「你还记得@风声 么」会变成「你还记得 么」，
-      // 人名丢了，recall 搜不到，她还以为「那边什么都没有」。
-      const atName = String(data.name ?? data.card ?? "").trim();
-      const atQq = String(data.qq ?? "").trim();
-      if (atName) {
-        text += "@" + atName + " ";
-      } else if (atQq && atQq !== String(selfId) && atQq !== "all") {
-        // 有的客户端不给昵称，退化成 QQ 号也比丢掉强
-        text += "@" + atQq + " ";
-      }
-    } else if (type === "image") {
-      images.push({
-        url: String(data.url || data.file || ""),
-        file: String(data.file || ""),
-        summary: String(data.summary || ""),
-      });
-    } else if (type === "reply") {
-      const rid = String(data.id ?? data.message_id ?? "");
+  const mentions = [];
+  let hasAt = false;
+  const re = /\[CQ:([a-z_]+)((?:,[^\]]*)?)\]/gi;
+  let m;
+  while ((m = re.exec(raw))) {
+    const kind = String(m[1] || "").toLowerCase();
+    const attrs = String(m[2] || "");
+    const pick = (k) => {
+      const mm = attrs.match(new RegExp("(?:^|,)" + k + "=([^,]*)"));
+      return mm ? unesc(mm[1]) : "";
+    };
+    if (kind === "at") {
+      const qq = pick("qq");
+      if (qq === "all" || qq === String(selfId)) hasAt = true;
+      else if (qq) mentions.push({ qq, name: unesc(pick("name")) });
+    } else if (kind === "image") {
+      images.push({ url: unesc(pick("url") || pick("file")), file: unesc(pick("file")), summary: "" });
+    } else if (kind === "reply") {
+      const rid = unesc(pick("id"));
       if (rid) replyIds.push(rid);
-      // 摘要文本：拿不到原消息时至少知道引用了啥
-      const sum = String(data.content ?? data.summary ?? "").trim();
-      if (sum) replySummary = sum.slice(0, 120);
-    } else if (type === "face") {
-      text += "";
-    } else if (type === "forward") {
-      const id = String(data.id ?? data.message_id ?? data.resid ?? "");
-      forwards.push({ id, rawKeys: Object.keys(data), raw: data });
-    } else if (type === "file") {
-      files.push({
-        id: String(data.file_id ?? data.id ?? data.file ?? ""),
-        busid: data.busid,
-        name: String(data.name ?? data.file_name ?? data.file ?? "文件"),
-        size: Number(data.file_size ?? data.size ?? 0),
-      });
     }
   }
-  text = text.trim();
-  if (images.length > 0 && !text) text = "[图片]";
-  return { text, hasAt, images, forwards, files, replyIds, replySummary };
+  const text = unesc(raw.replace(/\[CQ:[^\]]*\]/gi, "")).trim();
+  return { text: text || (images.length ? "[图片]" : ""), hasAt, images, forwards: [], files: [], replyIds, replySummary: "", mentions, unk: [] };
+}
+
+function parseMessage(ev, selfId) {
+  try {
+    const segs = Array.isArray(ev?.message) ? ev.message : [];
+    if (!segs.length && typeof ev?.message === "string" && ev.message) {
+      return parseCqString(ev.message, selfId);
+    }
+    let text = "";
+    let hasAt = false;
+    const images = [];
+    const forwards = [];
+    const files = [];
+    const replyIds = [];
+    const mentions = [];
+    const unk = [];
+    let replySummary = "";
+    for (const seg of segs) {
+      if (!seg || typeof seg !== "object") continue;
+      const type = String(seg.type || "");
+      const data = seg.data && typeof seg.data === "object" ? seg.data : {};
+      try {
+        if (type === "text") {
+          text += String(data.text ?? "");
+        } else if (type === "at") {
+          const atQq = String(data.qq ?? "").trim();
+          const atName = String(data.name ?? data.card ?? "").trim();
+          if (atQq && atQq !== "all" && atQq !== String(selfId)) mentions.push({ qq: atQq, name: atName });
+          if (atQq === "all" || atQq === String(selfId)) hasAt = true;
+          // 把 @ 的人名也加进文本——不然「你还记得@风声 么」会变成「你还记得 么」，
+          // 人名丢了，recall 搜不到，她还以为「那边什么都没有」。
+          if (atName) {
+            text += "@" + atName + " ";
+          } else if (atQq && atQq !== String(selfId) && atQq !== "all") {
+            // 有的客户端不给昵称，退化成 QQ 号也比丢掉强
+            text += "@" + atQq + " ";
+          }
+        } else if (type === "image") {
+          const imgUrl = String(data.url || data.file || "");
+          const imgFile = String(data.file || "");
+          if (imgUrl || imgFile) {
+            images.push({
+              url: imgUrl,
+              file: imgFile,
+              summary: String(data.summary || ""),
+            });
+          }
+        } else if (type === "reply") {
+          const rid = String(data.id ?? data.message_id ?? "");
+          if (rid) replyIds.push(rid);
+          // 摘要文本：拿不到原消息时至少知道引用了啥
+          const sum = String(data.content ?? data.summary ?? "").trim();
+          if (sum) replySummary = sum.slice(0, 120);
+        } else if (type === "face") {
+          text += "";
+        } else if (type === "forward") {
+          const id = String(data.id ?? data.message_id ?? data.resid ?? "");
+          forwards.push({ id, rawKeys: Object.keys(data), raw: data });
+        } else if (type === "file") {
+          files.push({
+            id: String(data.file_id ?? data.id ?? data.file ?? ""),
+            busid: data.busid,
+            name: String(data.name ?? data.file_name ?? data.file ?? "文件"),
+            size: Number(data.file_size ?? data.size ?? 0),
+          });
+        } else {
+          // 不认识的段（视频/语音/红包卡片/位置/未来新类型…）：原样留下，绝不抛
+          unk.push({ t: type || "unknown", d: safeSegData(data) });
+        }
+      } catch {
+        unk.push({ t: type || "unknown", d: "" });
+      }
+    }
+    text = text.trim();
+    if (images.length > 0 && !text) text = "[图片]";
+    // 只剩占位（视频/语音/红包）：给她一个能读懂的字，而不是空
+    if (!text && unk.length) {
+      const tags = unk.map((u) => SEG_LABEL[u.t] || u.t).filter(Boolean).slice(0, 3);
+      text = tags.map((t) => "［" + t + "］").join("");
+    }
+    return { text, hasAt, images, forwards, files, replyIds, replySummary, mentions, unk };
+  } catch (err) {
+    // 解析层最后一道闸：宁可这条为空，也不能炸掉整条消息流
+    return {
+      text: "",
+      hasAt: false,
+      images: [],
+      forwards: [],
+      files: [],
+      replyIds: [],
+      replySummary: "",
+      mentions: [],
+      unk: [],
+      parseError: String(err?.message ?? err).slice(0, 120),
+    };
+  }
+}
+
+// ── 群消息落盘（旁听也写，重启不丢） ─────────────────────────────────
+
+const MSG_LOG_DIR = join(HOME, ".dsh/onebot-bridge/messages");
+const MSG_LOG_PRIVATE_DIR = join(MSG_LOG_DIR, "private");
+const MSG_LOG_MAX_BYTES = 8 * 1024 * 1024;
+const MSG_LOG_KEEP_LINES = 1500;
+const MSG_LOG_STATE = { fail: 0, lastWarn: 0, mem: [] };
+
+/** 会话 key：group:123 / private:456 */
+function msgLogKeyOf(ev) {
+  const mt = String(ev?.message_type ?? "");
+  if (mt === "group" && ev?.group_id) return "group:" + String(ev.group_id);
+  if (mt === "private" && ev?.user_id) return "private:" + String(ev.user_id);
+  return "";
+}
+
+/** key → 文件路径（群和私聊分目录） */
+function msgLogFileFor(key) {
+  const k = String(key || "");
+  if (k.startsWith("private:")) {
+    const uid = k.slice(8);
+    if (!/^\d{5,20}$/.test(uid)) return "";
+    return join(MSG_LOG_PRIVATE_DIR, uid + ".jsonl");
+  }
+  const gid = k.startsWith("group:") ? k.slice(6) : k;
+  if (!/^\d{5,20}$/.test(gid)) return "";
+  return join(MSG_LOG_DIR, gid + ".jsonl");
+}
+
+/**
+ * 每条消息都写一条结构化记录（群聊和私聊都写）。
+ * 纯旁听的消息以前只活 30 条内存、重启即失；写盘后 recall / 巡群才翻得到。
+ * 任何异常都吞掉——落盘失败不能影响聊天。
+ */
+function recordMessage(ev, parsed) {
+  try {
+    const key = msgLogKeyOf(ev);
+    const file = msgLogFileFor(key);
+    if (!file) return;
+    const rec = {
+      v: 1,
+      k: key,
+      id: String(ev?.message_id ?? ""),
+      g: key.startsWith("group:") ? key.slice(6) : "",
+      u: String(ev?.user_id ?? ""),
+      n: String(ev?.sender?.card || ev?.sender?.nickname || "").slice(0, 40),
+      t: Number(ev?.time) || Math.floor(Date.now() / 1000),
+      x: String(parsed?.text || "").slice(0, 500),
+      atMe: parsed?.hasAt ? 1 : 0,
+    };
+    const ats = (parsed?.mentions || []).slice(0, 10);
+    if (ats.length) rec.ats = ats;
+    if (parsed?.replyIds?.[0]) rec.qid = String(parsed.replyIds[0]);
+    if (parsed?.replySummary) rec.q = String(parsed.replySummary).slice(0, 200);
+    const img = (parsed?.images || []).slice(0, 4).map((x) => ({
+      url: String(x?.url || "").slice(0, 300),
+      file: String(x?.file || "").slice(0, 200),
+    }));
+    if (img.length) rec.img = img;
+    if (parsed?.forwards?.length) {
+      rec.fw = { id: String(parsed.forwards[0]?.id || ""), n: parsed.forwards.length };
+    }
+    const files = (parsed?.files || []).slice(0, 5).map((f) => ({
+      name: String(f?.name || "").slice(0, 80),
+      size: Number(f?.size) || 0,
+    }));
+    if (files.length) rec.files = files;
+    const unk = (parsed?.unk || []).slice(0, 5);
+    if (unk.length) rec.unk = unk;
+
+    mkdirSync(file.startsWith(MSG_LOG_PRIVATE_DIR) ? MSG_LOG_PRIVATE_DIR : MSG_LOG_DIR, { recursive: true });
+    appendFileSync(file, JSON.stringify(rec) + "\n");
+    MSG_LOG_STATE.fail = 0;
+
+    // 滚动：超过 8MB 只留最后 1500 行（触发频率很低）
+    try {
+      if (statSync(file).size > MSG_LOG_MAX_BYTES) {
+        const lines = readFileSync(file, "utf8").split("\n").filter(Boolean);
+        writeFileSync(file, lines.slice(-MSG_LOG_KEEP_LINES).join("\n") + "\n");
+      }
+    } catch {
+      // 滚动失败不影响写入
+    }
+  } catch (err) {
+    MSG_LOG_STATE.fail += 1;
+    MSG_LOG_STATE.mem.push(Date.now());
+    if (MSG_LOG_STATE.mem.length > 200) MSG_LOG_STATE.mem.shift();
+    const now = Date.now();
+    if (now - (MSG_LOG_STATE.lastWarn || 0) > 60_000) {
+      MSG_LOG_STATE.lastWarn = now;
+      try {
+        logger?.warn?.(`[onebot] 群消息落盘失败（连续 ${MSG_LOG_STATE.fail} 次）：${err?.message ?? err}`);
+      } catch {
+        // 连日志都写不了就算了
+      }
+    }
+  }
+}
+
+// ── 群消息读取（P2：读的就是落盘那份结构化记录） ──────────────────────
+
+/** 读某个会话最近 limit 条记录（老的在前）。key 可以是 group:123 / private:456 / 纯群号。 */
+function readMsgLog(key, limit = 500) {
+  try {
+    const file = msgLogFileFor(key);
+    if (!file || !existsSync(file)) return [];
+    const lines = readFileSync(file, "utf8").split("\n").filter(Boolean);
+    const out = [];
+    for (const l of lines.slice(-Math.max(1, Number(limit) || 500))) {
+      try {
+        out.push(JSON.parse(l));
+      } catch {
+        // 单行坏了跳过
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+function findMsgInLog(key, id) {
+  const target = String(id || "").trim();
+  if (!target) return null;
+  const rows = readMsgLog(key, 3000);
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    if (String(rows[i]?.id) === target) return rows[i];
+  }
+  return null;
+}
+
+function listMsgKeys() {
+  const out = [];
+  try {
+    for (const f of readdirSync(MSG_LOG_DIR)) {
+      if (f.endsWith(".jsonl")) out.push("group:" + f.replace(/\.jsonl$/, ""));
+    }
+  } catch {
+    // 还没有群记录
+  }
+  try {
+    for (const f of readdirSync(MSG_LOG_PRIVATE_DIR)) {
+      if (f.endsWith(".jsonl")) out.push("private:" + f.replace(/\.jsonl$/, ""));
+    }
+  } catch {
+    // 还没有私聊记录
+  }
+  return out;
+}
+
+/** 未知段类型 → 中文标签 */
+function recTag(t) {
+  const T = {
+    video: "视频",
+    record: "语音",
+    audio: "语音",
+    json: "卡片",
+    xml: "卡片",
+    share: "链接卡片",
+    music: "音乐",
+    location: "位置",
+    contact: "名片",
+    poke: "戳一戳",
+    mface: "表情",
+    markdown: "卡片",
+    ark: "卡片",
+  };
+  return T[String(t)] || String(t || "未知");
+}
+
+/** 一条记录渲染成她读得懂的一行 */
+function renderMsgRec(r) {
+  if (!r || typeof r !== "object") return "";
+  const d = new Date((Number(r.t) || 0) * 1000);
+  const hm = String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+  let s = `[${hm}] ${String(r.n || r.u || "某人")}：${String(r.x || "")}`;
+  if (Array.isArray(r.img) && r.img.length) s += ` ［图×${r.img.length}］`;
+  if (r.fw) s += ` ［转发×${Number(r.fw.n) || 1}］`;
+  if (Array.isArray(r.files) && r.files.length) {
+    s += ` ［文件:${String(r.files[0]?.name || "").slice(0, 20)}］`;
+  }
+  if (Array.isArray(r.unk) && r.unk.length) {
+    s += r.unk.slice(0, 3).map((u) => `［${recTag(u?.t)}］`).join("");
+  }
+  if (r.atMe) s += " （@你）";
+  if (r.qid) s += ` ↩︎${String(r.qid).slice(-6)}`;
+  return s;
 }
 
 // ── OneBot WS 客户端 ─────────────────────────────────────────────────
@@ -1362,23 +1660,59 @@ const facts = {
 // ── 人物档案（每个群友一份印象，跨会话保留） ──────────────────────────
 
 const USERS_PATH = join(HOME, ".dsh/onebot-bridge/users.json");
+const USERS_DIR = join(HOME, ".dsh/onebot-bridge/users");
 
 const people = {
   data: {},
   loaded: false,
+  _saved: {},
   load() {
     if (this.loaded) return;
     this.loaded = true;
     try {
-      this.data = JSON.parse(readFileSync(USERS_PATH, "utf8"));
+      mkdirSync(USERS_DIR, { recursive: true });
+      const files = readdirSync(USERS_DIR).filter((f) => f.endsWith(".json"));
+      if (files.length) {
+        for (const f of files) {
+          try {
+            const rec = JSON.parse(readFileSync(join(USERS_DIR, f), "utf8"));
+            const qq = f.replace(/\.json$/, "");
+            if (rec && typeof rec === "object") this.data[qq] = rec;
+          } catch {
+            // 单人文件坏了跳过
+          }
+        }
+      } else {
+        // 迁移：老的 users.json → 一人一个文件
+        this.data = JSON.parse(readFileSync(USERS_PATH, "utf8")) || {};
+        this.save();
+      }
     } catch {
       this.data = {};
     }
   },
   save() {
     try {
-      mkdirSync(join(HOME, ".dsh/onebot-bridge"), { recursive: true });
-      writeFileSync(USERS_PATH, JSON.stringify(this.data, null, 2));
+      mkdirSync(USERS_DIR, { recursive: true });
+      const seen = new Set();
+      for (const [qq, rec] of Object.entries(this.data)) {
+        if (!/^\d{5,20}$/.test(qq)) continue;
+        seen.add(qq);
+        const json = JSON.stringify(rec);
+        if (this._saved[qq] === json) continue;
+        writeFileSync(join(USERS_DIR, qq + ".json"), json);
+        this._saved[qq] = json;
+      }
+      for (const qq of Object.keys(this._saved)) {
+        if (!seen.has(qq)) {
+          try {
+            unlinkSync(join(USERS_DIR, qq + ".json"));
+          } catch {
+            // 忽略
+          }
+          delete this._saved[qq];
+        }
+      }
     } catch {
       // 写失败不影响对话
     }
@@ -1519,8 +1853,7 @@ const people = {
     }
     const cnt = Number(rec.count ?? 0);
     if (cnt >= 3) {
-      const stage = cnt >= 100 ? "老朋友" : cnt >= 20 ? "熟人" : "认识的人";
-      bits.push(`你们聊过 ${cnt} 次，算是${stage}`);
+      bits.push(`你们聊过 ${cnt} 次`);
     }
     if (Array.isArray(rec.groups) && rec.groups.length > 1) {
       bits.push(`你们在 ${rec.groups.length} 个群里都聊过`);
@@ -1930,7 +2263,13 @@ class SessionManager {
           blocks.push({ type: "image", attachment: ref });
         } catch (err) {
           this.logger?.warn?.(`[onebot] 图片转存失败：${err?.message ?? err}`);
-          blocks.push({ type: "text", text: "[图片处理失败]" });
+          blocks.push({
+            type: "text",
+            text:
+              "[这张图太大，没能直接塞进上下文" +
+              (img?.srcUrl ? `；需要时可以用 look_image({url:"${img.srcUrl}"}) 再看` : "") +
+              "]",
+          });
         }
       }
     }
@@ -2914,13 +3253,48 @@ export function apply(ctx, _pluginConfig) {
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
           execute: async (args) => {
-            const list = groupActivityList(args?.hours ?? 24);
-            const alive = list.filter((x) => x.count > 0);
+            const hours = Number(args?.hours) || 24;
+            const since = Date.now() - hours * 3600_000;
+            // 用落盘记录算真实条数（group-meta 的 recent 只留 30 行，会把热群算成 30）
+            const detail = [];
+            for (const k of listMsgKeys()) {
+              if (!k.startsWith("group:")) continue;
+              const gid = k.slice(6);
+              const rows = readMsgLog(k, 3000).filter((r) => (Number(r.t) || 0) * 1000 >= since);
+              if (!rows.length) continue;
+              const last = rows[rows.length - 1];
+              detail.push({
+                group: gid,
+                count: rows.length,
+                lastAt: (Number(last.t) || 0) * 1000,
+                last: renderMsgRec(last).slice(0, 100),
+              });
+            }
+            // 补上 group-meta 里有、但还没落盘的群（保持兼容）
+            try {
+              const meta = loadGroupMeta() || {};
+              for (const gid of Object.keys(meta)) {
+                if (detail.some((d) => d.group === gid)) continue;
+                const m = meta[gid] || {};
+                const cnt = (Array.isArray(m.recent) ? m.recent : []).filter(
+                  (r) => (Number(r?.t) || 0) >= since,
+                ).length;
+                if (cnt > 0) {
+                  detail.push({ group: gid, count: cnt, lastAt: Number(m.lastMessageAt || 0), last: "", source: "group-meta" });
+                }
+              }
+            } catch {
+              // 兼容失败不影响
+            }
+            detail.sort((a, b) => b.lastAt - a.lastAt);
             return {
-              hours: args?.hours ?? 24,
-              groups: list.length,
-              active: alive.length,
-              detail: list,
+              ok: true,
+              hours,
+              groups: detail.length,
+              active: detail.filter((x) => x.count > 0).length,
+              shown: detail.length,
+              total: detail.length,
+              detail,
             };
           },
         }),
@@ -2934,7 +3308,9 @@ export function apply(ctx, _pluginConfig) {
             "group_recap 给你总结，这个给你原话。",
           parameters: {
             group: { type: "string", description: "群号" },
-            hours: { type: "number", description: "回看多少小时，默认 2" },
+            hours: { type: "number", description: "回看多少小时，默认 24" },
+            limit: { type: "number", description: "这次要看几条，默认 40（最多 200）" },
+            before: { type: "string", description: "从哪条消息往前翻（上次返回的 nextCursor）" },
           },
           output: {
             schema: { type: "json" },
@@ -2943,7 +3319,36 @@ export function apply(ctx, _pluginConfig) {
           execute: async (args) => {
             const gid = String(args?.group ?? "").trim();
             if (!gid) return { ok: false, reason: "要填群号" };
-            const r = groupPatrolList(gid, args?.hours ?? 2);
+            const hours = Number(args?.hours) || 24;
+            const limit = Math.min(200, Math.max(1, Number(args?.limit) || 40));
+            let _rows = readMsgLog("group:" + gid, 5000).filter(
+              (r) => (Number(r.t) || 0) * 1000 > Date.now() - hours * 3600_000,
+            );
+            if (_rows.length) {
+              // before：从某条消息往前翻（游标）
+              const before = String(args?.before || "").trim();
+              let cut = _rows.length;
+              if (before) {
+                const at = _rows.findIndex((r) => String(r.id) === before);
+                if (at >= 0) cut = at;
+              }
+              const end = cut;
+              const start = Math.max(0, end - limit);
+              const picked = _rows.slice(start, end);
+              return {
+                ok: true,
+                group: gid,
+                source: "msglog",
+                hours,
+                total: end,
+                shown: picked.length,
+                hasMore: start > 0,
+                nextCursor: start > 0 ? String(_rows[start]?.id || "") : "",
+                note: start > 0 ? `还有 ${start} 条更早的，用 before=${String(_rows[start]?.id || "")} 继续` : "",
+                lines: picked.map((r) => renderMsgRec(r)),
+              };
+            }
+            const r = groupPatrolList(gid, hours);
             if (!r) return { ok: false, reason: "没有这个群的记录（群号对不对？）" };
             return { ok: true, ...r };
           },
@@ -4623,7 +5028,8 @@ export function apply(ctx, _pluginConfig) {
               description: "people / facts / views / reflections / learnings / all / notebook",
             },
             query: { type: "string", description: "关键词，可不填" },
-            limit: { type: "number", description: "all 模式下最多返回几条，默认 20" },
+            limit: { type: "number", description: "all 模式下这一页几条，默认 20" },
+            offset: { type: "number", description: "all 模式下从第几条开始（翻页用）" },
           },
           output: TOOL_OUT,
           execute: async (args) => {
@@ -4686,13 +5092,18 @@ export function apply(ctx, _pluginConfig) {
               } catch {}
               results.sort((a, b) => (b.at || 0) - (a.at || 0));
               const lim = Math.max(1, Math.min(40, Number(args?.limit) || 20));
+              const offset = Math.max(0, Number(args?.offset) || 0);
+              const page = results.slice(offset, offset + lim);
               return {
                 ok: true,
                 type: "all",
                 query: q,
-                count: results.length,
-                shown: Math.min(lim, results.length),
-                items: results.slice(0, lim),
+                total: results.length,
+                offset,
+                shown: page.length,
+                hasMore: offset + page.length < results.length,
+                nextOffset: offset + page.length < results.length ? offset + page.length : 0,
+                items: page,
               };
             }
 
@@ -4784,10 +5195,41 @@ export function apply(ctx, _pluginConfig) {
               for (const it of arr) recent.push({ group: groupLabel(gid), text: it.text, at: it.at });
             }
             recent.sort((a, b) => b.at - a.at);
+            // 再给几条**原话**（从落盘记录里找他说过的），省得她再去 recall 翻
+            const quotes = [];
+            try {
+              for (const key of listMsgKeys()) {
+                for (const r of readMsgLog(key, 1200)) {
+                  if (String(r.u) !== id) continue;
+                  if (!String(r.x || "").trim()) continue;
+                  quotes.push({
+                    where: key.startsWith("private:") ? "私聊" : "群 " + key.slice(6),
+                    at: Number(r.t) || 0,
+                    text: String(r.x).slice(0, 120),
+                    id: r.id,
+                  });
+                }
+              }
+            } catch {
+              // 没有落盘记录就只给统计
+            }
+            quotes.sort((a, b) => b.at - a.at);
             return {
               ok: true,
               qq: id,
               name: r.name || id,
+              quoteCount: quotes.length,
+              recentQuotes: quotes.slice(0, 8).map((x) => ({
+                where: x.where,
+                when: new Date(x.at * 1000).toLocaleString("zh-CN", {
+                  month: "2-digit",
+                  day: "2-digit",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                }),
+                what: x.text,
+                id: x.id,
+              })),
               address: r.address || "",
               count: r.count ?? 0,
               groups,
@@ -4820,6 +5262,8 @@ export function apply(ctx, _pluginConfig) {
             for (const it of win) for (const w of it.w || []) cnt.set(w, (cnt.get(w) ?? 0) + 1);
             const topics = [...cnt.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([w]) => w);
             const obs = (ent.observations ?? []).slice(-6);
+            // 摘要之外再给几条原话和 id，想看细节可以直接接着查
+            const rawRows = readMsgLog(key, 200);
             return {
               ok: true,
               group: groupLabel(gid),
@@ -4828,6 +5272,9 @@ export function apply(ctx, _pluginConfig) {
                 : "未知",
               topics,
               recent: obs,
+              rawTotal: rawRows.length,
+              rawRecent: rawRows.slice(-6).map((r) => ({ id: r.id, line: renderMsgRec(r) })),
+              note: rawRows.length ? "想看更多原话用 group_patrol（支持 before 游标）" : "",
             };
           },
         }),
@@ -4838,37 +5285,76 @@ export function apply(ctx, _pluginConfig) {
         defineTool({
           name: "who_said",
           description:
-            "跨群搜：谁在哪个群说过某个词（基于最近各群的发言摘要）。" +
+            "跨群搜：谁在哪个群说过某个词。先查**落盘原文**（旁听也算），找不到再看各群的发言摘要。" +
             "想找「这话是谁说的」「哪个群聊过这个」时用。",
           parameters: { word: { type: "string", description: "要搜的词" } },
           output: TOOL_OUT,
           execute: async (args) => {
             const w = String(args?.word ?? "").trim();
             if (!w) return { ok: false, reason: "要搜什么词？" };
-            people.load();
+            const low = w.toLowerCase();
             const hits = [];
-            for (const [id, r] of Object.entries(people.data)) {
-              for (const [gid, arr] of Object.entries(r.recentByGroup || {})) {
-                for (const it of arr) {
-                  if (String(it.text).includes(w)) {
-                    hits.push({
-                      who: r.name || id,
-                      qq: id,
-                      where: groupLabel(gid),
-                      when: new Date(it.at).toLocaleString("zh-CN", {
-                        month: "2-digit",
-                        day: "2-digit",
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      }),
-                      what: it.text,
-                    });
-                  }
-                }
+            // 1) 落盘原文（覆盖面最大）
+            for (const key of listMsgKeys()) {
+              for (const r of readMsgLog(key, 3000)) {
+                if (!String(r.x || "").toLowerCase().includes(low)) continue;
+                hits.push({
+                  t: Number(r.t) || 0,
+                  who: r.n || r.u,
+                  qq: r.u,
+                  where: key.startsWith("private:") ? "私聊 " + key.slice(8) : "群 " + key.slice(6),
+                  when: new Date((Number(r.t) || 0) * 1000).toLocaleString("zh-CN", {
+                    month: "2-digit",
+                    day: "2-digit",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  }),
+                  what: String(r.x || "").slice(0, 120),
+                  id: r.id,
+                  source: "原文",
+                });
               }
             }
-            hits.sort((a, b) => (b.when > a.when ? 1 : -1));
-            return { ok: true, word: w, count: hits.length, hits: hits.slice(0, 10) };
+            // 2) 摘要兜底
+            if (hits.length < 5) {
+              try {
+                people.load();
+                for (const [id, r] of Object.entries(people.data)) {
+                  for (const [gid, arr] of Object.entries(r.recentByGroup || {})) {
+                    for (const it of Array.isArray(arr) ? arr : []) {
+                      if (!String(it?.text || "").includes(w)) continue;
+                      if (hits.some((h) => h.what === String(it.text).slice(0, 120))) continue;
+                      hits.push({
+                        t: Number(it.at) || 0,
+                        who: r.name || id,
+                        qq: id,
+                        where: groupLabel(gid),
+                        when: new Date(it.at).toLocaleString("zh-CN", {
+                          month: "2-digit",
+                          day: "2-digit",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        }),
+                        what: String(it.text).slice(0, 120),
+                        source: "摘要",
+                      });
+                    }
+                  }
+                }
+              } catch {
+                // 摘要兜底失败不影响
+              }
+            }
+            hits.sort((a, b) => b.t - a.t);
+            return {
+              ok: true,
+              word: w,
+              total: hits.length,
+              shown: Math.min(20, hits.length),
+              hasMore: hits.length > 20,
+              hits: hits.slice(0, 20),
+              note: hits.length ? `共 ${hits.length} 处，先给最近 20 条` : "没找到，换个词或去掉修饰试试",
+            };
           },
         }),
       );
@@ -4945,7 +5431,7 @@ export function apply(ctx, _pluginConfig) {
               text = readFileSync(path, "utf8");
             } catch {
               try {
-                text = readFileSync("/root/dev/dsh-onebot-bridge/CHANGELOG.md", "utf8");
+                text = readFileSync(join(HERE, "CHANGELOG.md"), "utf8");
               } catch {
                 return { ok: false, reason: "更新日志不在服务器上" };
               }
@@ -4985,7 +5471,7 @@ export function apply(ctx, _pluginConfig) {
             if (kw.length < 3) return { ok: false, reason: "关键词至少 3 个字" };
             let src = "";
             try {
-              src = readFileSync("/root/dev/dsh-onebot-bridge/index.js", "utf8");
+              src = readFileSync(join(HERE, "index.js"), "utf8");
             } catch {
               return { ok: false, reason: "读不到自己的源码" };
             }
@@ -5104,7 +5590,7 @@ export function apply(ctx, _pluginConfig) {
           },
           execute: async (args) => {
             const mode = String(args?.mode ?? "topic").toLowerCase();
-            const mems = loadMemLog(500);
+            const mems = loadMemLog(Math.min(5000, Math.max(50, Number(args?.limit) || 500)));
             if (!mems.length) return { ok: true, count: 0, note: "记忆日志还是空的" };
             if (mode === "day") {
               const byDay = {};
@@ -5112,12 +5598,14 @@ export function apply(ctx, _pluginConfig) {
                 const d = new Date(m.at).toLocaleDateString("zh-CN");
                 byDay[d] = (byDay[d] || 0) + 1;
               }
-              return { ok: true, mode, days: Object.entries(byDay).slice(-10) };
+              const all = Object.entries(byDay);
+              const keepDays = Math.min(120, Math.max(1, Number(args?.days) || 10));
+              return { ok: true, mode, total: mems.length, dayCount: all.length, days: all.slice(-keepDays) };
             }
             if (mode === "kind") {
               const byKind = {};
               for (const m of mems) byKind[m.kind] = (byKind[m.kind] || 0) + 1;
-              return { ok: true, mode, kinds: byKind };
+              return { ok: true, mode, total: mems.length, kinds: byKind };
             }
             const byTopic = {};
             for (const m of mems) {
@@ -6207,11 +6695,28 @@ export function apply(ctx, _pluginConfig) {
                 .replace(/\n{3,}/g, "\n\n")
                 .trim();
               audit({ kind: "read_pdf", file: p, chars: txt.length });
+              // 顺带问一下总共多少页，免得她以为读完的就是全部
+              let totalPages = 0;
+              try {
+                const info = execFileSync("pdfinfo", [p], { timeout: 10000, encoding: "utf8" });
+                const mm = String(info).match(/Pages:\s+(\d+)/);
+                if (mm) totalPages = Number(mm[1]);
+              } catch {
+                // 没装 pdfinfo 就算了
+              }
+              const from = pages ? Number(pages.split("-")[0]) || 1 : 1;
+              const to = pages && pages.includes("-") ? Number(pages.split("-")[1]) || 0 : 0;
+              const pagesRead = totalPages
+                ? `第 ${from} 页到第 ${to || (from + Math.max(0, Math.ceil(txt.length / 2000) - 1))} 页 / 共 ${totalPages} 页`
+                : "";
               return {
                 ok: true,
                 chars: txt.length,
                 truncated: false,
-                  text: txt,
+                totalPages,
+                pagesRead,
+                note: totalPages && !pages ? `这是一共 ${totalPages} 页的 PDF；只想要某几页可以填 pages 例如 "1-5"` : "",
+                text: txt,
               };
             } catch (err) {
               return {
@@ -6794,6 +7299,8 @@ export function apply(ctx, _pluginConfig) {
                   status: r.status,
                   type: "json",
                   text: raw.slice(0, max),
+                  totalChars: raw.length,
+                  hasMore: raw.length > max,
                   note: "这是 JSON 接口，直接给了原文",
                 };
               }
@@ -7794,7 +8301,7 @@ ${html}
       const st = JSON.parse(readFileSync(join(HOME, ".dsh/feiyu-mood/state.json"), "utf8"));
       const m = Number(st.mood ?? 70);
       const label = m >= 85 ? "很开心" : m >= 65 ? "不错" : m >= 45 ? "一般" : m >= 25 ? "有点低落" : "很低落";
-      return `你现在心情${label}（${m}/100），语气带上这个底色，别太跳。`;
+      return `你现在心情${label}（${m}/100）。要不要把这点情绪带出来，你自己决定。`;
     } catch {
       return "";
     }
@@ -7986,7 +8493,7 @@ ${html}
     if (opts.until) { const d = parseDay(opts.until, true); if (d) { d.setDate(d.getDate()+1); toTs = d.getTime(); } }
 
     // ── 3. 选会话文件 ──
-    const all = listSessionFiles(opts.scope === "current" ? 20 : 60);
+    const all = listSessionFiles(opts.scope === "current" ? 40 : 200);
     let targets = [];
     if (opts.scope === "current" && currentSid) {
       const mine = all.find((x) => x.sid === String(currentSid));
@@ -8566,7 +9073,7 @@ ${html}
         key,
         "（对方戳了你一下" +
           (hints.length ? `，刚才在聊：「${hints.join(" / ")}」` : "") +
-          "。像是催你或者逗你。用一句话回应，语气自然，可以带点无奈或俏皮，别问「怎么了」，别长篇大论。）",
+          "。想回就回一句，怎么回随你；不想回就当没看见。）",
       )
       .catch(() => {});
   }
@@ -8917,12 +9424,18 @@ async function handleOwnerNatural(ev, text) {
     }
 
     const parsed = parseMessage(ev, cfg.selfId);
+    // 旁听与 @ 一视同仁：先落盘，再决定要不要回
+    try {
+      if (ev && (ev.message_type === "group" || ev.message_type === "private")) recordMessage(ev, parsed);
+    } catch {
+      // 落盘失败不影响聊天
+    }
     if (ev?.__fromWebUI) {
       logger.info?.(
         `[onebot] 解析结果：text=${JSON.stringify(String(parsed.text || "").slice(0, 40))} hasAt=${parsed.hasAt} len=${String(parsed.text || "").length}`,
       );
     }
-    // 有人用纯文本打「@QQ 助手」时 OneBot 不给 at 段，这里补上识别
+    // 有人用纯文本打「@肥鱼」时 OneBot 不给 at 段，这里补上识别
     try {
       if (
         !parsed.hasAt &&
@@ -9139,14 +9652,21 @@ async function handleOwnerNatural(ev, text) {
         // 记下这条消息里的图，save_sticker 要用
         try {
           if (Array.isArray(parsed.images) && parsed.images.length) {
-            entry.lastImages = parsed.images
+            const _imgs = parsed.images
               .map((x) => ({
                 url: typeof x === "string" ? x : String(x?.url || ""),
                 file: typeof x === "string" ? "" : String(x?.file || ""),
               }))
               .filter((x) => x.url || x.file)
               .slice(0, 4);
+            entry.lastImages = _imgs;
             entry.lastImagesAt = Date.now();
+            // 旁听时图只剩「[图片]」占位，原图地址留档：她想真看的时候用 look_image 取回来
+            entry.imgLog = Array.isArray(entry.imgLog) ? entry.imgLog : [];
+            for (const im of _imgs) {
+              entry.imgLog.push({ ...im, at: Date.now(), from: String(nickname || "") });
+            }
+            if (entry.imgLog.length > 40) entry.imgLog = entry.imgLog.slice(-40);
           }
         } catch {
           // 忽略
@@ -9211,7 +9731,7 @@ async function handleOwnerNatural(ev, text) {
             void sessions
               .runProactive(
                 key,
-                "（这个群现在聊得很热闹，但没人叫你。如果你想加入，就顺着最近的话题插一句自然的、短的、" +
+                "（这个群现在聊得很热闹。如果你想加入，就顺着最近的话题插一句自然的、短的、" +
                   "不抢戏的话；如果你觉得插不上或者话题不适合你，就什么都不说（只输出一个句号）。）",
                 ev,
                 { quote: true },
@@ -9280,7 +9800,7 @@ async function handleOwnerNatural(ev, text) {
                     .runProactive(
                       key,
                       isDirect
-                        ? "（群里有人直接叫你了，是在等你回应。用一句话自然地接上，别端着。）"
+                        ? "（群里有人直接叫你了。接不接、怎么接，你自己判断；想接就一句话自然地接上。）"
                         : "（群里有人在聊到你了，没有直接叫你。如果你觉得能接上，就用一句话自然地插进去——" +
                             "别像被点名报到那样正儿八经，可以顺着他们说的接或者自嘲一句；" +
                             "如果插不上，就什么都不说（只输出一个句号）。）",
@@ -9445,9 +9965,9 @@ async function handleOwnerNatural(ev, text) {
             void sessions
               .runProactive(
                 key,
-                "（群里有人连着发了好几条，一直没人理。你可以接一句自然的，" +
-                  "像「我也在想这个」「你说的那个我见过」这种，给对方一个台阶；" +
-                  "别显得刻意、别说「你继续说」、别 @ 他。如果确实接不上，就什么都不说（只输出一个句号）。）",
+                "（群里有人连着发了好几条，还没人接。你要是正好有话说，可以自然接一句，" +
+                  "像「我也在想这个」「你说的那个我见过」这种，" +
+                  "别显得刻意、别说「你继续说」、别 @ 他。接不上就不说（只输出一个句号）。）",
                 ev,
               )
               .catch(() => {});
@@ -9476,7 +9996,7 @@ async function handleOwnerNatural(ev, text) {
             void sessions
               .runProactive(
                 key,
-                "（这个群现在聊得很热闹，但没人叫你。如果你想加入，就顺着最近的话题插一句自然的、短的、" +
+                "（这个群现在聊得很热闹。如果你想加入，就顺着最近的话题插一句自然的、短的、" +
                   "不抢戏的话；如果你觉得插不上或者话题不适合你，就什么都不说（只输出一个句号）。）",
               )
               .catch(() => {});
@@ -9563,14 +10083,20 @@ async function handleOwnerNatural(ev, text) {
     try {
       if (Array.isArray(parsed.images) && parsed.images.length) {
         const entImg = await sessions.ensure(key);
-        entImg.lastImages = parsed.images
+        const _imgs = parsed.images
           .map((x) => ({
             url: typeof x === "string" ? x : String(x?.url || ""),
             file: typeof x === "string" ? "" : String(x?.file || ""),
           }))
           .filter((x) => x.url || x.file)
           .slice(0, 4);
+        entImg.lastImages = _imgs;
         entImg.lastImagesAt = Date.now();
+        entImg.imgLog = Array.isArray(entImg.imgLog) ? entImg.imgLog : [];
+        for (const im of _imgs) {
+          entImg.imgLog.push({ ...im, at: Date.now(), from: String(nickname || "") });
+        }
+        if (entImg.imgLog.length > 40) entImg.imgLog = entImg.imgLog.slice(-40);
       }
     } catch {
       // 忽略
@@ -9619,7 +10145,9 @@ async function handleOwnerNatural(ev, text) {
               .trim();
             const imgSeg = segs.find((x) => x?.type === "image");
             const fwSeg = segs.find((x) => x?.type === "forward");
+            const rpSeg = segs.find((x) => x?.type === "reply");
             let mark = "";
+            if (rpSeg) mark += "↩︎";
             if (imgSeg) {
               const u = String(imgSeg?.data?.url || imgSeg?.data?.file || "");
               if (u) imgUrls.push(u);
@@ -9636,6 +10164,16 @@ async function handleOwnerNatural(ev, text) {
           lines.reverse();
           if (lines.length) {
             emptyAtNote += `[你被 @ 之前的聊天记录]\n${lines.join("\n")}\n`;
+          }
+          // 点名：不让她在十几条里猜
+          if (lines.length) {
+            const newest = lines[lines.length - 1] || "";
+            const prev = lines[lines.length - 2] || "";
+            if (newest) {
+              emptyAtNote += "[他 @ 你之前最后一条：" + newest + "]\\n";
+              if (prev) emptyAtNote += "[再上一条：" + prev + "]\\n";
+              emptyAtNote += "（通常要接的就是这两条之一，先看清再答。）\\n";
+            }
           }
           // 上面最后一张图也拿给她看
           if (imgUrls.length && cfg.enableImages) {
@@ -9956,6 +10494,24 @@ async function handleOwnerNatural(ev, text) {
             .map((x) => x?.data?.text ?? "")
             .join("")
             .trim();
+
+          // 兜底：有的实现把正文放在 raw_message（CQ 码字符串）或 content/message 本身是字符串，
+          // 段里没有 text。以前这里直接拿到空串，整条转发就只剩「转发了」三个字。
+          if (!t) {
+            for (const cand of [m?.raw_message, m?.content, m?.message]) {
+              if (typeof cand === "string" && cand.trim()) {
+                t = cand
+                  .replace(/\[CQ:[^\]]*\]/g, "")
+                  .replace(/\s+/g, " ")
+                  .trim();
+                if (t) break;
+              }
+            }
+          }
+          if (!t && segs2.some((x) => x?.type === "image")) t = "［图片］";
+          if (!t && Array.isArray(m?.content) && m.content.length) {
+            logger.debug?.(`[onebot] 转发表项无文本，keys=${JSON.stringify(Object.keys(m))}`);
+          }
 
           // 内层转发：递归展开一个，最多 3 条
           const subFw = segs2.find((x) => x?.type === "forward");
@@ -10952,6 +11508,676 @@ async function handleOwnerNatural(ev, text) {
 
 
   // ═══════════════════════════════════════════════════════════════
+  // 看图工具：旁听时图只剩「[图片]」，想真看就把原图取回来
+  // ═══════════════════════════════════════════════════════════════
+  void (async () => {
+    try {
+      const { defineTool } = await import("@deepseek-ai/dsh-tools");
+      const reg = (t) => ctx.get?.("tools")?.register?.(t);
+
+      const pickEntry = (exec) => {
+        const sid = String(exec?.agent?.session?.id ?? "");
+        return sid ? sessions.bySessionId(sid) : null;
+      };
+
+      const grab = async (u) => {
+        const s = String(u || "").trim();
+        if (!s) return null;
+        return await downloadImage(s, cfg.maxImageBytes || 6000000);
+      };
+
+      /** url 直连失败时，用 NapCat 的 get_image 换本地文件兜底 */
+      const grabWithFallback = async (url, file) => {
+        const a = await grab(url);
+        if (a) return a;
+        const f = String(file || "").trim();
+        if (!f) return null;
+        try {
+          const r = await client.call("get_image", { file: f }, 15000);
+          const p = String(r?.file ?? r?.path ?? r?.data?.file ?? "");
+          if (p && existsSync(p)) {
+            return { data: readFileSync(p), mediaType: "image/jpeg" };
+          }
+        } catch {
+          // 兜底失败就算了
+        }
+        return null;
+      };
+
+      const keyOfEntry = (entry) => {
+        const t = entry?.lastTarget;
+        if (!t) return "";
+        if (String(t.message_type) === "group" && t.group_id) return "group:" + String(t.group_id);
+        if (String(t.message_type) === "private" && t.user_id) return "private:" + String(t.user_id);
+        return "";
+      };
+
+      /**
+       * 这个会话里哪些位置有图——带前后文，让她按语境挑，而不是瞎猜"最近一张"。
+       * aroundId 给了就只看那条附近 span 条以内。
+       */
+      const buildImageCandidates = (key, { aroundId = "", limit = 8, span = 15 } = {}) => {
+        const rows = readMsgLog(key, 400);
+        if (!rows.length) return [];
+        const imgIdx = [];
+        rows.forEach((r, i) => {
+          if (Array.isArray(r.img) && r.img.length) imgIdx.push(i);
+        });
+        let pick = imgIdx;
+        if (aroundId) {
+          const at = rows.findIndex((r) => String(r.id) === String(aroundId));
+          if (at >= 0) pick = imgIdx.filter((i) => Math.abs(i - at) <= span);
+        }
+        return pick
+          .slice(-Math.max(1, limit))
+          .reverse()
+          .map((i) => {
+            const r = rows[i];
+            return {
+              id: r.id,
+              from: r.n || r.u || "",
+              minutesAgo: Math.max(0, Math.round((Date.now() - (Number(r.t) || 0) * 1000) / 60000)),
+              text: String(r.x || "").slice(0, 80),
+              imgCount: Array.isArray(r.img) ? r.img.length : 0,
+              before: String(rows[i - 1]?.x || "").slice(0, 60),
+              after: String(rows[i + 1]?.x || "").slice(0, 60),
+            };
+          });
+      };
+
+      const byMessageId = async (id) => {
+        const r = await client.call("get_msg", { message_id: Number(id) || id }, 12000);
+        const segs = Array.isArray(r?.message)
+          ? r.message
+          : Array.isArray(r?.data?.message)
+          ? r.data.message
+          : [];
+        const seg = segs.find((x) => x?.type === "image");
+        if (!seg) return null;
+        return await grabWithFallback(seg.data?.url, seg.data?.file);
+      };
+
+      // 长截图：附件准入有单边像素上限（8192），整张递不进去。
+      // 用 sharp 竖切成几段，一次只递一段——她想看后面再要下一段。
+      let sharpLib = null;
+      try {
+        const pathMod = await import("node:path");
+        const { createRequire } = await import("node:module");
+        const candidates = [
+          pathMod.join(
+            pathMod.dirname(pathMod.dirname(process.execPath)),
+            "lib/node_modules/@deepseek-ai/dsh/package.json",
+          ),
+          "/usr/local/lib/node_modules/@deepseek-ai/dsh/package.json",
+        ];
+        for (const c of candidates) {
+          try {
+            sharpLib = createRequire(c)("sharp");
+            break;
+          } catch {}
+        }
+      } catch {}
+      if (!sharpLib) logger.warn?.("[onebot] 没找到 sharp，长截图切段不可用");
+
+      const MAX_SIDE = 6000;
+      const SEG_H = 3000;
+      const sliceForView = async (img, part) => {
+        if (!sharpLib) return { img, note: "" };
+        try {
+          const meta = await sharpLib(img.data).metadata();
+          const W = Number(meta?.width) || 0;
+          const H = Number(meta?.height) || 0;
+          if (!W || !H) return { img, note: "" };
+          if (Math.max(W, H) <= MAX_SIDE) return { img, note: "" };
+          if (H >= W) {
+            const total = Math.max(2, Math.min(20, Math.ceil(H / SEG_H)));
+            const idx = Math.min(Math.max(1, Number(part) || 1), total);
+            const top = Math.round(((idx - 1) * H) / total);
+            const height = Math.round(H / total);
+            const buf = await sharpLib(img.data)
+              .extract({ left: 0, top, width: W, height })
+              .resize({ width: MAX_SIDE, withoutEnlargement: true })
+              .jpeg({ quality: 85 })
+              .toBuffer();
+            return {
+              img: { data: buf, mediaType: "image/jpeg", srcUrl: img.srcUrl },
+              note: `\n（这是长图竖切后的第 ${idx}/${total} 段；要看下一段用 look_image({part:${idx + 1}})）`,
+            };
+          }
+          const buf = await sharpLib(img.data)
+            .resize({ width: MAX_SIDE, withoutEnlargement: true })
+            .jpeg({ quality: 85 })
+            .toBuffer();
+          return { img: { data: buf, mediaType: "image/jpeg", srcUrl: img.srcUrl }, note: "" };
+        } catch (err) {
+          logger.warn?.(`[onebot] 长图切段失败：${err?.message ?? err}`);
+          return { img, note: "" };
+        }
+      };
+
+      reg(
+        defineTool({
+          name: "look_image",
+          description:
+            "看一张图的真实内容（不是「[图片]」占位）。你在群里旁听时图片只留下来一个占位符，用这个把原图调出来看。\n" +
+            "**先定位再挑**：不给 id 时会先返回这个会话里「哪些位置有图」的清单（带前后文），你按语境挑一条再把 id 给我；\n" +
+            "给 messageId 而那条本身没图时，也会返回附近有图的位置，而不是替你挑。which=N 才表示直接看第 N 近的一张。\n" +
+            "长截图会被自动竖切成几段，一次给一段；想看下面那段就加 part=2、part=3。",
+          parameters: {
+            which: { type: "number", description: "倒数第几张，1 = 最近一张（默认）" },
+            part: { type: "number", description: "长截图看到第几段（默认 1）" },
+            url: { type: "string", description: "图片直链（可选）" },
+            messageId: { type: "string", description: "消息 id（可选）" },
+            imageIndex: { type: "number", description: "这条有多张图时看第几张，默认 1" },
+            question: { type: "string", description: "想从图里看什么（可选）" },
+          },
+          output: { schema: { type: "json" }, render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }] },
+          execute: async (args, exec) => {
+            try {
+              const entry = pickEntry(exec);
+              const key = keyOfEntry(entry);
+              const q =
+                String(args?.question || "").trim() ||
+                "这张图是什么？两三句话，只说画面里实际有的东西，别猜。";
+              let img = await grab(args?.url);
+              let fromNote = "";
+
+              // 指定消息：只有它自己有图才看；没图就把附近有图的位置列出来，让她按语境挑
+              if (!img && args?.messageId) {
+                const rec = key ? findMsgInLog(key, args.messageId) : null;
+                if (rec && Array.isArray(rec.img) && rec.img.length) {
+                  const imgIdx = Math.min(rec.img.length, Math.max(1, Number(args?.imageIndex) || 1));
+                  const first = rec.img[imgIdx - 1];
+                  img = await grabWithFallback(first?.url, first?.file);
+                  if (img) {
+                    fromNote =
+                      `（图来自 #${rec.id}，${rec.n || rec.u} 发的` +
+                      (rec.img.length > 1 ? `，这条共 ${rec.img.length} 张，看的是第 ${imgIdx} 张` : "") +
+                      "）";
+                  } else if (rec.img.length > 1) {
+                    return {
+                      ok: false,
+                      reason: `这条有 ${rec.img.length} 张图，第 ${imgIdx} 张取不到；换 imageIndex 试试`,
+                      images: rec.img.map((x, i) => ({ index: i + 1, url: x?.url || "" })),
+                    };
+                  }
+                } else {
+                  const cand = key ? buildImageCandidates(key, { aroundId: args.messageId }) : [];
+                  if (cand.length) {
+                    return {
+                      ok: false,
+                      reason:
+                        "这条消息本身没有图。下面这条消息附近有图的位置，按语境挑一个 id 再让我看：",
+                      candidates: cand,
+                    };
+                  }
+                  img = await byMessageId(args.messageId);
+                }
+              }
+
+              // 没给 id/url：先给位置清单；只有明确 which=N 才直接看第 N 张
+              if (!img && !args?.messageId && !args?.url) {
+                const cand = key ? buildImageCandidates(key, { limit: 10 }) : [];
+                const which = Number(args?.which) || 0;
+                if (which > 0 && cand.length) {
+                  const target = cand[which - 1];
+                  const rec = findMsgInLog(key, target.id);
+                  if (rec?.img?.length) {
+                    img = await grabWithFallback(rec.img[0]?.url, rec.img[0]?.file);
+                    if (img) fromNote = `（第 ${which} 近的一张，#${rec.id}，${rec.n || rec.u} 发的）`;
+                  }
+                } else if (cand.length) {
+                  return {
+                    ok: false,
+                    reason: "先看这个会话里哪些位置有图（带前后文），按语境挑一条，把 id 给我：",
+                    candidates: cand,
+                  };
+                }
+                // 退回内存 imgLog
+                if (!img && entry) {
+                  const log = Array.isArray(entry.imgLog) ? entry.imgLog : [];
+                  const pick = log[log.length - (which || 1)];
+                  if (pick) img = (await grabWithFallback(pick.url, pick.file)) || null;
+                }
+              }
+
+              if (!img) {
+                return {
+                  ok: false,
+                  reason: "没找到可看的图：这个会话最近的记录里没有图片，或者图已经过期；给个 url 也行",
+                };
+              }
+              const sliced = await sliceForView(img, args?.part);
+              const desc = await sessions.describeImage(sliced.img, q);
+              if (!desc) return { ok: false, reason: "图拿到了，但没看出内容" };
+              audit({ kind: "view_image", desc: String(desc).slice(0, 200) });
+              return { ok: true, desc: fromNote + String(desc) + (sliced.note || "") };
+            } catch (err) {
+              return { ok: false, reason: String(err?.message ?? err).slice(0, 160) };
+            }
+          },
+        }),
+      );
+
+      reg(
+        defineTool({
+          name: "list_recent_images",
+          description:
+            "列出这个会话里**哪些位置有图**：每条带发送人、几分钟前、那条消息的文字，以及它前后各一句，方便按语境判断是哪张。\n" +
+            "看到「图×N」但不确定指哪张时，先用它，再拿 id 去 look_image。",
+          parameters: { limit: { type: "number", description: "最多列几条（默认 10）" } },
+          output: { schema: { type: "json" }, render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }] },
+          execute: async (args, exec) => {
+            const entry = pickEntry(exec);
+            const key = keyOfEntry(entry);
+            const n = Math.min(30, Math.max(1, Number(args?.limit) || 10));
+            const items = key ? buildImageCandidates(key, { limit: n }) : [];
+            return {
+              ok: true,
+              count: items.length,
+              items,
+              note: items.length
+                ? "挑一条，用 look_image({messageId:\"<id>\"}) 看"
+                : "这个会话最近的落盘记录里没有图片",
+            };
+          },
+        }),
+      );
+
+      logger.info?.("[onebot] 看图工具已注册（look_image / list_recent_images）");
+    } catch (err) {
+      logger.warn?.("[onebot] 看图工具注册失败：" + (err?.message ?? err));
+    }
+  })();
+
+
+  // ═══════════════════════════════════════════════════════════════
+  // 群消息读取工具（P2）：read_message / read_context / read_thread
+  //                      + expand_forward / search_messages
+  // ═══════════════════════════════════════════════════════════════
+  void (async () => {
+    try {
+      const { defineTool } = await import("@deepseek-ai/dsh-tools");
+      const reg = (t) => ctx.get?.("tools")?.register?.(t);
+      const TOOL_OUT = {
+        schema: { type: "json" },
+        render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+      };
+
+      const currentGroup = (exec) => {
+        try {
+          const sid = String(exec?.agent?.session?.id ?? "");
+          const entry = sid ? sessions.bySessionId(sid) : null;
+          const t = entry?.lastTarget;
+          if (!t) return "";
+          if (String(t.message_type) === "group" && t.group_id) return "group:" + String(t.group_id);
+          if (String(t.message_type) === "private" && t.user_id) return "private:" + String(t.user_id);
+          return "";
+        } catch {
+          return "";
+        }
+      };
+      const pickGid = (args, exec) => String(args?.group || currentGroup(exec) || "").trim();
+
+      const cqText = (s) =>
+        String(s || "")
+          .replace(/\[CQ:[^\]]*\]/g, "")
+          .replace(/&#91;/g, "[")
+          .replace(/&#93;/g, "]")
+          .replace(/&#44;/g, ",")
+          .trim();
+
+      reg(
+        defineTool({
+          name: "read_message",
+          description:
+            "看某一条群消息的完整内容：谁说的、正文、@ 了谁、引用了谁（带被引用的原文）、几张图、有没有合并转发。\n" +
+            "只给 id 就行，默认在当前群找；跨群要带 group。本地没有会去 QQ 要原文。",
+          parameters: {
+            id: { type: "string", description: "消息 id" },
+            group: { type: "string", description: "群号（可选，默认当前群）" },
+          },
+          output: TOOL_OUT,
+          execute: async (args, exec) => {
+            try {
+              const gid = pickGid(args, exec);
+              const id = String(args?.id || "").trim();
+              if (!id) return { ok: false, reason: "要填消息 id" };
+              if (!gid) return { ok: false, reason: "不知道是哪个群，带个 group" };
+              const rec = findMsgInLog(gid, id);
+              if (rec) {
+                const q = rec.qid ? findMsgInLog(gid, rec.qid) : null;
+                return {
+                  ok: true,
+                  group: gid,
+                  source: "本地记录",
+                  text: renderMsgRec(rec),
+                  message: rec,
+                  quoted: q ? { id: q.id, from: q.n, text: String(q.x || "").slice(0, 200) } : null,
+                };
+              }
+              const r = await client.call("get_msg", { message_id: Number(id) || id }, 8000);
+              const segs = Array.isArray(r?.message) ? r.message : [];
+              // 本地没有：把 QQ 原文按同一套解析（保图/转发/引用），再回填到本地记录
+              const pseudo = parseMessage(
+                {
+                  message: segs,
+                  message_type: String(gid).startsWith("private:") ? "private" : "group",
+                  group_id: String(gid).startsWith("private:") ? undefined : String(gid).replace(/^group:/, ""),
+                  user_id: r?.sender?.user_id,
+                  time: r?.time,
+                  message_id: id,
+                  sender: r?.sender,
+                },
+                cfg.selfId,
+              );
+              const rec2 = {
+                v: 1,
+                id: String(id),
+                k: String(gid),
+                n: String(r?.sender?.card || r?.sender?.nickname || "").slice(0, 40),
+                u: String(r?.sender?.user_id || ""),
+                t: Number(r?.time) || Math.floor(Date.now() / 1000),
+                x: String(pseudo.text || "").slice(0, 500),
+                atMe: pseudo.hasAt ? 1 : 0,
+                img: (pseudo.images || []).slice(0, 4),
+                unk: (pseudo.unk || []).slice(0, 5),
+              };
+              if (pseudo.forwards?.length) rec2.fw = { id: String(pseudo.forwards[0].id || ""), n: 1 };
+              if (pseudo.replyIds?.[0]) rec2.qid = String(pseudo.replyIds[0]);
+              if (pseudo.files?.length) rec2.files = pseudo.files.slice(0, 5);
+              try {
+                const file = msgLogFileFor(gid);
+                if (file) {
+                  mkdirSync(MSG_LOG_DIR, { recursive: true });
+                  appendFileSync(file, JSON.stringify(rec2) + "\n");
+                }
+              } catch {
+                // 回填失败不影响返回
+              }
+              return {
+                ok: true,
+                group: gid,
+                source: "QQ 原文",
+                text: renderMsgRec(rec2),
+                message: rec2,
+                hint: rec2.fw
+                  ? "这条里有合并转发，用 expand_forward({messageId:\"" + id + "\"}) 展开看里面几条"
+                  : rec2.img?.length
+                  ? "这条带图，用 look_image({messageId:\"" + id + "\"}) 看内容"
+                  : "",
+              };
+            } catch (err) {
+              return { ok: false, reason: String(err?.message ?? err).slice(0, 120) };
+            }
+          },
+        }),
+      );
+
+      reg(
+        defineTool({
+          name: "read_context",
+          description:
+            "看一段群聊上下文：以某条消息为中心，往前 before 条、往后 after 条。\n" +
+            "不填 id 就是看这个群最近的一段。每条都带［图×N］［转发×N］↩︎引用 的标记。\n" +
+            "想接话、想搞清「他们在聊什么」时先用它。",
+          parameters: {
+            id: { type: "string", description: "中心消息 id（可选）" },
+            group: { type: "string", description: "群号（可选）" },
+            before: { type: "number", description: "往前几条，默认 10" },
+            after: { type: "number", description: "往后几条，默认 5" },
+          },
+          output: TOOL_OUT,
+          execute: async (args, exec) => {
+            try {
+              const gid = pickGid(args, exec);
+              if (!gid) return { ok: false, reason: "不知道是哪个群，带个 group" };
+              const rows = readMsgLog(gid, 500);
+              if (!rows.length) return { ok: false, reason: "这个群还没有落盘记录" };
+              const before = Math.min(80, Math.max(0, Number(args?.before ?? 20)));
+              const after = Math.min(40, Math.max(0, Number(args?.after ?? 10)));
+              const id = String(args?.id || "").trim();
+              let idx = rows.length - 1;
+              if (id) {
+                const found = rows.findIndex((r) => String(r.id) === id);
+                if (found < 0) return { ok: false, reason: "本地没有这条消息，先 read_message 取" };
+                idx = found;
+              }
+              const from = Math.max(0, idx - before);
+              const to = Math.min(rows.length, idx + after + 1);
+              const window = rows.slice(from, to);
+              return {
+                ok: true,
+                group: gid,
+                total: rows.length,
+                focus: idx - from,
+                lines: window.map((r, i) => (i === idx - from ? "→ " : "  ") + renderMsgRec(r) + ((r.img?.length || r.fw) ? `  #${r.id}` : "")),
+                raw: window.slice(Math.max(0, idx - from - 1), idx - from + 2),
+              };
+            } catch (err) {
+              return { ok: false, reason: String(err?.message ?? err).slice(0, 120) };
+            }
+          },
+        }),
+      );
+
+      reg(
+        defineTool({
+          name: "read_thread",
+          description:
+            "顺着「回复/引用」往上追：A 引用了 B，B 又引用了 C，一层层取出来。\n" +
+            "想搞清「他这句话是在回谁」「这事从头到尾怎么来的」时用。",
+          parameters: {
+            id: { type: "string", description: "起点消息 id" },
+            group: { type: "string", description: "群号（可选）" },
+            depth: { type: "number", description: "最多追几层，默认 3" },
+          },
+          output: TOOL_OUT,
+          execute: async (args, exec) => {
+            try {
+              const gid = pickGid(args, exec);
+              const id = String(args?.id || "").trim();
+              if (!gid || !id) return { ok: false, reason: "要 group 和 id" };
+              const depth = Math.min(6, Math.max(1, Number(args?.depth ?? 3)));
+              const chain = [];
+              const note = [];
+              let cur = findMsgInLog(gid, id);
+              for (let i = 0; i < depth && cur; i += 1) {
+                chain.push({ id: cur.id, from: cur.n || cur.u, text: String(cur.x || "").slice(0, 200), at: cur.t });
+                let nextId = cur.qid ? String(cur.qid) : "";
+                // 本地没记到引用 id：问 QQ 这条到底在回谁
+                if (!nextId) {
+                  try {
+                    const q = await client.call("get_msg", { message_id: Number(cur.id) || cur.id }, 8000);
+                    const segs = Array.isArray(q?.message) ? q.message : [];
+                    const rp = segs.find((x) => x?.type === "reply");
+                    nextId = String(rp?.data?.id ?? rp?.data?.message_id ?? "");
+                  } catch {
+                    // 取不到就到此为止
+                  }
+                }
+                if (!nextId) {
+                  note.push(`第 ${i + 1} 层没有引用；如果是转发，用 expand_forward 展开`);
+                  break;
+                }
+                let nxt = findMsgInLog(gid, nextId);
+                if (!nxt) {
+                  // 被引用那条本地没存：按 id 取回来再解析
+                  try {
+                    const q2 = await client.call("get_msg", { message_id: Number(nextId) || nextId }, 8000);
+                    const segs2 = Array.isArray(q2?.message) ? q2.message : [];
+                    const p2 = parseMessage(
+                      {
+                        message: segs2,
+                        message_type: String(gid).startsWith("private:") ? "private" : "group",
+                        group_id: String(gid).startsWith("private:") ? undefined : String(gid).replace(/^group:/, ""),
+                        user_id: q2?.sender?.user_id,
+                        time: q2?.time,
+                        message_id: nextId,
+                        sender: q2?.sender,
+                      },
+                      cfg.selfId,
+                    );
+                    if (p2.text || p2.replyIds?.[0]) {
+                      nxt = {
+                        id: String(nextId),
+                        n: String(q2?.sender?.card || q2?.sender?.nickname || ""),
+                        u: String(q2?.sender?.user_id || ""),
+                        t: Number(q2?.time) || 0,
+                        x: p2.text,
+                        qid: p2.replyIds?.[0] ? String(p2.replyIds[0]) : "",
+                      };
+                      note.push(`第 ${i + 1} 层的原文是现取的（本地没存）`);
+                    }
+                  } catch {
+                    // 取不到就断在这里
+                  }
+                }
+                cur = nxt;
+              }
+              if (!chain.length) return { ok: false, reason: "本地没找到这条（可能太久远了）" };
+              return {
+                ok: true,
+                group: gid,
+                depth: chain.length,
+                chain,
+                lines: chain.map((c, i) => `${i + 1}. ${c.from}：${c.text}`),
+                note: note.join("；"),
+              };
+            } catch (err) {
+              return { ok: false, reason: String(err?.message ?? err).slice(0, 120) };
+            }
+          },
+        }),
+      );
+
+      reg(
+        defineTool({
+          name: "expand_forward",
+          description:
+            "展开一条合并转发（聊天记录）：按条列出里面的发言。\n" +
+            "messageId 填那条转发消息的 id；from 从第几条开始（默认 1），count 要几条（默认 5，最多 20）。",
+          parameters: {
+            messageId: { type: "string", description: "转发消息的 id" },
+            from: { type: "number", description: "从第几条开始，默认 1" },
+            count: { type: "number", description: "要几条，默认 5" },
+          },
+          output: TOOL_OUT,
+          execute: async (args) => {
+            try {
+              const id = String(args?.messageId || args?.id || "").trim();
+              if (!id) return { ok: false, reason: "要填 messageId" };
+              let fwId = "";
+              try {
+                const r = await client.call("get_msg", { message_id: Number(id) || id }, 8000);
+                const segs = Array.isArray(r?.message) ? r.message : [];
+                const fw = segs.find((x) => x?.type === "forward");
+                fwId = String(fw?.data?.id ?? fw?.data?.message_id ?? "");
+              } catch {
+                // 取不到就当成转发 id 直接试
+              }
+              if (!fwId && /^\d{6,25}$/.test(id)) fwId = id;
+              if (!fwId) return { ok: false, reason: "这条不是合并转发" };
+              const res = await client.call("get_forward_msg", { id: fwId }, 10000);
+              const msgs = Array.isArray(res?.messages) ? res.messages : [];
+              const from = Math.max(1, Number(args?.from) || 1);
+              const count = Math.min(20, Math.max(1, Number(args?.count) || 5));
+              const items = msgs.slice(from - 1, from - 1 + count).map((m) => {
+                const name = String(m?.sender?.card || m?.sender?.nickname || m?.sender?.user_id || "某人").slice(0, 20);
+                const ss = Array.isArray(m?.content) ? m.content : Array.isArray(m?.message) ? m.message : [];
+                let t = ss
+                  .filter((x) => x?.type === "text")
+                  .map((x) => String(x?.data?.text || ""))
+                  .join("")
+                  .trim();
+                if (!t && typeof m?.raw_message === "string") t = cqText(m.raw_message);
+                if (!t && ss.some((x) => x?.type === "image")) t = "［图片］";
+                return { from: name, text: t.slice(0, 200) };
+              });
+              return {
+                ok: true,
+                total: msgs.length,
+                from,
+                count: items.length,
+                lines: items.map((x) => `${x.from}：${x.text}`),
+                hasMore: from - 1 + items.length < msgs.length,
+              };
+            } catch (err) {
+              return { ok: false, reason: String(err?.message ?? err).slice(0, 120) };
+            }
+          },
+        }),
+      );
+
+      reg(
+        defineTool({
+          name: "search_messages",
+          description:
+            "在所有群落盘的记录里搜原话：按词、按人、按时间。\n" +
+            "recall 查的是会话记录（只覆盖回过的），这个查的是旁听的所有群消息。\n" +
+            "想找「谁说过这句」「那天群里在聊什么」时用。",
+          parameters: {
+            q: { type: "string", description: "关键词（可选）" },
+            person: { type: "string", description: "昵称或 QQ 号（可选）" },
+            group: { type: "string", description: "只搜某个群（可选）" },
+            days: { type: "number", description: "最近几天，默认不限" },
+            limit: { type: "number", description: "这一页几条，默认 10（最多 50）" },
+            before: { type: "string", description: "从哪条消息往前翻（上次的 nextCursor）" },
+          },
+          output: TOOL_OUT,
+          execute: async (args) => {
+            try {
+              const q = String(args?.q || "").trim().toLowerCase();
+              const person = String(args?.person || "").trim();
+              const days = Number(args?.days) || 0;
+              const limit = Math.min(50, Math.max(1, Number(args?.limit) || 10));
+              const since = days > 0 ? Date.now() - days * 86400_000 : 0;
+              const gids = args?.group ? [String(args.group)] : listMsgKeys();
+              const hits = [];
+              for (const gid of gids.slice(0, 60)) {
+                for (const r of readMsgLog(gid, 2000)) {
+                  if (since && (Number(r.t) || 0) * 1000 < since) continue;
+                  if (person && !(String(r.n || "").includes(person) || String(r.u) === person)) continue;
+                  if (q && !String(r.x || "").toLowerCase().includes(q)) continue;
+                  hits.push({ gid, t: Number(r.t) || 0, text: renderMsgRec(r), msg: { id: r.id, n: r.n, x: String(r.x || "").slice(0, 120) } });
+                }
+              }
+              hits.sort((a, b) => b.t - a.t);
+              const before = String(args?.before || "").trim();
+              let startIdx = 0;
+              if (before) {
+                const at = hits.findIndex((h) => String(h.msg?.id) === before);
+                if (at >= 0) startIdx = at + 1;
+              }
+              const page = hits.slice(startIdx, startIdx + limit);
+              const hasMore = startIdx + page.length < hits.length;
+              return {
+                ok: true,
+                scannedGroups: gids.length,
+                total: hits.length,
+                shown: page.length,
+                hasMore,
+                nextCursor: hasMore ? String(page[page.length - 1]?.msg?.id || "") : "",
+                note: hasMore
+                  ? `共命中 ${hits.length} 条，这里只给了 ${page.length} 条；用 before=${String(page[page.length - 1]?.msg?.id || "")} 看更早的`
+                  : `共命中 ${hits.length} 条`,
+                lines: page.map((h) => `[${String(h.gid).startsWith("private:") ? "私聊" : "群"}${String(h.gid).replace(/^(group|private):/, "")}] ${h.text}`),
+              };
+            } catch (err) {
+              return { ok: false, reason: String(err?.message ?? err).slice(0, 120) };
+            }
+          },
+        }),
+      );
+
+      logger.info?.("[onebot] 群消息读取工具已注册（read_message/read_context/read_thread/expand_forward/search_messages）");
+    } catch (err) {
+      logger.warn?.("[onebot] 群消息读取工具注册失败：" + (err?.message ?? err));
+    }
+  })();
+
+
+  // ═══════════════════════════════════════════════════════════════
   // 第二步：活动由她自己排（schedule_activity）+ 看上下文（my_context）
   // ═══════════════════════════════════════════════════════════════
   void (async () => {
@@ -11433,13 +12659,60 @@ async function handleOwnerNatural(ev, text) {
 
   // ── 群活动快照（重启或隔天后仍能说清"昨天聊过什么"） ──
   const GROUP_META_PATH = join(HOME, ".dsh/onebot-bridge/group-meta.json");
+  const GROUP_META_DIR = join(HOME, ".dsh/onebot-bridge/groups");
   let groupMetaCache = null;
   let groupMetaTimer = null;
+  const groupMetaSaved = {};
+
+  /** 只写变了的群：一群一个文件 */
+  function saveGroupMeta() {
+    try {
+      mkdirSync(GROUP_META_DIR, { recursive: true });
+      const seen = new Set();
+      for (const [gid, rec] of Object.entries(loadGroupMeta())) {
+        if (!/^\d{5,20}$/.test(gid)) continue;
+        seen.add(gid);
+        const json = JSON.stringify(rec);
+        if (groupMetaSaved[gid] === json) continue;
+        writeFileSync(join(GROUP_META_DIR, gid + ".json"), json);
+        groupMetaSaved[gid] = json;
+      }
+      for (const gid of Object.keys(groupMetaSaved)) {
+        if (!seen.has(gid)) {
+          try {
+            unlinkSync(join(GROUP_META_DIR, gid + ".json"));
+          } catch {
+            // 忽略
+          }
+          delete groupMetaSaved[gid];
+        }
+      }
+    } catch {
+      // 写失败不影响对话
+    }
+  }
 
   function loadGroupMeta() {
     if (groupMetaCache) return groupMetaCache;
+    groupMetaCache = {};
     try {
-      groupMetaCache = JSON.parse(readFileSync(GROUP_META_PATH, "utf8")) ?? {};
+      mkdirSync(GROUP_META_DIR, { recursive: true });
+      const files = readdirSync(GROUP_META_DIR).filter((f) => f.endsWith(".json"));
+      if (files.length) {
+        for (const f of files) {
+          try {
+            const rec = JSON.parse(readFileSync(join(GROUP_META_DIR, f), "utf8"));
+            const gid = f.replace(/\.json$/, "");
+            if (rec && typeof rec === "object") groupMetaCache[gid] = rec;
+          } catch {
+            // 单群文件坏了跳过
+          }
+        }
+      } else {
+        // 迁移：老的 group-meta.json → 一群一个文件
+        groupMetaCache = JSON.parse(readFileSync(GROUP_META_PATH, "utf8")) ?? {};
+        saveGroupMeta();
+      }
     } catch {
       groupMetaCache = {};
     }
@@ -11454,11 +12727,7 @@ async function handleOwnerNatural(ev, text) {
     if (groupMetaTimer) return;
     groupMetaTimer = setTimeout(() => {
       groupMetaTimer = null;
-      try {
-        writeFileSync(GROUP_META_PATH, JSON.stringify(loadGroupMeta()), "utf8");
-      } catch {
-        // 忽略
-      }
+      saveGroupMeta();
     }, 5000);
     groupMetaTimer.unref?.();
   }
@@ -11560,7 +12829,7 @@ async function handleOwnerNatural(ev, text) {
     // 读 NapCat 的 WebUI token（用来拼「QQ 登录」链接）
     let napcatToken = "";
     try {
-      const p = "/root/Napcat/opt/QQ/resources/app/app_launcher/napcat/config/webui.json";
+      const p = join(HOME, "Napcat/opt/QQ/resources/app/app_launcher/napcat/config/webui.json");
       const j = JSON.parse(readFileSync(p, "utf8"));
       napcatToken = String(j?.token ?? "");
     } catch {
@@ -12195,7 +13464,7 @@ inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDef
       // 她发的图片（表情包等）
       // PWA：manifest（start_url 带 token，否则从桌面图标打开会 401）
       if (u.pathname === "/manifest.json") {
-        const iconDir = "/root/dev/dsh-onebot-bridge/icons";
+        const iconDir = join(HERE, "icons");
         const has = (f) => {
           try {
             return existsSync(join(iconDir, f));
@@ -12237,7 +13506,7 @@ inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDef
       }
       if (u.pathname.startsWith("/icon-")) {
         const name = u.pathname.slice(1).replace(/[^a-zA-Z0-9._-]/g, "");
-        const file = join("/root/dev/dsh-onebot-bridge/icons", name);
+        const file = join(HERE, "icons", name);
         try {
           const buf = readFileSync(file);
           res.writeHead(200, {
@@ -12421,7 +13690,7 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
         let tok = "";
         let port = 6099;
         try {
-          const p = "/root/Napcat/opt/QQ/resources/app/app_launcher/napcat/config/webui.json";
+          const p = join(HOME, "Napcat/opt/QQ/resources/app/app_launcher/napcat/config/webui.json");
           const j = JSON.parse(readFileSync(p, "utf8"));
           tok = String(j?.token ?? "");
           port = Number(j?.port) || 6099;
@@ -13087,7 +14356,7 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
   // 副本停在 10-29（10919 行），真实文件已经 14037 行 —— 她照抄「原文」时抄的是
   // 两天前的代码，改动申请里的 oldCode 对不上。现在每次启动都覆盖一次。
   try {
-    const liveSrc = "/root/dev/dsh-onebot-bridge/index.js";
+    const liveSrc = join(HERE, "index.js");
     const copySrc = "/opt/fish-src/index.js";
     mkdirSync("/opt/fish-src", { recursive: true });
     copyFileSync(liveSrc, copySrc);
@@ -13330,9 +14599,9 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
       void sessions
         .runProactive(
           key,
-          "（群里有人刚才连着发了好几条，一直没人理。你可以接一句自然的，" +
-            "像「我也在想这个」「你说的那个我见过」这种，给对方一个台阶；" +
-            "别显得刻意、别说「你继续说」、别 @ 他。如果确实接不上，就什么都不说（只输出一个句号）。）",
+          "（群里有人刚才连着发了好几条，还没人接。你要是正好有话说，可以自然接一句，" +
+            "像「我也在想这个」「你说的那个我见过」这种，" +
+            "别显得刻意、别说「你继续说」、别 @ 他。接不上就不说（只输出一个句号）。）",
         )
         .catch(() => {})
         .finally(() => {
@@ -13631,8 +14900,9 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
       try {
         const text = await sessions.generate(
           key,
-          "（内部：你昨晚睡了，错过了下面这些消息。现在是早上，你刚醒。" +
-            "用一两句话统一回一下——语气自然，别逐条机械回复，也别道歉太多。\n" +
+          "（内部：你昨晚睡了，这是你不在时群里的消息。现在是早上，你刚醒。" +
+            "要不要说点什么、说什么，你自己看——想接就自然说一两句，不想接也完全可以不说；" +
+            "不用逐条回，也不用为不在场道歉。\n" +
             list +
             "）",
         );

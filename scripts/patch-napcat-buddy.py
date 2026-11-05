@@ -24,7 +24,7 @@ import os
 import shutil
 import sys
 
-P = "/root/Napcat/opt/QQ/resources/app/app_launcher/napcat/napcat.mjs"
+P = "~/Napcat/opt/QQ/resources/app/app_launcher/napcat/napcat.mjs"
 BAK = P + ".bak-buddy"
 
 if not os.path.exists(P):
