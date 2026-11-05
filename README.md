@@ -17,7 +17,6 @@
 | [DEPLOY.md](DEPLOY.md) | 给 AI agent 的部署清单，每步带验证命令和失败排查 |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | 开发约定、发布前隐私清洗、踩过的坑 |
 | [CHANGELOG.md](CHANGELOG.md) | 每个版本改了什么 |
-| [`docs/flow.html`](docs/flow.html) | 8 张流程图（消息链路、指令分发、定时任务、记忆数据流等） |
 
 > 🔧 **好友申请需要额外打一个 NapCat 补丁**：NapCat 没把「联系人-好友通知」暴露成 OneBot 接口，
 > 桥查不到谁申请加好友。运行 `sudo python3 scripts/patch-napcat-buddy.py` 后重启 NapCat 即可。
@@ -236,7 +235,7 @@ journalctl -u dsh-web -n 50 | grep -o 'http://127.0.0.1:3080/?token=[A-Za-z0-9_-
 ### 对话
 
 - 私聊直接说话；群里 @ 她或叫名字
-- 群里聊过一次后，**1 分钟内不用 @ 也能接着聊**（最多 5 轮；风控模式下窗口为 20 秒）
+- 群里聊过一次后，**默认 3 分钟内不用 @ 也能接着聊**（`followUpSeconds` 可调，风控模式 20 秒；最多 5 轮）
 - **换目标判断**：她刚回完 A 的 10 秒内，B 没 @ 也开口了 → 先判断「A 是不是已经不再跟她说」「B 这句是不是冲她说」，两条都成立才转向 B
 - 发链接会**扫一眼正文前 600 字**
 - 自定义表情库（带情绪标签，数量随收藏变化）、QQ 原生小黄脸、分条发送、正在输入
@@ -582,7 +581,6 @@ sudo bash scripts/install-watchdog.sh
 │  ├─ install-watchdog.sh   # 装掉线看门狗
 │  ├─ watchdog.py           # 看门狗本体
 │  └─ patch-napcat-buddy.py # 让 NapCat 暴露好友申请
-├─ docs/flow.html           # 8 张流程图
 ├─ assets/stickers/         # 表情包素材
 ├─ android-app/             # Android 客户端
 ├─ tray-client/             # Windows 托盘客户端
