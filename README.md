@@ -12,6 +12,10 @@
 > 桥查不到谁申请加好友。运行 `sudo python3 scripts/patch-napcat-buddy.py` 后重启 NapCat 即可，
 > 之后好友申请会私聊转告你，回「同意好友」就通过。不打补丁也能用，只是收不到好友申请通知。
 
+> 🆕 **2.0.14（2026-11-06）**：群消息与私聊消息现在**结构化落盘**（`messages/*.jsonl`），
+> 并新增 5 个读取工具（`read_message` / `read_context` / `read_thread` / `expand_forward` / `search_messages`）；
+> 看图改为「先列出哪些位置有图，再按语境挑」。详见 [CHANGELOG](CHANGELOG.md) 与下方「消息存哪、怎么翻」。
+
 > 🛠 **开发约定**：[DEVELOPMENT.md](DEVELOPMENT.md)（提交节奏、CHANGELOG 要求、发布前隐私清洗、这个项目踩过的坑）
 
 > 📊 **完整流程图**：[`docs/flow.html`](docs/flow.html)
@@ -250,37 +254,116 @@ journalctl -u dsh-web -n 50 | grep -o 'http://127.0.0.1:3080/?token=[A-Za-z0-9_-
 - 私聊直接说话；群里 @ 她或叫名字
 - 群里聊过一次后，**1 分钟内不用 @ 也能接着聊**（最多 5 轮；风控模式下窗口为 20 秒）
 - **换目标判断**：她刚回完 A 的 10 秒内，B 没 @ 也开口了 → 先让模型判断「A 是不是已经不再跟她说」和「B 这句是不是冲她说」，两条都成立才转向 B；A 的窗口只是被插话时保持原样
-- 支持**图片理解**（DeepSeek 视觉）
+- 支持**看图**：`look_image` 会先列出「哪些位置有图」（带前后文），按语境挑一张再看；长图自动竖切，一条多图可用 `imageIndex` 选第几张
 - 发链接会**扫一眼正文前 600 字**
-- 自定义表情库（带情绪标签，可自己攒；目前 75 张）、QQ 原生小黄脸、分条发送、正在输入
+- 自定义表情库（带情绪标签，可自己攒；数量随收藏变化）、QQ 原生小黄脸、分条发送、正在输入
 - 私聊连发几条会**合并成一次回复**；偶尔会连说 2–3 句
 
 ### 消息理解
 
 | 类型 | 能力 |
 |---|---|
-| **合并转发** | 展开前 5 条 + 最多 2 张图；套娃转发再展开一层；觉得有意思可调 `read_forward_more` 看后面 |
-| **引用转发** | 引用一条转发再 @ 她，自动追溯被引用的消息 |
+| **合并转发** | 展开前 5 条 + 最多 2 张图；套娃转发再展开一层；想继续看用 `expand_forward`（支持 `from` / `count`，一次最多 20 条） |
+| **引用转发** | 引用一条转发再 @ 她，自动追溯被引用的消息；用 `read_thread` 可以沿引用链往上追 |
 | **“看上面的转发”** | 只 @ 不引用也行——往上翻 25 条找最近的转发 |
 | **文本文件** | `.txt/.md/.log/.json/.csv` 等读前 1000 字（≤1MB）；非文本只提示文件名 |
-| **空 @** | 只 @ 不打字，会回看前面 10 条聊天记录再接话，不问“怎么了” |
+| **图片** | 消息里的图会先进落盘记录；她要真看时用 `look_image`——不给 id 会先列出「哪些位置有图」，按语境挑 |
+| **空 @** | 只 @ 不打字，会回看前面一段聊天记录，并直接点名「你 @ 之前最后一条 / 再上一条」，不问“怎么了” |
+| **视频 / 语音 / 红包 / 卡片 / 位置** | 这些类型只保留占位（`［视频］［卡片］` 等），不解析内容，也不会因为认不出而崩 |
 
-### 内置工具
+### 消息存哪、怎么翻
+
+每条群消息和私聊消息都会写一条**结构化记录**（旁听也算，@ 不 @ 一视同仁），重启不丢：
+
+```
+~/.dsh/onebot-bridge/
+├─ messages/<群号>.jsonl         # 群聊，一条一行
+├─ messages/private/<QQ>.jsonl   # 私聊
+├─ users/<QQ>.json               # 人物档案，一人一个文件
+├─ groups/<群号>.json             # 群画像，一群一个文件
+└─ （会话原文、附件仍在 ~/.dsh/sessions/、~/.dsh/attachments/）
+```
+
+一条记录大概长这样（有哪个字段才写哪个）：
+
+```json
+{"v":1,"k":"group:123456789","id":"1984189504","u":"100000001","n":"某人","t":1793898085,
+ "x":"转发了","atMe":1,"ats":[{"qq":"100000001","name":"某某"}],
+ "qid":"1601253466","img":[{"url":"https://…","file":"….jpg"}],
+ "fw":{"id":"7704733609204261074","n":4},"unk":[{"t":"video","d":"…"}]}
+```
+
+- **保留**：单个文件超过 8MB 自动滚动，只留最近 1500 行；更早的在会话原文里
+- **未知类型**：视频 / 语音 / 红包 / 卡片 / 位置等进 `unk` 原样保留，只渲染成 `［视频］［卡片］` 占位，不解析、也不会崩
+
+**读的时候用这五个工具**（都读上面这份记录，QQ 掉线也能用）：
+
+| 工具 | 用途 |
+|---|---|
+| `read_message({id})` | 一条消息的完整内容：谁说的、正文、@ 了谁、引用了谁（带被引用原文）、几张图、有没有转发 |
+| `read_context({id?, before, after})` | 以某条为中心的前后若干条，每行带 `［图×N］［转发×N］↩︎` 标记和 `#消息id` |
+| `read_thread({id, depth})` | 沿「回复/引用」往上追：A 引 B、B 引 C，一层层取 |
+| `expand_forward({messageId, from, count})` | 展开合并转发，按条列出谁说了什么 |
+| `search_messages({q, person, group, days})` | 跨群搜**旁听原文**（`recall` 只覆盖进过会话的消息） |
+
+翻页统一用 `before=<id>`；返回体里带 `total / shown / hasMore / nextCursor`。
+
+---
+
+### 内置工具（部分）
+
+**说话**
 
 | 工具 | 作用 |
 |---|---|
-| `send_sticker` | 发一张表情包 |
-| `hot_news` | 查当前热搜（问“最近有什么新鲜事”时用） |
+| `send_message` / `reply_to` / `send_private` | 发群消息 / 带引用回复 / 主动私聊 |
 | `at_person` | 群里 @ 某人（每小时最多 3 次） |
-| `recall` | 回忆很久以前的对话（原文归档检索） |
-| `read_forward_more` | 继续展开合并转发 |
-| `remember_fact` / `remember_person` | 记住事实 / 记住某人的特点 |
-| `remember_self` | 记录她自己的想法 |
-| `revise_self` / `forget_self` | 反思后改写 / 删掉某条旧想法 |
-| `save_sticker` / `list_stickers` | 收藏表情 / 列出表情库 |
-| `send_face` | 发一个 QQ 原生小黄脸 |
-| `refuse_person` | 声明不再回复某人（之后他 @ 也不接） |
+| `send_sticker` / `list_stickers` / `save_sticker` | 发表情包 / 列表情库 / 收藏一张 |
+| `send_face` | 发 QQ 原生小黄脸 |
 | `draw_image` / `draw_svg` | AI 画图 / 画 SVG |
+
+**看上下文**（2.0.14 新增）
+
+| 工具 | 作用 |
+|---|---|
+| `read_message` / `read_context` / `read_thread` | 单条 / 前后窗口 / 引用链 |
+| `expand_forward` | 展开合并转发 |
+| `search_messages` | 跨群搜旁听原文 |
+| `look_image` / `list_recent_images` | 看图：先列位置，再按语境挑；支持多图 `imageIndex`、长图切段 |
+| `view_avatar` | 看某人头像 |
+
+**看群**
+
+| 工具 | 作用 |
+|---|---|
+| `group_activity` | 各群最近动静（按落盘记录真实计数） |
+| `group_patrol` | 翻某群原文，支持 `before` 游标往前翻 |
+| `group_recap` / `group_impressions` | 群摘要 / 她对每个群的印象 |
+| `who_said` | 跨群搜「谁说过这话」 |
+| `read_group_notice` | 看群公告 |
+| `watch_topic` / `my_watchlist` | 订阅关键词或某人，出现就推给她 |
+
+**记忆与自我**
+
+| 工具 | 作用 |
+|---|---|
+| `recall` / `my_memory` / `memory_index` / `my_digest` | 翻原文 / 翻条目 / 记忆目录 / 经历摘要 |
+| `person_dossier` | 某人档案 + 最近原话 |
+| `remember_fact` / `remember_person` / `remember_self` / `revise_self` / `forget_self` | 记忆写入与修订 |
+| `my_context` / `my_status` / `my_schedule` | 上下文用量 / 运行状态 / 下次活动 |
+| `note_want` / `my_wants` | 需求记事本 |
+
+**做事与自省**
+
+| 工具 | 作用 |
+|---|---|
+| `run_activity` / `schedule_activity` | 立刻做一轮 / 排下次活动 |
+| `hot_news` / `news_now` / `zhihu_daily` | 热搜等 |
+| `exec_sandbox` / `read_page` / `read_pdf` / `files` | 跑代码 / 读网页 / 读 PDF / 文件区 |
+| `propose_patch` / `my_patch_proposals` | 提代码改动申请（她改不了自己的代码） |
+| `audit_self` / `my_thoughts` / `my_adventures` | 自省 / 想法 / 探险记录 |
+
+> 完整清单以代码为准：`index.js` 里注册了 **90 个工具**。
 
 ### 记忆
 
@@ -318,7 +401,7 @@ L0 的自我认知**随反思微调**：最短 48 小时改一次，只改有变
 | 玩 | `games.jsonl`（造的小游戏可累积） |
 | 思考 | 观点（`self.json`） |
 | 写点什么 | 随笔（`activities.jsonl`） |
-| 回忆 | 新的理解（`facts.json` / `people.json`） |
+| 回忆 | 新的理解（`facts.json` / `users/<QQ>.json`） |
 | 憧憬未来 | 愿望（`activities.jsonl` + 需求本） |
 
 **休息多久由反思决定**：她写 `[[next: 20m]]` / `2h` / `明天早上`，范围 1 分钟到 8 小时。
@@ -485,10 +568,26 @@ QQ 对第三方协议端有登录态限制：
 检查 `~/.dsh/onebot-bridge/stickers/` 是否有图、`labels.json` 是否存在。
 日志里搜 `请指定正确的 group_id` 通常说明发送目标丢了。
 
+### Q：她说看不到图片 / 只看到「[图片]」？
+
+先让她调 `list_recent_images`——它会列出这个会话里**哪些位置有图**（谁发的、几分钟前、那条消息的文字、前后各一句），
+挑一条再 `look_image({messageId:"…"})`。
+
+常见原因：
+
+1. 她查的那条消息本身没图，图在上一条 → 现在会直接告诉她「这条没图，附近有这些」
+2. 图太大（单边 > 8192px）→ 长图会自动竖切，用 `part=2/3` 看下一段
+3. 一条消息多张图 → 用 `imageIndex=2` 看第二张
+
+### Q：转发她只回了「转发了」，里面内容没进来？
+
+用 `expand_forward({messageId:"那条消息的id"})` 展开，会按条列出谁说了什么。
+`read_message({id})` 也会提示「这条里有合并转发」。
+
 ### Q：会话越来越长会怎样？
 
-不会丢。原文永远在 `session.jsonl.zstd` 里，
-超过 5MB 才自动压缩，**原文仍留在会话文件里**，`recall` 检索得到。
+不会丢。会话原文在 `session.jsonl.zstd` 里，超过 5MB 自动压缩，原文仍在，`recall` 检索得到；
+群聊/私聊的每条消息另有一份结构化记录在 `messages/*.jsonl`（8MB 滚动），`read_context` / `search_messages` 查的是这一份。
 
 ---
 
