@@ -137,9 +137,18 @@ const DEFAULTS = {
   quoteInGroup: true,
   /** 连续对话：她刚回过的群友，在窗口内不 @ 也能接着说 */
   followUpEnabled: true,
-  followUpSeconds: 180,
+  followUpSeconds: 60,
   /** 一次主动搭话最多接几轮，超过就停（等下一次被 @） */
   followUpMaxTurns: 5,
+  /** 发送最小间隔（毫秒）：单线程打字之外的兜底，防跨会话连发 */
+  minSendGapMs: 1200,
+  /** 群聊合并窗口：同一个人的连发在这个窗口内合成一次回复 */
+  groupMergeWindowMs: 2000,
+  mergeGroups: true,
+  /** 连发搭话：同一人连发 N 条、等 M 秒没人接 → 搭一句 */
+  soloStreakWaitSeconds: 1800,
+  soloStreakPerDay: 2,
+  quietTopicPerDay: 1,
   /** 群聊记忆互通：把其他群最近在聊的话题带一点进来 */
   crossGroupMemory: true,
   crossGroupMax: 4,
@@ -2616,46 +2625,11 @@ export function apply(ctx, _pluginConfig) {
   };
   const cfg = loadConfig(logger);
 
-  // ── 风控模式（默认开；关掉恢复原有节奏） ──
-  const RISK_OVERRIDES = {
-    ratePerMinute: 2,
-    ratePerUserHour: 8,
-    followUpSeconds: 20,
-    maxParts: 2,
-    replyBaseMs: 2000,
-  replyBaseIdleMs: 350,
-  /** 她可以申请新功能，每天最多一次 */
-  featureRequestEnabled: true,
-  featureRequestCooldownHours: 24,
-    minSendGapMs: 1200,
-    quietTopicHours: 6,
-    quietTopicPerDay: 1,
-    quietNightQuiet: true,
-    activeJoinPerMinute: 2,
-    activeJoinCooldownMinutes: 90,
-    soloStreakWaitSeconds: 3600,
-    soloStreakPerDay: 2,
-    proactiveMinMinutes: 180,
-    proactiveMaxMinutes: 300,
-    qzoneMinMinutes: 120,
-    qzoneMaxMinutes: 240,
-    qzonePerDayMax: 2,
-    groupMergeWindowMs: 2000,
-    mergeGroups: true,
-  };
-  const normalSnapshot = {};
-  for (const k of Object.keys(RISK_OVERRIDES)) normalSnapshot[k] = cfg[k];
-  function applyMode() {
-    if (cfg.riskMode === false) {
-      for (const k of Object.keys(RISK_OVERRIDES)) cfg[k] = normalSnapshot[k];
-      return false;
-    }
-    for (const [k, v] of Object.entries(RISK_OVERRIDES)) cfg[k] = v;
-    return true;
-  }
-  const riskOn = applyMode();
+  // ── 只有一种节奏：单线程打字模型（不再分普通/风控） ──
+  // 原先风控模式会覆盖 followUpSeconds / maxParts / minSendGapMs / groupMergeWindowMs /
+  // activeJoin* / soloStreak* / proactive* / qzone* 等，现在这些值统一由 DEFAULTS 提供。
   logger.info?.(
-    `[onebot] 模式：${riskOn ? "风控（默认，慢节奏）" : "普通"}｜每分 ${cfg.ratePerMinute} 条 / 每人每小时 ${cfg.ratePerUserHour} 次`,
+    `[onebot] 节奏：单线程打字模型｜续聊窗口 ${cfg.followUpSeconds}s｜群合并窗口 ${cfg.groupMergeWindowMs || 1500}ms`,
   );
   const sessions = new SessionManager(ctx, cfg, logger);
   sessions.autoConfigure = (sid) => autoConfigurePlugins(sid);
@@ -2755,7 +2729,7 @@ export function apply(ctx, _pluginConfig) {
 
   // 连续对话窗口：key -> Map<userId|"*", { until, turns, max }>
   const followUps = new Map();
-  const followSecs = () => Number(cfg.followUpSeconds) || 180;
+  const followSecs = () => Number(cfg.followUpSeconds) || 60;
   const followMax = () => Number(cfg.followUpMaxTurns) || 5;
 
   function openWindow(key, userId, resetTurns = true) {
@@ -8892,7 +8866,7 @@ ${html}
       `工具：表情包 ${top("sticker")} / 新闻 ${top("news")} / @人 ${top("at_person")} / 补回复 ${top("catchup") + top("poll_mention")}`,
       `异常：错误 ${top("error")}｜掉线 ${drops} 次${drops ? `（累计 ${downMinutes} 分钟${lastDrop ? "，最近 " + lastDrop : ""}）` : ""}`,
       groups.length ? `各群：\n${groups.map(([g, n]) => `· ${groupLabel(g)}：${n} 条`).join("\n")}` : "",
-      `模式：${cfg.riskMode === false ? "普通" : "风控"}｜近 30 秒已发 ${SEND_STATE.recent.filter((x) => Date.now() - x < 30000).length} 条`,
+      `节奏：单线程打字模型｜近 30 秒已发 ${SEND_STATE.recent.filter((x) => Date.now() - x < 30000).length} 条`,
       `限流：${st.limited ?? 0} 次`,
     ]
       .filter(Boolean)
@@ -10758,6 +10732,11 @@ async function handleOwnerNatural(ev, text) {
       // 原文查不到（旧客户端消息），用摘要兜底
       quoteNote = `\n[对方引用的那条消息]（只有摘要）${parsed.replySummary}\n`;
     }
+
+    // 续聊窗口里没 @ 的消息：接不接由她自己判断
+    const followNote = continuing
+      ? "（这条没 @ 你，是你在续聊窗口里看到的。接不接、怎么接，你自己判断；不想接就什么都不用说。）\n"
+      : "";
     const body =
       vibeNote +
       memoryNote +
@@ -10768,6 +10747,7 @@ async function handleOwnerNatural(ev, text) {
       selfLine +
       emptyAtNote +
       quoteNote +
+      followNote +
       forwardNote +
       fileNote +
       catchupNote +
