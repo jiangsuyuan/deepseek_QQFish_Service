@@ -2434,6 +2434,7 @@ class SessionManager {
       entry.proactiveTurn = true;
       entry.proactiveQuote = false;
       entry.silentTurn = true; // 关键：turn/end 不发送
+      entry.silentTurnAt = Date.now();
       const firstSeq = agent.session.seq;
       try {
         agent.followup(
@@ -2644,7 +2645,9 @@ export function apply(ctx, _pluginConfig) {
     try {
       const sid = String(exec?.agent?.session?.id ?? "");
       const e = sid ? sessions.bySessionId(sid) : null;
-      if (e?.silentTurn) {
+      // 只拦"刚刚开始"的静默回合：万一标志泄漏，也不能把正常回复永久堵死
+      if (e?.silentTurn && Date.now() - Number(e.silentTurnAt || 0) < 300000) {
+        logger.info?.(`[onebot] 静默回合拦截了一次发送（${sid}）`);
         return { ok: false, reason: "这一轮是内省/静默回合，不发消息（有想法记下来就行）。" };
       }
     } catch {
@@ -9429,6 +9432,18 @@ async function handleOwnerNatural(ev, text) {
       if (ev && (ev.message_type === "group" || ev.message_type === "private")) recordMessage(ev, parsed);
     } catch {
       // 落盘失败不影响聊天
+    }
+    // 真人在说话：正在跑的内省回合立即作废，别把这条并进「只记东西」的回合里
+    try {
+      const k0 = conversationKey(ev);
+      const ent0 = k0 ? sessions.entries.get(k0) : null;
+      if (ent0?.silentTurn) {
+        ent0.silentTurn = false;
+        ent0.silentTurnAt = 0;
+        logger.info?.(`[onebot] 收到真人消息，静默回合提前结束：${k0}`);
+      }
+    } catch {
+      // 忽略
     }
     if (ev?.__fromWebUI) {
       logger.info?.(
