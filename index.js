@@ -31,6 +31,17 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = join(HOME, ".dsh/onebot-bridge/config.json");
 
 /**
+ * 单一出口去重：所有发往 QQ 的文本都走 sendText / sendPrivate，
+ * 在那里记录「这个会话发过什么、回过哪条」。
+ * 重复发送不报错，只回一句「已经发过了」——让她自己知道，而不是限制回合。
+ */
+const OUT_SENT = new Map(); // `${key}|${归一化文本}` -> ts
+const OUT_REPLIED = new Map(); // `${key}|${入站 message_id}` -> ts
+const DUP_TEXT_MS = 120000;
+const DUP_MSG_MS = 300000;
+const normOut = (t) => String(t ?? "").replace(/\s+/g, " ").trim();
+
+/**
  * 把 cfg 写回 config.json。
  * 原来没有这个函数——所有配置改动（静音/风控/字数）都只在内存里，
  * 重启就恢复。现在改了会真的存下来。
@@ -901,11 +912,13 @@ class OneBotClient {
     } catch {
       // 忽略
     }
+    let lastResult = null;
     for (let i = 0; i < parts.length; i++) {
       // 她自己拆的段落之间多等一会儿（像打完一条想一下），机器切的多等少
       const isSelfSplit = Array.isArray(segs) && segs.length > 1;
       if (i > 0) await sleep(isSelfSplit ? 1000 + Math.random() * 2000 : 500 + Math.random() * 900);
       const sent = await this.sendText(ev, parts[i], {
+        part: i > 0,
         quote:
           !!this.cfg.quoteInGroup &&
           ev.message_type === "group" &&
@@ -919,8 +932,10 @@ class OneBotClient {
       } catch {
         // 忽略
       }
+      lastResult = sent;
       noteSent();
     }
+    return lastResult;
       } finally {
         releaseLock();
       }
@@ -953,9 +968,27 @@ class OneBotClient {
       this.logger?.warn?.(`[onebot] QQ 离线，这条没发出去（已转 WebUI）：${txt.slice(0, 40)}`);
       return Promise.resolve({ message_id: `offline-${Date.now()}`, offline: true });
     }
+    const dupKey = `private:${userId}|` + normOut(text);
+    if (!text || (String(text).length >= 8 && Date.now() - (OUT_SENT.get(dupKey) || 0) < DUP_TEXT_MS)) {
+      if (text) {
+        this.logger?.info?.(`[onebot] 出口去重：私聊刚发过，跳过（${userId}）`);
+        return Promise.resolve({
+          message_id: `dup-${Date.now()}`,
+          duplicate: true,
+          note: "这条刚发过，没有重复发。",
+        });
+      }
+    }
     return this.call("send_private_msg", {
       user_id: Number(userId),
       message: [{ type: "text", data: { text } }],
+    }).then((r) => {
+      try {
+        OUT_SENT.set(dupKey, Date.now());
+      } catch {
+        // 忽略
+      }
+      return r;
     });
   }
 
@@ -1004,6 +1037,38 @@ class OneBotClient {
         // 忽略
       }
       return Promise.resolve({ message_id: `webui-reply-${Date.now()}` });
+    }
+    // ── 单一出口去重：同一会话刚发过同样的话、或刚回过同一条消息，就不再发 ──
+    const convKey = (() => {
+      try {
+        return conversationKey(ev);
+      } catch {
+        return "";
+      }
+    })();
+    const normText = normOut(text);
+    const inboundMid = String(ev?.message_id ?? "");
+    if (!opts.part && convKey) {
+      const tKey = convKey + "|" + normText;
+      if (normText.length >= 8 && Date.now() - (OUT_SENT.get(tKey) || 0) < DUP_TEXT_MS) {
+        this.logger?.info?.(`[onebot] 出口去重：这条刚发过，跳过（${convKey}）`);
+        return Promise.resolve({
+          message_id: `dup-${Date.now()}`,
+          duplicate: true,
+          note: "这条刚发过，没有重复发。",
+        });
+      }
+      if (inboundMid && opts.quote) {
+        const mKey = convKey + "|" + inboundMid;
+        if (Date.now() - (OUT_REPLIED.get(mKey) || 0) < DUP_MSG_MS) {
+          this.logger?.info?.(`[onebot] 出口去重：这条消息已经回过，跳过（${convKey}）`);
+          return Promise.resolve({
+            message_id: `dup-${Date.now()}`,
+            duplicate: true,
+            note: "这条消息已经回过了，没有重复回复。",
+          });
+        }
+      }
     }
     const segs = [];
     if (opts.quote && ev.message_id) {
@@ -1057,17 +1122,32 @@ class OneBotClient {
         group_id: tempGroup,
         user_id: ev.user_id,
         message: segs,
-      }).catch((err) => {
-        this.logger?.warn?.(
-          "[onebot] send_group_temp_msg 失败（" + (err?.message ?? err) + "），回退 send_private_msg",
-        );
-        return this.call("send_private_msg", { user_id: ev.user_id, message: segs });
-      });
+      })
+        .then((r) => this._markSent(convKey, normText, inboundMid, r))
+        .catch((err) => {
+          this.logger?.warn?.(
+            "[onebot] send_group_temp_msg 失败（" + (err?.message ?? err) + "），回退 send_private_msg",
+          );
+          return this.call("send_private_msg", { user_id: ev.user_id, message: segs }).then((r) =>
+            this._markSent(convKey, normText, inboundMid, r),
+          );
+        });
     } else {
       method = "send_private_msg";
       params = { user_id: ev.user_id, message: segs };
     }
-    return this.call(method, params);
+    return this.call(method, params).then((r) => this._markSent(convKey, normText, inboundMid, r));
+  }
+
+  /** 出口统一收尾：记下这次发了什么，供去重判断 */
+  _markSent(convKey, normText, inboundMid, result) {
+    try {
+      if (convKey && normText) OUT_SENT.set(convKey + "|" + normText, Date.now());
+      if (convKey && inboundMid) OUT_REPLIED.set(convKey + "|" + inboundMid, Date.now());
+    } catch {
+      // 忽略
+    }
+    return result;
   }
 }
 
@@ -2636,25 +2716,7 @@ export function apply(ctx, _pluginConfig) {
   sessions.autoConfigure = (sid) => autoConfigurePlugins(sid);
   sessions.restoreRuntime = (entry) => restoreRuntime(entry);
 
-  /**
-   * 内省/自省这类静默回合不允许真的发消息。
-   * 以前只靠 prompt 里写「不要发消息」——她照不照做全凭自觉，
-   * 于是会出现「刚回完一条，十几秒后又补一条」的双重回复。
-   */
-  function silentTurnRefuse(exec) {
-    try {
-      const sid = String(exec?.agent?.session?.id ?? "");
-      const e = sid ? sessions.bySessionId(sid) : null;
-      // 只拦"刚刚开始"的静默回合：万一标志泄漏，也不能把正常回复永久堵死
-      if (e?.silentTurn && Date.now() - Number(e.silentTurnAt || 0) < 300000) {
-        logger.info?.(`[onebot] 静默回合拦截了一次发送（${sid}）`);
-        return { ok: false, reason: "这一轮是内省/静默回合，不发消息（有想法记下来就行）。" };
-      }
-    } catch {
-      // 拿不到会话就放行
-    }
-    return null;
-  }
+
   sessions.isAgentReady = () => agentReady;
   const client = new OneBotClient(cfg, logger);
   client.readyFn = () => agentReady;
@@ -4128,8 +4190,6 @@ export function apply(ctx, _pluginConfig) {
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
           execute: async (args, exec) => {
-            const __refused2 = silentTurnRefuse(exec);
-            if (__refused2) return __refused2;
             // 优先用参数里的 target（self:main 那种 session 拿不到 lastTarget）
             const explicit = String(args?.target ?? "").trim();
             let target = null;
@@ -4555,8 +4615,6 @@ export function apply(ctx, _pluginConfig) {
               },
             },
             execute: async (args, exec) => {
-              const __refused2 = silentTurnRefuse(exec);
-              if (__refused2) return __refused2;
               const sid = exec?.agent?.session?.id;
               const entry = sid ? sessions.bySessionId(String(sid)) : null;
               const target = entry?.lastTarget;
@@ -7636,8 +7694,6 @@ export function apply(ctx, _pluginConfig) {
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
           execute: async (args, exec) => {
-            const __refused2 = silentTurnRefuse(exec);
-            if (__refused2) return __refused2;
             const text = String(args?.text ?? "").trim();
             const kind = String(args?.kind ?? "hello").trim().toLowerCase().slice(0, 20);
             if (!text) return { ok: false, reason: "内容是空的" };
@@ -8139,8 +8195,6 @@ ${html}
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
           execute: async (args, exec) => {
-            const __refused2 = silentTurnRefuse(exec);
-            if (__refused2) return __refused2;
             const sid = String(exec?.agent?.session?.id ?? "");
             const entry = sid ? sessions.bySessionId(sid) : null;
             const target = entry?.lastTarget;
@@ -11324,8 +11378,6 @@ async function handleOwnerNatural(ev, text) {
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
           execute: async (args, exec) => {
-            const __refused = silentTurnRefuse(exec);
-            if (__refused) return __refused;
             const target = String(args?.target ?? "").trim();
             const text = String(args?.text ?? "").trim();
             if (!target || !text) return { ok: false, reason: "target 和 text 都要" };
@@ -11347,7 +11399,10 @@ async function handleOwnerNatural(ev, text) {
             // 以前表情失败会把整条甩进 catch、返回 ok:false —— 文字明明已经出去了，
             // 她以为整条没发，再发一遍，群里就出现重复。
             try {
-              await client.sendHuman(ev, text, { force: true });
+              const hres = await client.sendHuman(ev, text, { force: true });
+              if (hres?.duplicate) {
+                return { ok: true, duplicate: true, note: hres.note || "这条已经发过了。" };
+              }
             } catch (err) {
               return { ok: false, sent: false, reason: "文字没发出去：" + String(err?.message ?? err) };
             }
@@ -11402,8 +11457,6 @@ async function handleOwnerNatural(ev, text) {
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
           execute: async (args, exec) => {
-            const __refused = silentTurnRefuse(exec);
-            if (__refused) return __refused;
             const target = String(args?.target ?? "").trim();
             const mid = String(args?.messageId ?? "").trim();
             const text = String(args?.text ?? "").trim();
@@ -11426,7 +11479,10 @@ async function handleOwnerNatural(ev, text) {
               ev.message_id = mid;
             }
             try {
-              await client.sendHuman(ev, text, { force: true, quote: !!ev.message_id });
+              const hres = await client.sendHuman(ev, text, { force: true, quote: !!ev.message_id });
+              if (hres?.duplicate) {
+                return { ok: true, duplicate: true, note: hres.note || "这条已经回过了。" };
+              }
               audit({
                 kind: "reply_to",
                 target,
@@ -11477,8 +11533,6 @@ async function handleOwnerNatural(ev, text) {
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
           execute: async (args, exec) => {
-            const __refused = silentTurnRefuse(exec);
-            if (__refused) return __refused;
             const qq = String(args?.qq ?? "").trim();
             const text = String(args?.text ?? "").trim();
             const groupTemp = Number(args?.groupTemp) || 0;
@@ -11522,7 +11576,10 @@ async function handleOwnerNatural(ev, text) {
             }
 
             try {
-              await client.sendPrivate(qq, text);
+              const pres = await client.sendPrivate(qq, text);
+              if (pres?.duplicate) {
+                return { ok: true, duplicate: true, note: pres.note || "这条已经发过了。" };
+              }
               if (String(qq) === String(cfg?.ownerId ?? "")) {
                 try {
                   client.onWebReply?.(text, "qq");
