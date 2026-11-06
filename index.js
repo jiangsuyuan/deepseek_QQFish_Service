@@ -2840,6 +2840,16 @@ class SessionManager {
         targetEv = entry.lastTarget;
         targetFrom = "session-last";
       }
+      // 没有 lastTarget（比如简讯用的私聊会话）时，直接由 key 合成目标
+      if (!targetEv && /^(group|private):\d{5,20}$/.test(targetKey)) {
+        const kind0 = targetKey.slice(0, targetKey.indexOf(":"));
+        const id0 = Number(targetKey.slice(targetKey.indexOf(":") + 1));
+        targetEv =
+          kind0 === "group"
+            ? { message_type: "group", group_id: id0, user_id: 0 }
+            : { message_type: "private", user_id: id0 };
+        targetFrom = "key";
+      }
       // 独立会话（自主活动/内省/自检）默认只对主人私聊说，绝不落到某个群
       if (!targetEv && targetKey.startsWith("self") && this.cfg?.ownerId) {
         targetEv = { message_type: "private", user_id: Number(this.cfg.ownerId) };
