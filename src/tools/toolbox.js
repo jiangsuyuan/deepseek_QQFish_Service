@@ -1,3 +1,4 @@
+import { searchSource, readSource, listSourceFiles, findInSource } from "../store/source-mirror.js";
 // 全部工具注册（原 apply() 内的巨型 IIFE）。
 export async function registerToolbox(app) {
   const { ACTIVITY_KINDS, ALLOWED_TOOLS, HOME, appendFileSync, audit, cfg, chmodSync, chownSync, client, conversationKey, copyFileSync, crossGroupScope, downloadImage, execFile, execFileSync, existsSync, facts, followUps, groupLabel, health, imagePayloadFrom, join, lastStickerPreview, listMsgKeys, loadActivities, loadDigests, loadGroupMeta, loadMemLog, loadReminders, loadSelfState, loadStickerLabels, loadWants, logger, markRuntimeDirty, mkdirSync, nextSelfPlan, patchSelfState, people, pickSticker, pickStickerCandidates, proactiveLocationNote, promisify, readFileSync, readMsgLog, readMsgLogPageMulti, readSelfPlan, readdirSync, refusePerson, renderMsgRec, resolveSticker, runThinkingCycle, saveReminders, saveWants, selfViews, sessions, smartCut, statSync, state, stripToText, unlinkSync, webPush, writeFileSync, pluginCtx: ctx, savedStickerTimes } = app;
@@ -961,7 +962,7 @@ export async function registerToolbox(app) {
             defineTool({
               name: "my_source",
               description:
-                "看源码里某个函数/关键词是怎么实现的，只返回匹配片段。有人问「你怎么做到的」时用。\n" +
+                "看源码里某个函数/关键词是怎么实现的，跨全部文件搜，只返回匹配片段（带 file:line）。有人问「你怎么做到的」时用。\n" +
                 "注意：read_source 更全（能按行号看、命中更多、每段行数可调），要精确定位某一段时用 read_source。",
               parameters: {
                 keyword: { type: "string", description: "函数名或关键词，比如 window_handoff、humanizePunct" },
@@ -973,25 +974,15 @@ export async function registerToolbox(app) {
               execute: async (args, exec) => {
                 const kw = String(args?.keyword ?? "").trim();
                 if (kw.length < 3) return { ok: false, reason: "关键词至少 3 个字" };
-                let src = "";
-                try {
-                  src = readFileSync("/root/dev/dsh-onebot-bridge/index.js", "utf8");
-                } catch {
-                  return { ok: false, reason: "读不到自己的源码" };
-                }
-                const lines = src.split("\n");
-                const idxs = [];
-                for (let i = 0; i < lines.length; i++) {
-                  if (lines[i].includes(kw)) idxs.push(i);
-                  if (idxs.length >= 3) break;
-                }
-                if (!idxs.length) return { ok: false, reason: `源码里没找到「${kw}」` };
-                const snippets = idxs.slice(0, 3).map((i) => ({
-                  line: i + 1,
-                  code: lines.slice(Math.max(0, i - 3), i + 12).join("\n").slice(0, 4000),
-                }));
-                audit({ kind: "read_source", keyword: kw, hits: idxs.length });
-                return { ok: true, keyword: kw, totalHits: idxs.length, snippets };
+                const hits = searchSource(kw, 3);
+                if (!hits.length) return { ok: false, reason: `源码里没找到「${kw}」` };
+                audit({ kind: "read_source", keyword: kw, hits: hits.length });
+                return {
+                  ok: true,
+                  keyword: kw,
+                  totalHits: hits.length,
+                  snippets: hits.map((h) => ({ file: h.file, line: h.line, code: h.code })),
+                };
               },
             }),
           );
@@ -1248,11 +1239,13 @@ export async function registerToolbox(app) {
             defineTool({
               name: "read_source",
               description:
-                "看自己的源码。可以搜函数名/关键词，也可以按行号看一段（start + count）。源码是只读副本，你只能看不能改。\n" +
+                "看自己的源码。代码分在 index.js 和 src/ 下，按关键词搜会跨全部文件搜，命中会告诉你 file:line。\n" +
+                "也可以指定 file + start + count 按行号看一段。源码是只读副本，你只能看不能改。\n" +
                 "这是看代码的主力工具；my_source 是它的旧版，功能更少。",
               parameters: {
-                keyword: { type: "string", description: "要搜的关键词或函数名" },
-                start: { type: "number", description: "起始行号（配合 count）" },
+                keyword: { type: "string", description: "要搜的关键词或函数名（跨全部文件搜）" },
+                file: { type: "string", description: "按行号看时指定文件，如 src/features/chat.js；省略则看 index.js" },
+                start: { type: "number", description: "起始行号（配合 count，需要 file）" },
                 count: { type: "number", description: "看多少行，默认 40" },
               },
               output: {
@@ -1260,33 +1253,29 @@ export async function registerToolbox(app) {
                 render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
               },
               execute: async (args, exec) => {
-                let src = "";
-                try {
-                  src = readFileSync("/opt/fish-src/index.js", "utf8");
-                } catch {
-                  return { ok: false, reason: "读不到源码副本" };
-                }
-                const lines = src.split("\n");
                 const kw = String(args?.keyword ?? "").trim();
                 if (kw) {
-                  const hits = [];
-                  for (let i = 0; i < lines.length && hits.length < 5; i++) {
-                    if (lines[i].includes(kw)) hits.push(i + 1);
-                  }
+                  const hits = searchSource(kw, 5);
                   if (!hits.length) return { ok: false, reason: `源码里没找到「${kw}」` };
                   return {
                     ok: true,
-                    totalLines: lines.length,
-                    hits: hits.map((ln) => ({
-                      line: ln,
-                      code: lines.slice(Math.max(0, ln - 4), ln + 10).join("\n").slice(0, 1200),
-                    })),
+                    files: listSourceFiles().length,
+                    hits,
                   };
+                }
+                // 按行号看：必须指定文件（默认入口）
+                const file = String(args?.file ?? "index.js").trim() || "index.js";
+                let lines;
+                try {
+                  lines = readSource(file).split("\n");
+                } catch {
+                  return { ok: false, reason: `读不到 ${file}。可用文件：${listSourceFiles().slice(0, 12).join(", ")} …` };
                 }
                 const start = Math.max(1, Number(args?.start) || 1);
                 const count = Math.max(1, Math.min(200, Number(args?.count) || 40));
                 return {
                   ok: true,
+                  file,
                   totalLines: lines.length,
                   from: start,
                   code: lines.slice(start - 1, start - 1 + count).join("\n").slice(0, 40000),
@@ -3408,21 +3397,8 @@ export async function registerToolbox(app) {
                 }
 
                 // 3) 源码定位：在 /opt/fish-src/index.js 里找 name: "<tool>"
-                let srcLines = null;
-                try {
-                  srcLines = readFileSync("/opt/fish-src/index.js", "utf8").split("\n");
-                } catch {
-                  srcLines = null;
-                }
-                const findTool = (nm) => {
-                  if (!srcLines) return null;
-                  const needle = `name: "${nm}"`;
-
-                  for (let i = 0; i < srcLines.length; i++) {
-                    if (srcLines[i].includes(needle)) return i + 1;
-                  }
-                  return null;
-                };
+                // 返回 {file, line, where}，跨文件定位（3.0 后源码在 src/ 下）
+                const findTool = (nm) => findInSource(`name: "${nm}"`);
 
                 const ZH = {
                   send_sticker: "发表情", save_sticker: "存表情", list_stickers: "看表情库",
@@ -3450,14 +3426,19 @@ export async function registerToolbox(app) {
                 };
 
                 if (want) {
-                  const line = findTool(want);
+                  const hit = findTool(want);
                   const st = stats[want] || { calls: 0, fails: 0, lastAt: 0 };
-                  if (!line && !st.calls) {
+                  if (!hit && !st.calls) {
                     return { ok: false, reason: `既没找到「${want}」这个工具，也没有它的调用记录` };
                   }
                   let snippet = "";
-                  if (line && srcLines) {
-                    snippet = srcLines.slice(Math.max(0, line - 3), line + 40).join("\n").slice(0, 8000);
+                  if (hit) {
+                    try {
+                      const lines = readSource(hit.file).split("\n");
+                      snippet = lines.slice(Math.max(0, hit.line - 3), hit.line + 40).join("\n").slice(0, 8000);
+                    } catch {
+                      // 读不到就不给片段
+                    }
                   }
                   return {
                     ok: true,
@@ -3469,7 +3450,7 @@ export async function registerToolbox(app) {
                     lastUsed: st.lastAt
                       ? new Date(st.lastAt).toLocaleString("zh-CN", { hour12: false })
                       : "从没用过",
-                    sourceLine: line,
+                    sourceLine: hit ? hit.where : null,
                     source: snippet,
                     hint: "想改它就用 propose_patch；想加新功能就用 note_want / request_feature",
                   };

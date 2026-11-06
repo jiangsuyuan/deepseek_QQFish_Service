@@ -22,6 +22,7 @@ import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { safeSegData, smartCut, stripLoneSurrogates, safeSlice, humanizePunct, splitMessage } from "./src/util/text.js";
 import { setLogger, getLogger } from "./src/core/logger.js";
 import { MSG_LOG_DIR, MSG_LOG_PRIVATE_DIR, MSG_LOG_GROUP_DIR, MSG_LOG_DAY_MAX_LINES, MSG_LOG_DAY_KEEP_LINES, MSG_LOG_KEEP_DAYS, MSG_LOG_STATE, msgLogKeyOf, msgLogIsPrivate, msgLogDirFor, msgLogLegacyFileFor, msgLogDay, msgLogFileFor, msgLogDayFiles, appendMsgRec, dirnameOf, recordMessage, recordOutbound, parseMsgLines, readMsgLog, cmpMsgRec, encodeCursor, decodeCursor, readMsgLogPage, readMsgLogPageMulti, findMsgInLog, listMsgKeys, migrateLegacyLogs, pruneOldLogs } from "./src/store/msglog.js";
+import { mirrorSource } from "./src/store/source-mirror.js";
 import { AUDIT_PATH, auditEnabled, audit, rotateAudit, summarizeDay, renderStats, ymdOffset, setAuditEnabled } from "./src/core/audit.js";
 import { bindConfig } from "./src/store/config.js";
 import { SELF_PLAN_PATH, PLAN_GRACE_MS, readSelfPlan, writeSelfPlan, addSelfPlan, updateSelfPlan, nextSelfPlan, claimDueSelfPlan, ensureSelfPlanPending } from "./src/store/selfplan.js";
@@ -1022,14 +1023,9 @@ const base = ctx.logger ?? {};
   // 副本停在 10-29（10919 行），真实文件已经 14037 行 —— 她照抄「原文」时抄的是
   // 两天前的代码，改动申请里的 oldCode 对不上。现在每次启动都覆盖一次。
   try {
-    const liveSrc = "/root/dev/dsh-onebot-bridge/index.js";
-    const copySrc = "/opt/fish-src/index.js";
-    mkdirSync("/opt/fish-src", { recursive: true });
-    copyFileSync(liveSrc, copySrc);
-    chmodSync(copySrc, 0o444); // 只读：她只能看不能改
-    logger.info?.(
-      `[onebot] 源码副本已同步：${Math.round(statSync(copySrc).size / 1024)} KB`,
-    );
+    // 3.0 起是目录：整棵树（index.js + src/）都镜像过去，否则她只看得到装配层
+    const r = mirrorSource("/root/dev/dsh-onebot-bridge");
+    logger.info?.(`[onebot] 源码副本已同步：${r.files} 个文件 / ${r.kb} KB`);
   } catch (err) {
     logger.warn?.(`[onebot] 源码副本同步失败：${err?.message ?? err}`);
   }
