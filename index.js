@@ -863,6 +863,98 @@ function pruneOldLogs() {
   }
   if (removed) LOGGER?.info?.(`[onebot] 清理了 ${removed} 个过期消息分片`);
 }
+
+// ── 她自己的活动日程（self-plan.jsonl，只有她自己排的条目） ────────────
+const SELF_PLAN_PATH = join(HOME, ".dsh/onebot-bridge/self-plan.jsonl");
+/** 错过太久就不再补，直接标 expired */
+const PLAN_GRACE_MS = 2 * 3600_000;
+
+function readSelfPlan() {
+  try {
+    if (!existsSync(SELF_PLAN_PATH)) return [];
+    return readFileSync(SELF_PLAN_PATH, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => {
+        try {
+          return JSON.parse(l);
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function writeSelfPlan(rows) {
+  try {
+    mkdirSync(dirnameOf(SELF_PLAN_PATH), { recursive: true });
+    const tmp = SELF_PLAN_PATH + ".tmp";
+    writeFileSync(tmp, rows.map((r) => JSON.stringify(r)).join("\n") + "\n");
+    renameSync(tmp, SELF_PLAN_PATH);
+  } catch {
+    // 写失败不影响运行
+  }
+}
+
+function addSelfPlan({ at, kind = "", note = "", source = "self" }) {
+  const rec = {
+    id: "p-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5),
+    at: Number(at) || Date.now(),
+    kind: String(kind || "").slice(0, 40),
+    note: String(note || "").slice(0, 200),
+    status: "pending",
+    created: Date.now(),
+    source,
+  };
+  try {
+    mkdirSync(dirnameOf(SELF_PLAN_PATH), { recursive: true });
+    appendFileSync(SELF_PLAN_PATH, JSON.stringify(rec) + "\n");
+  } catch {
+    // 忽略
+  }
+  return rec;
+}
+
+function updateSelfPlan(id, patch) {
+  const rows = readSelfPlan().map((r) => (String(r.id) === String(id) ? { ...r, ...patch } : r));
+  writeSelfPlan(rows);
+  return rows.find((r) => String(r.id) === String(id)) || null;
+}
+
+function nextSelfPlan() {
+  const rows = readSelfPlan()
+    .filter((r) => r.status === "pending")
+    .sort((a, b) => Number(a.at) - Number(b.at));
+  return rows[0] || null;
+}
+
+/** 取最早到点的一条；错过超 grace 就标 expired（返回 {expired:true} 让调用方决定要不要提醒） */
+function claimDueSelfPlan(nowMs = Date.now()) {
+  const due = readSelfPlan()
+    .filter((r) => r.status === "pending" && Number(r.at) <= nowMs)
+    .sort((a, b) => Number(a.at) - Number(b.at))[0];
+  if (!due) return null;
+  if (nowMs - Number(due.at) > PLAN_GRACE_MS) {
+    updateSelfPlan(due.id, { status: "expired", expiredAt: nowMs });
+    LOGGER?.info?.(
+      `[onebot] 日程 ${due.id} 错过 ${Math.round((nowMs - due.at) / 60000)} 分钟，标 expired`,
+    );
+    return { ...due, expired: true };
+  }
+  updateSelfPlan(due.id, { status: "fired", firedAt: nowMs });
+  return due;
+}
+
+/** 她没排的时候兜底用：保证日程表里始终有一条 pending */
+function ensureSelfPlanPending(atMs, kind = "", note = "", source = "fallback") {
+  const p = nextSelfPlan();
+  if (p) return p;
+  return addSelfPlan({ at: atMs, kind, note, source });
+}
+
 /** 未知段类型 → 中文标签 */
 function recTag(t) {
   const T = {
@@ -3042,6 +3134,30 @@ export function apply(ctx, _pluginConfig) {
   try {
     migrateLegacyLogs();
     pruneOldLogs();
+    // 内部唤醒 token（selfclock 用）；存在就复用，不存在就生成
+    const tkPath = join(HOME, ".dsh/onebot-bridge/.internal-token");
+    let tkv = "";
+    try {
+      tkv = readFileSync(tkPath, "utf8").trim();
+    } catch {
+      // 还没有
+    }
+    if (!tkv) tkv = "it-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+    writeFileSync(tkPath, tkv + "\n", { mode: 0o600 });
+    // 旧的 self-state 时间戳 → 日程表（只迁一次）
+    if (!readSelfPlan().length) {
+      const st1 = loadSelfState();
+      const legacyAt = Number(st1.selfActivityNextAt) || 0;
+      if (legacyAt > 0) {
+        addSelfPlan({
+          at: legacyAt,
+          kind: String(st1.selfActivityKind || ""),
+          note: String(st1.selfActivityNote || ""),
+          source: "legacy",
+        });
+        LOGGER?.info?.(`[onebot] 已把旧的活动时间迁进日程表：${new Date(legacyAt).toISOString()}`);
+      }
+    }
   } catch {
     // 迁移/清理失败不影响启动
   }
@@ -6549,7 +6665,9 @@ export function apply(ctx, _pluginConfig) {
           },
           execute: async () => {
             const st = loadSelfState();
-            const nextAt = Number(st.selfActivityNextAt) || 0;
+            // 以她自己的日程表为准（self-plan.jsonl），self-state 只做兼容
+            const plan = nextSelfPlan();
+            const nextAt = plan ? Number(plan.at) : 0;
             const now = Date.now();
             const fmt = (t) => {
               const d = new Date(t);
@@ -6557,13 +6675,23 @@ export function apply(ctx, _pluginConfig) {
             };
             let nextActivity = "还没安排（等下一次唤醒）";
             let nextIn = "";
-            if (nextAt > now) {
+            if (plan && nextAt > now) {
               const mins = Math.round((nextAt - now) / 60000);
-              nextActivity = `${fmt(nextAt)}（约 ${mins} 分钟后）`;
+              nextActivity = `${fmt(nextAt)}（约 ${mins} 分钟后）${plan.kind ? " · " + plan.kind : ""}${
+                plan.note ? " · " + plan.note : ""
+              }`;
               nextIn = `${mins} 分钟`;
-            } else if (nextAt > 0) {
-              nextActivity = "时间已过，下次唤醒时就会动";
+            } else if (plan) {
+              const late = Math.round((now - nextAt) / 60000);
+              nextActivity = `${fmt(nextAt)} 已到点（过了 ${late} 分钟，等我下次醒来）${
+                plan.kind ? " · " + plan.kind : ""
+              }`;
             }
+            const planHistory = readSelfPlan()
+              .filter((r) => r.status !== "pending")
+              .sort((a, b) => Number(b.at) - Number(a.at))
+              .slice(0, 3)
+              .map((r) => ({ at: fmt(r.at), kind: r.kind || "", status: r.status }));
 
             // 额度
             const today = new Date().toDateString();
@@ -6592,6 +6720,8 @@ export function apply(ctx, _pluginConfig) {
               ok: true,
               nextActivity,
               nextIn,
+              plan: plan ? { id: plan.id, at: nextAt, kind: plan.kind || "", note: plan.note || "" } : null,
+              planHistory,
               quota: { used: done, cap, left: Math.max(0, cap - done) },
               canActNow: done < cap,
               quietHours: {
@@ -12825,6 +12955,9 @@ async function handleOwnerNatural(ev, text) {
 
             if (hasMinutes && minutes === 0) {
               patchSelfState({ selfActivityNextAt: 0, selfActivityNote: "", selfActivityKind: "" });
+              for (const r of readSelfPlan()) {
+                if (r.status === "pending") updateSelfPlan(r.id, { status: "cancelled" });
+              }
               audit({ kind: "schedule_activity", action: "cancel" });
               return { ok: true, next: null, cancelled: true };
             }
@@ -12862,6 +12995,11 @@ async function handleOwnerNatural(ev, text) {
             if (kind) patch.selfActivityKind = kind;
             if (note) patch.selfActivityNote = note.slice(0, 200);
             patchSelfState(patch);
+            // 日程表：旧的待办作废，写一条新的（她自己的条目）
+            for (const r of readSelfPlan()) {
+              if (r.status === "pending") updateSelfPlan(r.id, { status: "superseded" });
+            }
+            addSelfPlan({ at: nextAt, kind, note: note.slice(0, 200), source: "tool" });
             audit({ kind: "schedule_activity", at: fmtHhmm(nextAt), kind, note: note.slice(0, 60) });
             return {
               ok: true,
@@ -13997,6 +14135,24 @@ inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDef
     }
     webServer = http.createServer((req, res) => {
       const u = new URL(req.url, "http://x");
+      // 内部唤醒端点：给独立的 dsh-selfclock 用（只绑 127.0.0.1 + 文件 token）
+      if (u.pathname === "/internal/wake") {
+        void (async () => {
+          try {
+            const want = readFileSync(join(HOME, ".dsh/onebot-bridge/.internal-token"), "utf8").trim();
+            const got = String(req.headers["x-internal-token"] || "");
+            if (!want || got !== want) {
+              res.writeHead(403).end("forbidden");
+              return;
+            }
+            const fired = fireDuePlan();
+            res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, fired }));
+          } catch (err) {
+            res.writeHead(500).end(String(err?.message ?? err));
+          }
+        })();
+        return;
+      }
       const tk = u.searchParams.get("token") || "";
       // 简单防爆破
       if (Date.now() < webLockedUntil) {
@@ -17610,12 +17766,21 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
           ? Math.max(1, Math.min(maxGap, delayMinutes))
           : Math.max(1, Math.min(maxGap, 10 + Math.random() * 20));
       // 存盘：重启后不用重算，别把她自己定的时间丢了
-      const targetAt = Date.now() + clamped * 60_000;
+      const targetAt = Date.now() + Math.round(clamped * 60_000);
       logger.info?.(
         `[onebot] 调度：delayMinutes=${delayMinutes} clamped=${clamped} 目标=${new Date(targetAt).toLocaleTimeString("zh-CN", { hour12: false })}`,
       );
-      // 只存「下次时刻」，不再用 setTimeout 精确触发。
-      // 到点后由每 25 分钟的 checkSelfActivity 来问她：现在动，还是改时间。
+      // 写进她自己的日程表；旧的 pending 作废，只保留最新一条
+      for (const old of readSelfPlan()) {
+        if (old.status === "pending") updateSelfPlan(old.id, { status: "superseded" });
+      }
+      const st0 = loadSelfState();
+      addSelfPlan({
+        at: targetAt,
+        kind: String(st0.selfActivityKind || ""),
+        note: String(st0.selfActivityNote || ""),
+        source: "activity",
+      });
       patchSelfState({ selfActivityNextAt: targetAt });
       if (delayMinutes > 0 && delayMinutes !== clamped) {
         logger.info?.(`[onebot] 她说 ${Math.round(delayMinutes)} 分钟，按 ${Math.round(clamped)} 分钟执行`);
@@ -17668,6 +17833,11 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
       // 只有真的跑了一轮，才需要检查「有没有排下次」。
       // 被锁挡掉（ran=false）说明什么都没发生，兜底排时间等于白推一次。
       if (ran) {
+        const planId0 = String(loadSelfState().selfActivityPlanId || "");
+        if (planId0) {
+          updateSelfPlan(planId0, { status: "done", doneAt: Date.now() });
+          patchSelfState({ selfActivityPlanId: "" });
+        }
         const after = Number(loadSelfState().selfActivityNextAt) || 0;
         if (after === before) {
           // 她没排 → 兜底 40 分钟（不然可能整天不动）
@@ -17728,138 +17898,58 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
     })();
   }, 20_000).unref?.();
 
-  // 启动时：如果上次存了「下次什么时候」，按剩余时间恢复；否则 3 分钟后开始
-  // ── 每 25 分钟：看一眼该不该动 ──
-  // 不再按「间隔」精确触发，到点后由这里问她：现在动，还是改时间。
-  let activityChecking = false;
-  async function checkSelfActivity() {
-    if (activityChecking) return;
-    if (cfg.selfActivityEnabled === false || cfg.autoActionsEnabled === false) return;
-    activityChecking = true;
+    // 日程到点检查：读她自己的 self-plan.jsonl，到点产生 activity_due 事件。
+  // 桥内轮询与外部 selfclock 都调 fireDuePlan；靠 plan 状态保证只触发一次。
+  function fireDuePlan() {
     try {
-      const now = Date.now();
-      const st = loadSelfState();
-      const nextAt = Number(st.selfActivityNextAt) || 0;
-      const acts = loadActivities(200);
-      const lastAt = acts.length ? acts[acts.length - 1].at : 0;
-
-      // 离下次时间还早（超过 25 分钟）就先不管
-      if (nextAt && now < nextAt - 25 * 60_000) return;
-
-      const fmt = (t) =>
-        t
-          ? new Date(t).toLocaleString("zh-CN", {
-              month: "2-digit",
-              day: "2-digit",
-              hour: "2-digit",
-              minute: "2-digit",
-              hour12: false,
-            })
-          : "没排过";
-
-      let decision = null;
-      try {
-        const prompt =
-          "（内部，不要发消息。这是在问你要不要现在活动。）\n" +
-          `现在是 ${fmt(now)}。\n` +
-          `你上次活动是 ${fmt(lastAt)}${lastAt ? `（${Math.round((now - lastAt) / 60000)} 分钟前）` : ""}。\n` +
-          `（时间只是参考，不是必须。想歇就歇——歇着也是一种状态，不用为了"保持节奏"硬动。\n` +
-          ` 上次隔了多久、这次隔多久，都不用跟上次一样。）\n` +
-          `你上次给自己排的下次时间是 ${fmt(nextAt)}${
-            nextAt
-              ? `（${
-                  nextAt > now
-                    ? "还有 " + Math.round((nextAt - now) / 60000) + " 分钟"
-                    : "已经过了 " + Math.round((now - nextAt) / 60000) + " 分钟"
-                }）`
-              : ""
-          }。\n\n` +
-          "问自己三件事：\n" +
-          "1. 现在想动吗？还是想再待一会儿？**没有标准答案**——不动也完全正常，" +
-          "别因为「该动了」这个念头就硬动。\n" +
-          "2. 如果不想动，下次想排到什么时候？\n" +
-          "3. 上次排的时间还合适吗？要不要改？\n\n" +
-          '只输出 JSON，别的话都不要：{"actNow": true/false, "delayMin": 数字或 0, "why": "一句话"}\n' +
-          "· actNow=true → 立刻开始一轮活动（delayMin 忽略）\n" +
-          "· actNow=false 且 delayMin>0 → 把下次时刻改成 delayMin 分钟后\n" +
-          "· actNow=false 且 delayMin=0 → 不改时间，维持原计划";
-        // 注意：这里绝对不能用 SELF_ACTIVITY_KEY —— 那会和活动抢同一个会话，
-        // 报 "already owned by an active write handle"，把思考阶段弄挂。
-        const out = String((await sessions.runSilent("self:check", prompt)) ?? "").trim();
-        const m = out.match(/\{[\s\S]*\}/);
-        if (m) decision = JSON.parse(m[0]);
-      } catch (err) {
-        logger.warn?.(`[onebot] 活动自检判断失败：${err?.message ?? err}`);
+      const due = claimDueSelfPlan();
+      if (!due) return false;
+      if (due.expired) {
+        logger.info?.(`[onebot] 日程 ${due.id} 已过期，跳过（不半夜补跑）`);
+        return false;
       }
-
-      if (!decision) {
-        if (nextAt && now >= nextAt) {
-          logger.info?.("[onebot] 自检没结论，按原计划开跑");
-          void tickSelfActivity();
-        }
-        return;
-      }
-
-      const why = String(decision.why || "").slice(0, 60);
-      if (decision.actNow === true) {
-        logger.info?.(`[onebot] 自检：现在就动 —— ${why}`);
-        patchSelfState({ selfActivityNextAt: now });
-        void tickSelfActivity();
-        return;
-      }
-
-      const delayMin = Math.max(0, Math.min(720, Number(decision.delayMin) || 0));
-      if (delayMin > 0) {
-        const newAt = now + delayMin * 60_000;
-        patchSelfState({ selfActivityNextAt: newAt });
-        logger.info?.(`[onebot] 自检：缓一缓，改到 ${fmt(newAt)} —— ${why}`);
-        audit({ kind: "activity_reschedule", delayMin, why });
-      } else {
-        logger.info?.(`[onebot] 自检：维持原计划 —— ${why}`);
-      }
-    } catch (err) {
-      logger.warn?.(`[onebot] 活动自检失败：${err?.message ?? err}`);
-    } finally {
-      activityChecking = false;
-    }
-  }
-
-  // 活动到点检查：每 30 秒看一眼 selfActivityNextAt，到了就产生 activity_due 事件。
-  // 不再「问她要不动」——事件进了队列，她自己在 wakeNow 里决定做不做。
-  setInterval(() => {
-    try {
-      const st = loadSelfState();
-      const nextAt = Number(st.selfActivityNextAt) || 0;
-      if (!nextAt || Date.now() < nextAt) return;
-      if (Number(st.selfActivityFiredAt) === nextAt) return;
-      patchSelfState({ selfActivityFiredAt: nextAt, selfActivityNextAt: 0 });
+      patchSelfState({
+        selfActivityFiredAt: Number(due.at),
+        selfActivityNextAt: 0,
+        selfActivityPlanId: due.id,
+        selfActivityKind: due.kind || "",
+        selfActivityNote: due.note || "",
+      });
       enqueueEvent(
         makeEvent("activity_due", { type: "timer" }, {
-          kind: String(st.selfActivityKind || ""),
-          note: String(st.selfActivityNote || ""),
+          kind: String(due.kind || ""),
+          note: String(due.note || ""),
+          planId: String(due.id),
         }),
       );
-      logger.info?.("[onebot] 活动时间到了，产生 activity_due 事件");
+      logger.info?.(
+        `[onebot] 日程到点：${due.id} ${due.kind || ""} ${String(due.note || "").slice(0, 30)}`,
+      );
+      return true;
     } catch (err) {
-      logger.debug?.("[onebot] 活动检查失败：" + (err?.message ?? err));
+      logger.debug?.("[onebot] 日程检查失败：" + (err?.message ?? err));
+      return false;
     }
-  }, 30_000).unref?.();
-  logger.info?.("[onebot] 活动到点检查已启动（30 秒一轮，到点产生事件）");
+  }
+  setInterval(fireDuePlan, 30_000).unref?.();
+  logger.info?.("[onebot] 日程到点检查已启动（30 秒一轮，读 self-plan.jsonl）");
 
+  // 启动恢复：不直接跑活动，交给轮询按日程表触发（错过的在 grace 内会补）
   setTimeout(() => {
     try {
-      const saved = Number(loadSelfState().selfActivityNextAt) || 0;
-      if (saved > Date.now()) {
-        const leftMin = Math.round((saved - Date.now()) / 60_000);
-        logger.info?.(`[onebot] 恢复上次定的活动时间：${leftMin} 分钟后`);
-        scheduleNextSelfActivity(leftMin);
-        return;
+      const p = nextSelfPlan();
+      if (p) {
+        const leftMin = Math.round((Number(p.at) - Date.now()) / 60_000);
+        logger.info?.(
+          `[onebot] 恢复日程：${p.kind || "活动"} ${leftMin >= 0 ? leftMin + " 分钟后" : "已过期 " + Math.abs(leftMin) + " 分钟"}（${p.id}）`,
+        );
+      } else {
+        scheduleNextSelfActivity(0);
       }
     } catch {
       // 忽略
     }
-    void tickSelfActivity();
-  }, 30_000).unref?.(); // 启动后 30 秒就恢复，别等 3 分钟（重启多的话会明显推迟她的活动）
+  }, 30_000).unref?.();
 
   // ── 说说：不按固定时间，而是问她「现在有没有想说的」──
   const QZONE_PLAN = join(HOME, ".dsh/onebot-bridge/qzone-plan.json");

@@ -1,0 +1,15 @@
+[Unit]
+Description=DSH selfclock - 她自己的活动闹钟（到点敲桥）
+After=network.target dsh-web.service
+Wants=dsh-web.service
+
+[Service]
+Type=simple
+ExecStart=/opt/node-v24.22.1-linux-x64/bin/node /root/dev/dsh-onebot-bridge/scripts/selfclock.mjs
+Restart=always
+RestartSec=5
+User=root
+WorkingDirectory=/root/dev/dsh-onebot-bridge
+
+[Install]
+WantedBy=multi-user.target

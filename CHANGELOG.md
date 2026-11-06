@@ -1,5 +1,39 @@
 # 更新日志
 
+## 2.3.0 · 2026-11-06
+
+**她的活动日程从「一个时间戳」变成「她自己的日程表」，计时也从聊天进程里拆了出去。**
+
+### 日程表
+
+- 新增 `~/.dsh/onebot-bridge/self-plan.jsonl`：`id / at / kind / note / status / created / fired / source`
+- `schedule_activity` 写入、`my_schedule` 读取（含最近 3 条历史：done / skipped / superseded / expired）
+- 旧的 `selfActivityNextAt` 启动时自动迁入（只迁一次）
+- 状态机：`pending → fired → done`，或 `superseded / cancelled / expired`
+
+### 时钟
+
+- 桥内 30 秒轮询保留（兜底）
+- 新增独立服务 **`dsh-selfclock`**（systemd，15 秒一轮）：读日程表 → `POST /internal/wake`
+- **幂等**：`pending → fired` 原子认领，谁先认领谁触发，另一个看到状态就跳过
+- 错过 ≤ 2 小时补触发一次；> 2 小时标 `expired`（不半夜补跑）
+- 桥挂了闹钟照走（记 `ECONNREFUSED`）；桥回来在 grace 内补触发
+
+### 修复
+
+- 删除死代码 `checkSelfActivity`（定义了但从未调用，注释还写着"每 25 分钟问她"）
+- 启动时不再直接 `tickSelfActivity()`（会和 30 秒轮询重复触发）
+- 活动时间戳改为整数毫秒，避免 hour-minute 显示出现小数
+
+### 运维
+
+```bash
+systemctl status dsh-selfclock
+journalctl -u dsh-selfclock -f
+```
+
+`/internal/wake` 只绑 `127.0.0.1`，token 在 `~/.dsh/onebot-bridge/.internal-token`（0600）。
+
 ## 2.2.1 · 2026-11-06
 
 **修「答错群」和「活动总结进群」：主动回合不再猜目标。**

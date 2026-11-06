@@ -5,7 +5,7 @@
 基于 [OneBot 11](https://github.com/botuniverse/onebot-11) 协议，通过 [NapCat](https://github.com/NapNeko/NapCatQQ) 连接 QQ，
 让 DSH 的 Agent 能在私聊和群里说话——并且带记忆、有作息、会主动找你。
 
-> **当前版本 2.2.1**（2026-11-06）。变更见 [CHANGELOG.md](CHANGELOG.md)。
+> **当前版本 2.3.0**（2026-11-06）。变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 > 本项目是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的一个 Cordis 插件，
 > **不是独立程序**。你需要先有 DSH 和 NapCat。
@@ -351,6 +351,38 @@ L0 的自我认知**随反思微调**：最短 48 小时改一次，只改有变
 | `study` | 研究自己的代码 | 对实现的新理解 |
 | `watch_groups` | 看看群里在聊什么 | 群印象 |
 
+#### 她自己的日程表与闹钟
+
+排期不是宿主替她记的时间戳，而是**她自己的一份日程表**：
+
+```
+~/.dsh/onebot-bridge/self-plan.jsonl
+{"id":"p-xxx","at":1793946422961,"kind":"read","note":"想读点东西…",
+ "status":"pending","created":…,"fired":0}
+```
+
+| 环节 | 谁负责 |
+|---|---|
+| 排期 | `schedule_activity({afterMinutes, kind, note})` 写入一条 `pending` |
+| 查日程 | `my_schedule` 返回下次时间 + 最近 3 条历史（done / skipped / superseded / expired） |
+| 到点触发 | **两个时钟**：桥内 30 秒轮询 + 独立服务 `dsh-selfclock`（15 秒） |
+| 认领 | 谁先把它从 `pending` 改成 `fired`，谁触发；另一个看到状态就跳过（幂等，不会双触发） |
+| 错过 | ≤ 2 小时补一次；> 2 小时标 `expired`，不半夜补跑 |
+| 执行 | 事件带 `kind` / `note` 进她的回合，**她自己决定**做、顺延还是取消 |
+
+独立闹钟由 systemd 管理：
+
+```bash
+systemctl status dsh-selfclock     # 运行状态
+journalctl -u dsh-selfclock -f     # 看它什么时候敲了桥
+```
+
+它只做一件事：读日程表 → 到点 `POST http://127.0.0.1:3081/internal/wake`。
+这个端点只绑本机，token 在 `~/.dsh/onebot-bridge/.internal-token`（0600）。
+
+> 桥挂了闹钟照走（会记 `ECONNREFUSED`）；桥回来后在 grace 内补触发一次。
+> 闹钟挂了桥的轮询兜底。两边都活着也不会重复触发。
+
 ### 主动行为
 
 | 类型 | 频率 |
@@ -411,7 +443,7 @@ L0 的自我认知**随反思微调**：最短 48 小时改一次，只改有变
 | `recall` / `my_memory` / `memory_index` / `my_digest` | 翻原文 / 翻条目 / 记忆目录 / 经历摘要 |
 | `person_dossier` | 某人档案 + 最近原话 |
 | `remember_fact` / `remember_person` / `remember_self` / `revise_self` / `forget_self` | 记忆写入与修订 |
-| `my_context` / `my_status` / `my_schedule` | 上下文用量 / 运行状态 / 下次活动 |
+| `my_context` / `my_status` / `my_schedule` | 上下文用量 / 运行状态 / 她的日程表（含历史） |
 | `note_want` / `my_wants` | 需求记事本 |
 
 **做事与自省**
