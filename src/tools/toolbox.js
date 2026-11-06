@@ -1273,12 +1273,16 @@ export async function registerToolbox(app) {
                 }
                 const start = Math.max(1, Number(args?.start) || 1);
                 const count = Math.max(1, Math.min(200, Number(args?.count) || 40));
+                const numbered = lines
+                  .slice(start - 1, start - 1 + count)
+                  .map((l, k) => `${start + k}: ${l}`)
+                  .join("\n");
                 return {
                   ok: true,
                   file,
                   totalLines: lines.length,
                   from: start,
-                  code: lines.slice(start - 1, start - 1 + count).join("\n").slice(0, 40000),
+                  code: numbered.slice(0, 40000),
                 };
               },
             }),

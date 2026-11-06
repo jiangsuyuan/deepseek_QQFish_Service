@@ -57,10 +57,17 @@ export function searchSource(kw, limit = 5, root = MIRROR_ROOT) {
     }
     for (let i = 0; i < lines.length; i++) {
       if (!lines[i].includes(kw)) continue;
+      // 片段带绝对行号：她引用位置时不会数错
+      const from = Math.max(0, i - 3);
+      const numbered = lines
+        .slice(from, i + 9)
+        .map((l, k) => `${from + k + 1}: ${l}`)
+        .join("\n");
       hits.push({
         file: f,
         line: i + 1,
-        code: lines.slice(Math.max(0, i - 3), i + 9).join("\n").slice(0, 1200),
+        from: from + 1,
+        code: numbered.slice(0, 1600),
       });
       if (hits.length >= limit) return hits;
     }
