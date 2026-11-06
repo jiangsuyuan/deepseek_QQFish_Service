@@ -89,7 +89,7 @@
 | 费用预估 | 日常聊天约 0.5–2 元/天 |
 
 > 🔐 **安全红线**
-> - 不要把 key 写进 `config.json`、`index.js`、README 或任何会提交到 Git 的文件
+> - 不要把 key 写进 `config.json`、源码、README 或任何会提交到 Git 的文件
 > - 不要把 `~/.dsh/` 下的任何文件提交到仓库
 > - key 曾经泄露过（截图、日志、聊天记录）→ 立刻去后台重置
 > - 提交前用 `git status` 确认没有意外文件
@@ -624,7 +624,17 @@ sudo bash scripts/install-watchdog.sh
 
 ```
 .
-├─ index.js                 # 桥本体（单文件，92 个工具）
+├─ index.js                 # 入口：装配、状态、启动（约 1.3k 行）
+├─ src/
+│  ├─ core/                 # logger / audit / policy / constants
+│  ├─ util/                 # 文本、时间、发送状态、会话文件
+│  ├─ store/                # 消息落盘、配置、人物档案、记忆、运行时快照
+│  ├─ onebot/               # 协议客户端、解析、渲染、事件入口、钩子
+│  ├─ sessions/             # 会话注册表、续聊窗口
+│  ├─ net/                  # 出网抓取
+│  ├─ features/             # 对话、入站、日程、活动、空间、记忆回路、轮询、工具域
+│  ├─ tools/                # 92 个工具的注册（按域分文件）
+│  └─ web/                  # 本地控制台
 ├─ cordis.patch.yml         # DSH 插件挂载点
 ├─ config.example.json      # 配置样例
 ├─ scripts/
@@ -640,6 +650,9 @@ sudo bash scripts/install-watchdog.sh
 ├─ DEPLOY.md / DEVELOPMENT.md / CHANGELOG.md
 └─ README.md
 ```
+
+分层单向依赖：`util → core → store → onebot → sessions → features → tools → plugin`。
+每个模块导出 `createX(ctx)` 工厂，运行时状态统一放在 `ctx.state`。
 
 ---
 
