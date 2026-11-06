@@ -1,9 +1,9 @@
 using System.Reflection;
 using System.Runtime.InteropServices;
 
-[assembly: AssemblyTitle("竹筒肥鱼")]
+[assembly: AssemblyTitle("肥鱼")]
 [assembly: AssemblyDescription("QQ 助手桌面客户端")]
-[assembly: AssemblyProduct("竹筒肥鱼")]
+[assembly: AssemblyProduct("肥鱼")]
 [assembly: AssemblyCompany("FishTray")]
 [assembly: AssemblyCopyright("")]
 [assembly: AssemblyTrademark("")]

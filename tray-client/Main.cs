@@ -910,7 +910,7 @@ namespace FishTray
 
         void Build()
         {
-            Text = "竹筒肥鱼";
+            Text = "肥鱼";
             StartPosition = FormStartPosition.Manual;
             FormBorderStyle = FormBorderStyle.None;   // 自绘标题栏，不用系统那套
             Size = new Size(400, 800);
@@ -952,7 +952,7 @@ namespace FishTray
             catch (Exception ex) { Log.W("鱼图标失败 " + ex.Message); }
 
             dot = new Label { Text = "", AutoSize = false, Size = new Size(1, 1), Location = new Point(34, 20), Font = new Font("Microsoft YaHei UI", 9f) };
-            titleLabel = new Label { Text = "竹筒肥鱼", AutoSize = true, Location = new Point(38, 12), Font = new Font("Microsoft YaHei UI", 10f, FontStyle.Bold) };
+            titleLabel = new Label { Text = "肥鱼", AutoSize = true, Location = new Point(38, 12), Font = new Font("Microsoft YaHei UI", 10f, FontStyle.Bold) };
             header.Controls.Add(fishPic);
             statusLabel = new Label { Text = "", AutoSize = true, Location = new Point(108, 14), Font = new Font("Microsoft YaHei UI", 8f) };
 

@@ -611,7 +611,7 @@ send_message({
 ```
 21:49:24  recall 查询：词=查查「离离原上咩咩龙」这个人说过什么…  命中=0
 21:49:43  recall 查询：人=离离原上咩咩龙                        命中=4
-21:49:48  recall 查询：词=2373329282                            命中=4
+21:49:48  recall 查询：词=100000003                            命中=4
 
 她：两轮都查了，一共就三条，全在 10 月 24 号那天晚上
 ```
@@ -691,7 +691,7 @@ send_message({
 **① `systemd` 里写死了旧号**
 
 ```ini
-ExecStart=... qq --no-sandbox -q 3477431285
+ExecStart=... qq --no-sandbox -q 100000001
 ```
 
 换号时只改了 `config.json` 的 `selfId`，**没动 systemd** → 重启就登回旧号。
@@ -931,7 +931,7 @@ const keys = query.split(/\s+/).filter(x => x.length >= 2);
        她：这次搜出来的结果更多了，能翻到二十条左右，十月二十四号那几条还在
 
 21:09  用 recall 查「风声」
-       她：搜得到，63 条。风声（246970739）问过我要 api key，要我买奶茶、增肥
+       她：搜得到，63 条。风声（100000002）问过我要 api key，要我买奶茶、增肥
 ```
 
 **顺手加了 `recall` 的查询日志**（query / cross / 命中数 / 返回范围），下次再"翻不到"能直接看她搜了什么。
@@ -993,8 +993,8 @@ const cross = args?.all_sessions === true && cfg.recallCrossSession;
 `/etc/systemd/system/napcat.service` 里写死了：
 
 ```ini
-Environment=ACCOUNT=3477431285
-ExecStart=... qq --no-sandbox -q 3477431285
+Environment=ACCOUNT=100000001
+ExecStart=... qq --no-sandbox -q 100000001
 ```
 
 换号时只改了 `config.json` 的 `selfId`，没动 systemd。所以 NapCat 一重启就登回旧号（封着的）→ 3001 起不来 → 桥连不上。
@@ -1053,7 +1053,7 @@ function sessionIdBase(key) {
   "friendNick": "某某",
   "reqTime": "1793524007",
   "extWords": "我是来自群聊「XX」的某某",
-  "groupCode": "578391484"
+  "groupCode": "123456789"
 }
 ```
 
@@ -1109,7 +1109,7 @@ class DshBuddyReqSet {
 ```
 好友数: 3
   竹叶不知秋 (xxx)      ← 主人
-  竹筒肥鱼二代 (xxx)    ← 她自己
+  肥鱼二代 (xxx)    ← 她自己
   某某 (xxx)            ← 刚加上的
 待处理申请: isDecide=true isAgreed=true
 ```
@@ -1122,7 +1122,7 @@ class DshBuddyReqSet {
 
 **换号 + 打字时间封顶 + 日志分通道。**
 
-### ① 换号：3477431285 → 100000001
+### ① 换号：100000001 → 100000001
 
 新号登录后有两个坑：
 
@@ -1130,7 +1130,7 @@ class DshBuddyReqSet {
 
 ```
 onebot11_100000001.json  →  websocketServers: []        ← 新号默认没有
-onebot11_3477431285.json  →  websocketServers: [3001]    ← 旧号有
+onebot11_100000001.json  →  websocketServers: [3001]    ← 旧号有
 ```
 
 登录新号时 NapCat 生成默认配置，没有 WebSocket 服务器，3001 端口起不来。
