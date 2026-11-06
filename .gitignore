@@ -30,8 +30,8 @@ ALERT.txt
 
 # 会话与日志
 *.log
-sessions/
-profiles/
+/sessions/
+/profiles/
 
 # 系统
 .DS_Store
