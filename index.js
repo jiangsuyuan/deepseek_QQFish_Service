@@ -2634,6 +2634,24 @@ export function apply(ctx, _pluginConfig) {
   const sessions = new SessionManager(ctx, cfg, logger);
   sessions.autoConfigure = (sid) => autoConfigurePlugins(sid);
   sessions.restoreRuntime = (entry) => restoreRuntime(entry);
+
+  /**
+   * 内省/自省这类静默回合不允许真的发消息。
+   * 以前只靠 prompt 里写「不要发消息」——她照不照做全凭自觉，
+   * 于是会出现「刚回完一条，十几秒后又补一条」的双重回复。
+   */
+  function silentTurnRefuse(exec) {
+    try {
+      const sid = String(exec?.agent?.session?.id ?? "");
+      const e = sid ? sessions.bySessionId(sid) : null;
+      if (e?.silentTurn) {
+        return { ok: false, reason: "这一轮是内省/静默回合，不发消息（有想法记下来就行）。" };
+      }
+    } catch {
+      // 拿不到会话就放行
+    }
+    return null;
+  }
   sessions.isAgentReady = () => agentReady;
   const client = new OneBotClient(cfg, logger);
   client.readyFn = () => agentReady;
@@ -3139,7 +3157,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const w = loadWatch();
             const added = [];
             const kw = String(args?.keyword ?? "").trim();
@@ -3179,7 +3197,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const w = loadWatch();
             const kw = String(args?.keyword ?? "").trim();
             const ps = String(args?.person ?? "").trim();
@@ -3226,7 +3244,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const hours = Number(args?.hours) || 24;
             const since = Date.now() - hours * 3600_000;
             // 用落盘记录算真实条数（group-meta 的 recent 只留 30 行，会把热群算成 30）
@@ -3290,7 +3308,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const gid = String(args?.group ?? "").trim();
             if (!gid) return { ok: false, reason: "要填群号" };
             const hours = Number(args?.hours) || 24;
@@ -3444,7 +3462,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const key = String(args?.key ?? "").trim();
             if (key) return { ok: true, key, value: cfg[key] };
             const pick = [
@@ -3659,7 +3677,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             if (!client.connected) return { ok: false, reason: "QQ 现在没连上，等连上再发。" };
             const topic = String(args?.topic ?? "").trim().slice(0, 60);
             const given = String(args?.content ?? "").trim();
@@ -3749,7 +3767,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             if (!client.connected) return { ok: false, reason: "QQ 现在没连上。" };
             const mid = String(args?.message_id ?? "").trim();
             if (!mid) return { ok: false, reason: "要填 message_id" };
@@ -3779,7 +3797,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             if (!client.connected) return { ok: false, reason: "QQ 现在没连上。" };
             const qq = String(args?.qq ?? "").trim();
             if (!qq) return { ok: false, reason: "要填 QQ 号" };
@@ -3808,7 +3826,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             if (!client.connected) return { ok: false, reason: "QQ 现在没连上。" };
             const gid = String(args?.group ?? "").trim();
             if (!gid) return { ok: false, reason: "要填群号" };
@@ -4107,6 +4125,8 @@ export function apply(ctx, _pluginConfig) {
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
           execute: async (args, exec) => {
+            const __refused2 = silentTurnRefuse(exec);
+            if (__refused2) return __refused2;
             // 优先用参数里的 target（self:main 那种 session 拿不到 lastTarget）
             const explicit = String(args?.target ?? "").trim();
             let target = null;
@@ -4167,7 +4187,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const items = await fetchHotNews(cfg, logger);
             const n = Math.min(15, Math.max(1, Number(args?.count) || 8));
             return { ok: true, count: n, items: (items ?? []).slice(0, n) };
@@ -4367,7 +4387,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const t = facts.add(String(args?.text ?? ""), "model");
             return t ? { ok: true, saved: t } : { ok: false, reason: "内容为空或含敏感信息，未保存" };
           },
@@ -4394,7 +4414,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const t = selfViews.add(String(args?.text ?? ""));
             return t ? { ok: true, saved: t } : { ok: false, reason: "内容为空或含敏感信息" };
           },
@@ -4423,7 +4443,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const r = selfViews.revise(String(args?.old ?? ""), String(args?.new ?? ""));
             return r ? { ok: true, ...r } : { ok: false, reason: "没找到那条想法，或新内容为空/含敏感信息" };
           },
@@ -4439,7 +4459,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const gone = selfViews.remove(String(args?.text ?? ""));
             return gone ? { ok: true, deleted: gone } : { ok: false, reason: "没找到那条想法" };
           },
@@ -4468,7 +4488,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const rec = people.remember(String(args?.user_id ?? ""), String(args?.note ?? ""));
             return { ok: true, notes: rec.notes };
           },
@@ -4532,6 +4552,8 @@ export function apply(ctx, _pluginConfig) {
               },
             },
             execute: async (args, exec) => {
+              const __refused2 = silentTurnRefuse(exec);
+              if (__refused2) return __refused2;
               const sid = exec?.agent?.session?.id;
               const entry = sid ? sessions.bySessionId(String(sid)) : null;
               const target = entry?.lastTarget;
@@ -4618,7 +4640,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             try {
               const files = readdirSync(cfg.stickerDir)
                 .filter((f) => /\.(png|jpe?g|gif|webp)$/i.test(f))
@@ -4820,7 +4842,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             if (cfg.featureRequestEnabled === false) {
               return { ok: false, reason: "主人关掉了这个通道" };
             }
@@ -5006,7 +5028,7 @@ export function apply(ctx, _pluginConfig) {
             offset: { type: "number", description: "all 模式下从第几条开始（翻页用）" },
           },
           output: TOOL_OUT,
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const type = String(args?.type ?? "facts").toLowerCase();
             const q = String(args?.query ?? "").trim();
             const hit = (t) => !q || String(t).includes(q);
@@ -5158,7 +5180,7 @@ export function apply(ctx, _pluginConfig) {
             "参数 id 填 QQ 号或名字。",
           parameters: { qq: { type: "string", description: "对方 QQ 号" } },
           output: TOOL_OUT,
-          execute: async (args) => {
+          execute: async (args, exec) => {
             people.load();
             const id = String(args?.qq ?? "").trim();
             const r = people.data[id];
@@ -5226,7 +5248,7 @@ export function apply(ctx, _pluginConfig) {
           description: "查某个群最近的话题和主要在聊什么。",
           parameters: { gid: { type: "string", description: "群号" } },
           output: TOOL_OUT,
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const gid = String(args?.gid ?? "").trim();
             const key = `group:${gid}`;
             const ent = sessions.entries.get(key);
@@ -5263,7 +5285,7 @@ export function apply(ctx, _pluginConfig) {
             "想找「这话是谁说的」「哪个群聊过这个」时用。",
           parameters: { word: { type: "string", description: "要搜的词" } },
           output: TOOL_OUT,
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const w = String(args?.word ?? "").trim();
             if (!w) return { ok: false, reason: "要搜什么词？" };
             const low = w.toLowerCase();
@@ -5398,7 +5420,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const path = join(HOME, ".dsh/onebot-bridge/CHANGELOG.md");
             let text = "";
             try {
@@ -5440,7 +5462,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const kw = String(args?.keyword ?? "").trim();
             if (kw.length < 3) return { ok: false, reason: "关键词至少 3 个字" };
             let src = "";
@@ -5483,7 +5505,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             let lines = [];
             try {
               const raw = readFileSync(join(HOME, ".dsh/onebot-bridge/explore-log.jsonl"), "utf8");
@@ -5530,7 +5552,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const days = Math.max(1, Math.min(30, Number(args?.days) || 7));
             const ds = loadDigests();
             if (!ds.length) return { ok: true, count: 0, note: "还没有摘要（记忆攒够 20 条会生成）" };
@@ -5562,7 +5584,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const mode = String(args?.mode ?? "topic").toLowerCase();
             const mems = loadMemLog(Math.min(5000, Math.max(50, Number(args?.limit) || 500)));
             if (!mems.length) return { ok: true, count: 0, note: "记忆日志还是空的" };
@@ -5627,7 +5649,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const lang = String(args?.language ?? "python").toLowerCase();
             const code = String(args?.code ?? "");
             if (!code.trim()) return { ok: false, reason: "代码是空的" };
@@ -5729,7 +5751,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             let src = "";
             try {
               src = readFileSync("/opt/fish-src/index.js", "utf8");
@@ -5784,7 +5806,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const kind = String(args?.kind ?? "other").toLowerCase();
             const what = String(args?.what ?? "").trim().slice(0, 150);
             const why = String(args?.why ?? "").trim().slice(0, 1500);
@@ -5864,7 +5886,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const wants = loadWants();
             const pending = wants.filter((w) => w.status === "pending");
             if (!pending.length) return { ok: false, reason: "需求本里没有待处理的" };
@@ -5903,7 +5925,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const wants = loadWants();
             const pending = wants.filter((w) => w.status === "pending");
             if (!pending.length) return { ok: false, reason: "需求本里没有待处理的" };
@@ -5956,7 +5978,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const limit = Math.max(1, Math.min(30, Number(args?.limit) || 6));
             const kind = String(args?.kind ?? "").trim().toLowerCase();
             const date = String(args?.date ?? "").trim();
@@ -6299,7 +6321,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const which = String(args?.which ?? "views").toLowerCase();
             const limit = Math.max(1, Math.min(50, Number(args?.limit) || 20));
             try {
@@ -6344,7 +6366,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const kind = String(args?.kind ?? "").trim();
             const rounds = Math.max(1, Math.min(5, Number(args?.rounds) || 1));
             const VALID = ["explore", "read", "play", "think", "write", "recall", "dream", "study", "watch_groups"];
@@ -6386,7 +6408,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const minutes = Math.max(1, Math.min(60 * 24 * 30, Number(args?.minutes) || 0));
             const what = String(args?.what ?? "").trim().slice(0, 200);
             if (!minutes || !what) return { ok: false, error: "需要 minutes 和 what" };
@@ -6431,7 +6453,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const text = String(args?.text ?? "").trim();
             const title = String(args?.title ?? "").trim();
             if (!text) return { ok: false, reason: "内容为空" };
@@ -6469,7 +6491,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             try {
               const want = String(args?.date ?? "").trim();
               let files = [];
@@ -6547,7 +6569,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const name = noteSafeName(args?.name);
             if (!name) return { ok: false, reason: "文件名不合规：只能字母数字下划线中文，后缀 md/txt/py/js/json/csv/svg" };
             const text = String(args?.text ?? "");
@@ -6589,7 +6611,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const name = noteSafeName(args?.name);
             if (!name) return { ok: false, reason: "文件名不合规" };
             try {
@@ -6646,7 +6668,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const p = String(args?.path ?? "").trim();
             if (!p) return { ok: false, reason: "要给我一个路径" };
             if (!p.toLowerCase().endsWith(".pdf")) return { ok: false, reason: "这不是 PDF" };
@@ -6757,7 +6779,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const file = String(args?.file ?? "").trim();
             const where = String(args?.where ?? "").trim();
             const oldCode = String(args?.oldCode ?? "").trim();
@@ -6943,7 +6965,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const artId = String(args?.id ?? "").trim();
             if (/^\d+$/.test(artId)) {
               // 单篇全文：/api/4/news/<id> 直接带 body（HTML）
@@ -7065,7 +7087,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const src = String(args?.source ?? "weibo").trim().toLowerCase();
             const limit = Math.max(1, Math.min(40, Number(args?.limit) || 15));
             if (!NEWS_SOURCES[src]) {
@@ -7136,7 +7158,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             try {
               mkdirSync(SBX_DIR, { recursive: true });
               const list = readdirSync(SBX_DIR)
@@ -7239,7 +7261,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const url = String(args?.url ?? "").trim();
             // 默认给全文：不预设"看多少就够了"，让她自己决定
             const max = Math.max(500, Math.min(50000, Number(args?.max) || 50000));
@@ -7379,7 +7401,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const op = String(args?.op ?? "list").trim().toLowerCase();
             const areaKey = String(args?.area ?? "notes").trim().toLowerCase();
             const dir = FILES_AREA[areaKey];
@@ -7610,7 +7632,9 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
+            const __refused2 = silentTurnRefuse(exec);
+            if (__refused2) return __refused2;
             const text = String(args?.text ?? "").trim();
             const kind = String(args?.kind ?? "hello").trim().toLowerCase().slice(0, 20);
             if (!text) return { ok: false, reason: "内容是空的" };
@@ -7683,7 +7707,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const want = String(args?.tool ?? "").trim();
 
             // 1) 现在注册了哪些工具
@@ -7869,7 +7893,7 @@ export function apply(ctx, _pluginConfig) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const title = String(args?.title ?? "未命名").slice(0, 80);
             const html = String(args?.html ?? "");
             if (!html.trim()) return { ok: false, reason: "内容为空" };
@@ -7992,7 +8016,7 @@ ${html}
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const label = String(args?.label ?? "").trim().slice(0, 12);
             const prompt = String(args?.prompt ?? "").trim().slice(0, 200);
             const pageId = String(args?.pageId ?? "").trim().slice(0, 40);
@@ -8025,7 +8049,7 @@ ${html}
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const t = String(args?.target ?? "").trim();
             const list = loadButtons();
             const idx = list.findIndex((b) => b.label === t || b.id === t);
@@ -8112,6 +8136,8 @@ ${html}
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
           execute: async (args, exec) => {
+            const __refused2 = silentTurnRefuse(exec);
+            if (__refused2) return __refused2;
             const sid = String(exec?.agent?.session?.id ?? "");
             const entry = sid ? sessions.bySessionId(sid) : null;
             const target = entry?.lastTarget;
@@ -11283,6 +11309,8 @@ async function handleOwnerNatural(ev, text) {
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
           execute: async (args, exec) => {
+            const __refused = silentTurnRefuse(exec);
+            if (__refused) return __refused;
             const target = String(args?.target ?? "").trim();
             const text = String(args?.text ?? "").trim();
             if (!target || !text) return { ok: false, reason: "target 和 text 都要" };
@@ -11358,7 +11386,9 @@ async function handleOwnerNatural(ev, text) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
+            const __refused = silentTurnRefuse(exec);
+            if (__refused) return __refused;
             const target = String(args?.target ?? "").trim();
             const mid = String(args?.messageId ?? "").trim();
             const text = String(args?.text ?? "").trim();
@@ -11431,7 +11461,9 @@ async function handleOwnerNatural(ev, text) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
+            const __refused = silentTurnRefuse(exec);
+            if (__refused) return __refused;
             const qq = String(args?.qq ?? "").trim();
             const text = String(args?.text ?? "").trim();
             const groupTemp = Number(args?.groupTemp) || 0;
@@ -12055,7 +12087,7 @@ async function handleOwnerNatural(ev, text) {
             count: { type: "number", description: "要几条，默认 5" },
           },
           output: TOOL_OUT,
-          execute: async (args) => {
+          execute: async (args, exec) => {
             try {
               const id = String(args?.messageId || args?.id || "").trim();
               if (!id) return { ok: false, reason: "要填 messageId" };
@@ -12117,7 +12149,7 @@ async function handleOwnerNatural(ev, text) {
             before: { type: "string", description: "从哪条消息往前翻（上次的 nextCursor）" },
           },
           output: TOOL_OUT,
-          execute: async (args) => {
+          execute: async (args, exec) => {
             try {
               const q = String(args?.q || "").trim().toLowerCase();
               const person = String(args?.person || "").trim();
@@ -12194,7 +12226,7 @@ async function handleOwnerNatural(ev, text) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const hasMinutes = args && args.afterMinutes !== undefined && args.afterMinutes !== null;
             const minutes = Number(args?.afterMinutes ?? NaN);
             const kind = String(args?.kind ?? "").trim();
@@ -12265,7 +12297,7 @@ async function handleOwnerNatural(ev, text) {
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const detail = String(args?.detail ?? "summary");
             try {
               const entry = sessions.entries.get(WAKE_KEY()) || sessions.entries.get("self:check");
@@ -15092,7 +15124,7 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
             schema: { type: "json" },
             render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
           },
-          execute: async (args) => {
+          execute: async (args, exec) => {
             const reason = String(args?.reason ?? "").trim().slice(0, 100);
             // 冷却只提醒，不拦——她既然主动来了，就尊重她的判断。
             // 拦下来才是替她做决定。
