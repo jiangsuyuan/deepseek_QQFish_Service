@@ -453,9 +453,15 @@ function parseMessage(ev, selfId) {
 
 const MSG_LOG_DIR = join(HOME, ".dsh/onebot-bridge/messages");
 const MSG_LOG_PRIVATE_DIR = join(MSG_LOG_DIR, "private");
-const MSG_LOG_MAX_BYTES = 8 * 1024 * 1024;
-const MSG_LOG_KEEP_LINES = 1500;
+const MSG_LOG_GROUP_DIR = join(MSG_LOG_DIR, "group");
+/** 单日文件超过这么多行就裁掉最老的（正常一天到不了） */
+const MSG_LOG_DAY_MAX_LINES = 20000;
+const MSG_LOG_DAY_KEEP_LINES = 15000;
+/** 保留多少天的分片目录 */
+const MSG_LOG_KEEP_DAYS = 180;
 const MSG_LOG_STATE = { fail: 0, lastWarn: 0, mem: [] };
+/** install 时注入的日志器（模块级函数拿不到闭包里的 logger） */
+let LOGGER = null;
 
 /** 会话 key：group:123 / private:456 */
 function msgLogKeyOf(ev) {
@@ -465,8 +471,25 @@ function msgLogKeyOf(ev) {
   return "";
 }
 
-/** key → 文件路径（群和私聊分目录） */
-function msgLogFileFor(key) {
+function msgLogIsPrivate(key) {
+  return String(key || "").startsWith("private:");
+}
+
+/** key → 会话目录：messages/group/<群号>/ 或 messages/private/<QQ>/ */
+function msgLogDirFor(key) {
+  const k = String(key || "");
+  if (k.startsWith("private:")) {
+    const uid = k.slice(8);
+    if (!/^\d{5,20}$/.test(uid)) return "";
+    return join(MSG_LOG_PRIVATE_DIR, uid);
+  }
+  const gid = k.startsWith("group:") ? k.slice(6) : k;
+  if (!/^\d{5,20}$/.test(gid)) return "";
+  return join(MSG_LOG_GROUP_DIR, gid);
+}
+
+/** 旧版单文件（迁移前） */
+function msgLogLegacyFileFor(key) {
   const k = String(key || "");
   if (k.startsWith("private:")) {
     const uid = k.slice(8);
@@ -475,22 +498,76 @@ function msgLogFileFor(key) {
   }
   const gid = k.startsWith("group:") ? k.slice(6) : k;
   if (!/^\d{5,20}$/.test(gid)) return "";
+  // 旧版群文件直接放在 messages/ 根目录
   return join(MSG_LOG_DIR, gid + ".jsonl");
+}
+
+/** 本地日期 YYYY-MM-DD */
+function msgLogDay(tsSec) {
+  const d = new Date((Number(tsSec) || Math.floor(Date.now() / 1000)) * 1000);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/** key + 时间 → 当天分片路径 */
+function msgLogFileFor(key, tsSec) {
+  const dir = msgLogDirFor(key);
+  if (!dir) return "";
+  return join(dir, msgLogDay(tsSec) + ".jsonl");
+}
+
+/** 该会话所有分片，按时间从旧到新 */
+function msgLogDayFiles(key) {
+  const dir = msgLogDirFor(key);
+  const out = [];
+  if (!dir) return out;
+  try {
+    for (const f of readdirSync(dir)) {
+      if (/^\d{4}-\d{2}-\d{2}\.jsonl$/.test(f)) out.push(join(dir, f));
+    }
+  } catch {
+    return out;
+  }
+  out.sort();
+  const legacy = msgLogLegacyFileFor(key);
+  if (legacy && existsSync(legacy)) out.unshift(legacy);
+  return out;
+}
+
+/** 追加一条记录，并按天文件做行数上限 */
+function appendMsgRec(key, rec) {
+  const file = msgLogFileFor(key, rec?.t);
+  if (!file) return;
+  mkdirSync(dirnameOf(file), { recursive: true });
+  appendFileSync(file, JSON.stringify(rec) + "\n");
+  MSG_LOG_STATE.fail = 0;
+  try {
+    const lines = readFileSync(file, "utf8").split("\n").filter(Boolean);
+    if (lines.length > MSG_LOG_DAY_MAX_LINES) {
+      writeFileSync(file, lines.slice(-MSG_LOG_DAY_KEEP_LINES).join("\n") + "\n");
+    }
+  } catch {
+    // 裁剪失败不影响写入
+  }
+}
+
+function dirnameOf(p) {
+  const i = String(p).lastIndexOf("/");
+  return i > 0 ? String(p).slice(0, i) : p;
 }
 
 /**
  * 每条消息都写一条结构化记录（群聊和私聊都写）。
- * 纯旁听的消息以前只活 30 条内存、重启即失；写盘后 recall / 巡群才翻得到。
+ * d: "i" 收到 / "o" 发出；两个方向写同一个会话目录，按天分片。
  * 任何异常都吞掉——落盘失败不能影响聊天。
  */
 function recordMessage(ev, parsed) {
   try {
     const key = msgLogKeyOf(ev);
-    const file = msgLogFileFor(key);
-    if (!file) return;
+    if (!key) return;
     const rec = {
       v: 1,
       k: key,
+      d: "i",
       id: String(ev?.message_id ?? ""),
       g: key.startsWith("group:") ? key.slice(6) : "",
       u: String(ev?.user_id ?? ""),
@@ -518,20 +595,7 @@ function recordMessage(ev, parsed) {
     if (files.length) rec.files = files;
     const unk = (parsed?.unk || []).slice(0, 5);
     if (unk.length) rec.unk = unk;
-
-    mkdirSync(file.startsWith(MSG_LOG_PRIVATE_DIR) ? MSG_LOG_PRIVATE_DIR : MSG_LOG_DIR, { recursive: true });
-    appendFileSync(file, JSON.stringify(rec) + "\n");
-    MSG_LOG_STATE.fail = 0;
-
-    // 滚动：超过 8MB 只留最后 1500 行（触发频率很低）
-    try {
-      if (statSync(file).size > MSG_LOG_MAX_BYTES) {
-        const lines = readFileSync(file, "utf8").split("\n").filter(Boolean);
-        writeFileSync(file, lines.slice(-MSG_LOG_KEEP_LINES).join("\n") + "\n");
-      }
-    } catch {
-      // 滚动失败不影响写入
-    }
+    appendMsgRec(key, rec);
   } catch (err) {
     MSG_LOG_STATE.fail += 1;
     MSG_LOG_STATE.mem.push(Date.now());
@@ -540,7 +604,7 @@ function recordMessage(ev, parsed) {
     if (now - (MSG_LOG_STATE.lastWarn || 0) > 60_000) {
       MSG_LOG_STATE.lastWarn = now;
       try {
-        logger?.warn?.(`[onebot] 群消息落盘失败（连续 ${MSG_LOG_STATE.fail} 次）：${err?.message ?? err}`);
+        LOGGER?.warn?.(`[onebot] 消息落盘失败（连续 ${MSG_LOG_STATE.fail} 次）：${err?.message ?? err}`);
       } catch {
         // 连日志都写不了就算了
       }
@@ -548,26 +612,162 @@ function recordMessage(ev, parsed) {
   }
 }
 
-// ── 群消息读取（P2：读的就是落盘那份结构化记录） ──────────────────────
-
-/** 读某个会话最近 limit 条记录（老的在前）。key 可以是 group:123 / private:456 / 纯群号。 */
-function readMsgLog(key, limit = 500) {
+/** 她发出去的消息也落盘（d:"o"），这样对话是双向的 */
+function recordOutbound(ev, text, opts = {}) {
   try {
-    const file = msgLogFileFor(key);
-    if (!file || !existsSync(file)) return [];
-    const lines = readFileSync(file, "utf8").split("\n").filter(Boolean);
-    const out = [];
-    for (const l of lines.slice(-Math.max(1, Number(limit) || 500))) {
-      try {
-        out.push(JSON.parse(l));
-      } catch {
-        // 单行坏了跳过
-      }
-    }
-    return out;
+    const key = msgLogKeyOf(ev);
+    if (!key) return;
+    const body = String(text ?? "").trim();
+    if (!body) return;
+    const rec = {
+      v: 1,
+      k: key,
+      d: "o",
+      id: String(opts.messageId || "out-" + Date.now().toString(36)),
+      g: key.startsWith("group:") ? key.slice(6) : "",
+      u: String(opts.selfId ?? ""),
+      n: "我",
+      t: Math.floor(Date.now() / 1000),
+      x: body.slice(0, 500),
+    };
+    if (opts.qid) rec.qid = String(opts.qid);
+    if (opts.to) rec.to = String(opts.to);
+    appendMsgRec(key, rec);
   } catch {
-    return [];
+    // 落盘失败不影响发送
   }
+}
+
+function parseMsgLines(lines) {
+  const out = [];
+  for (const l of lines) {
+    if (!l) continue;
+    try {
+      out.push(JSON.parse(l));
+    } catch {
+      // 单行坏了跳过
+    }
+  }
+  return out;
+}
+
+/**
+ * 读某个会话最近 limit 条（从旧到新）。
+ * 从最新的日分片往前读，读够就停。
+ */
+function readMsgLog(key, limit = 500) {
+  const want = Math.max(1, Number(limit) || 500);
+  const files = msgLogDayFiles(key);
+  if (!files.length) return [];
+  const chunks = [];
+  let got = 0;
+  for (let i = files.length - 1; i >= 0 && got < want; i -= 1) {
+    try {
+      const lines = readFileSync(files[i], "utf8").split("\n").filter(Boolean);
+      const take = lines.slice(-Math.min(want - got, lines.length));
+      const rows = parseMsgLines(take);
+      chunks.unshift(...rows);
+      got += rows.length;
+    } catch {
+      // 单个文件读失败跳过
+    }
+  }
+  return chunks;
+}
+
+/** 按 (t,id) 比较，返回 <0 / 0 / >0 */
+function cmpMsgRec(a, b) {
+  const ta = Number(a?.t) || 0;
+  const tb = Number(b?.t) || 0;
+  if (ta !== tb) return ta - tb;
+  const ia = String(a?.id ?? "");
+  const ib = String(b?.id ?? "");
+  return ia < ib ? -1 : ia > ib ? 1 : 0;
+}
+
+function encodeCursor(rec) {
+  try {
+    return Buffer.from(JSON.stringify({ t: Number(rec?.t) || 0, id: String(rec?.id ?? "") })).toString("base64url");
+  } catch {
+    return "";
+  }
+}
+
+function decodeCursor(cur) {
+  if (!cur) return null;
+  try {
+    const o = JSON.parse(Buffer.from(String(cur), "base64url").toString("utf8"));
+    if (!o || typeof o !== "object") return null;
+    return { t: Number(o.t) || 0, id: String(o.id ?? "") };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 游标分页：从新往旧。
+ * opts.before = 游标（不含）; opts.after = 游标（不含，向新）; opts.limit; opts.sinceSec
+ */
+function readMsgLogPage(key, opts = {}) {
+  const limit = Math.max(1, Math.min(200, Number(opts.limit) || 50));
+  const before = decodeCursor(opts.before);
+  const after = decodeCursor(opts.after);
+  const sinceSec = Number(opts.sinceSec) || 0;
+  const files = msgLogDayFiles(key);
+  if (!files.length) return { rows: [], hasMore: false, nextCursor: "" };
+  const all = [];
+  for (let i = files.length - 1; i >= 0; i -= 1) {
+    try {
+      const text = readFileSync(files[i], "utf8");
+      const day = String(files[i].match(/(\d{4}-\d{2}-\d{2})\.jsonl$/) || [])[1] || "";
+      // 文件首行时间早于 sinceSec 就整段跳过（按天分片，够用）
+      if (sinceSec && day) {
+        const dayStart = Date.parse(day + "T00:00:00+08:00") / 1000;
+        if (Number.isFinite(dayStart) && dayStart + 86400 < sinceSec) continue;
+      }
+      all.push(...parseMsgLines(text.split("\n").filter(Boolean)));
+      // 翻到够用就停：最多取 limit 的 8 倍，避免每次扫全部历史
+      if (all.length >= Math.max(limit * 8, 400)) break;
+    } catch {
+      // 单个文件失败跳过
+    }
+  }
+  all.sort(cmpMsgRec);
+  let rows = all;
+  if (sinceSec) rows = rows.filter((r) => (Number(r.t) || 0) >= sinceSec);
+  if (before) {
+    rows = rows.filter(
+      (r) => cmpMsgRec(r, { t: before.t, id: before.id }) < 0 || (Number(r.t) === before.t && String(r.id) !== before.id && cmpMsgRec(r, { t: before.t, id: before.id }) < 0),
+    );
+  }
+  if (after) rows = rows.filter((r) => cmpMsgRec(r, { t: after.t, id: after.id }) > 0);
+  // 取最新的 limit 条（从旧到新返回）
+  const hasMore = rows.length > limit;
+  const page = rows.slice(-limit);
+  const nextCursor = hasMore && page.length ? encodeCursor(page[0]) : "";
+  return { rows: page, hasMore, nextCursor };
+}
+
+/** 跨会话读同一个人/所有会话（供 read_person / read_chat_with 用） */
+function readMsgLogPageMulti(keys, opts = {}) {
+  const limit = Math.max(1, Math.min(200, Number(opts.limit) || 50));
+  const sinceSec = Number(opts.sinceSec) || 0;
+  const all = [];
+  for (const k of keys) {
+    const page = readMsgLogPage(k, { ...opts, limit: 200 });
+    all.push(...page.rows);
+  }
+  all.sort(cmpMsgRec);
+  let rows = all;
+  if (sinceSec) rows = rows.filter((r) => (Number(r.t) || 0) >= sinceSec);
+  const before = decodeCursor(opts.before);
+  const after = decodeCursor(opts.after);
+  if (before) rows = rows.filter((r) => cmpMsgRec(r, { t: before.t, id: before.id }) < 0);
+  if (after) rows = rows.filter((r) => cmpMsgRec(r, { t: after.t, id: after.id }) > 0);
+  const hasMore = rows.length > limit;
+  const page = rows.slice(-limit);
+  const nextCursor = hasMore && page.length ? encodeCursor(page[0]) : "";
+  return { rows: page, hasMore, nextCursor };
 }
 
 function findMsgInLog(key, id) {
@@ -582,23 +782,87 @@ function findMsgInLog(key, id) {
 
 function listMsgKeys() {
   const out = [];
-  try {
-    for (const f of readdirSync(MSG_LOG_DIR)) {
-      if (f.endsWith(".jsonl")) out.push("group:" + f.replace(/\.jsonl$/, ""));
+  const scan = (root, prefix, isDir) => {
+    try {
+      for (const name of readdirSync(root)) {
+        if (isDir) {
+          if (/^\d{5,20}$/.test(name)) out.push(prefix + name);
+        } else if (name.endsWith(".jsonl") && /^\d{5,20}\.jsonl$/.test(name)) {
+          out.push(prefix + name.replace(/\.jsonl$/, ""));
+        }
+      }
+    } catch {
+      // 目录还不存在
     }
-  } catch {
-    // 还没有群记录
-  }
-  try {
-    for (const f of readdirSync(MSG_LOG_PRIVATE_DIR)) {
-      if (f.endsWith(".jsonl")) out.push("private:" + f.replace(/\.jsonl$/, ""));
-    }
-  } catch {
-    // 还没有私聊记录
-  }
-  return out;
+  };
+  scan(MSG_LOG_GROUP_DIR, "group:", true);
+  scan(MSG_LOG_PRIVATE_DIR, "private:", true);
+  scan(MSG_LOG_DIR, "group:", false);
+  scan(MSG_LOG_PRIVATE_DIR, "private:", false);
+  return Array.from(new Set(out));
 }
 
+/** 旧版单文件 → 按天分片（启动时跑一次） */
+function migrateLegacyLogs() {
+  let moved = 0;
+  for (const key of listMsgKeys()) {
+    const legacy = msgLogLegacyFileFor(key);
+    if (!legacy || !existsSync(legacy)) continue;
+    try {
+      const rows = parseMsgLines(readFileSync(legacy, "utf8").split("\n").filter(Boolean));
+      const byDay = new Map();
+      for (const r of rows) {
+        const f = msgLogFileFor(key, r?.t);
+        if (!f) continue;
+        if (!byDay.has(f)) byDay.set(f, []);
+        byDay.get(f).push(r);
+      }
+      for (const [f, list] of byDay) {
+        mkdirSync(dirnameOf(f), { recursive: true });
+        appendFileSync(f, list.map((r) => JSON.stringify(r)).join("\n") + "\n");
+      }
+      renameSync(legacy, legacy + ".migrated");
+      moved += 1;
+    } catch {
+      // 迁移失败就留着旧文件，读的时候仍会带上
+    }
+  }
+  if (moved) LOGGER?.info?.(`[onebot] 消息落盘已迁移为按天分片：${moved} 个会话`);
+}
+
+/** 删掉超过保留期的日分片 */
+function pruneOldLogs() {
+  const cutoff = Date.now() / 1000 - MSG_LOG_KEEP_DAYS * 86400;
+  let removed = 0;
+  const pruneDir = (dir) => {
+    try {
+      for (const name of readdirSync(dir)) {
+        const m = name.match(/^(\d{4}-\d{2}-\d{2})\.jsonl$/);
+        if (!m) continue;
+        const t = Date.parse(m[1] + "T00:00:00+08:00") / 1000;
+        if (Number.isFinite(t) && t + 86400 < cutoff) {
+          unlinkSync(join(dir, name));
+          removed += 1;
+        }
+      }
+    } catch {
+      // 目录不存在
+    }
+  };
+  try {
+    for (const gid of readdirSync(MSG_LOG_GROUP_DIR)) pruneDir(join(MSG_LOG_GROUP_DIR, gid));
+  } catch {
+    // 忽略
+  }
+  try {
+    for (const uid of readdirSync(MSG_LOG_PRIVATE_DIR)) {
+      if (/^\d{5,20}$/.test(uid)) pruneDir(join(MSG_LOG_PRIVATE_DIR, uid));
+    }
+  } catch {
+    // 忽略
+  }
+  if (removed) LOGGER?.info?.(`[onebot] 清理了 ${removed} 个过期消息分片`);
+}
 /** 未知段类型 → 中文标签 */
 function recTag(t) {
   const T = {
@@ -988,6 +1252,15 @@ class OneBotClient {
       } catch {
         // 忽略
       }
+      try {
+        recordOutbound(
+          { message_type: "private", user_id: Number(userId) },
+          text,
+          { selfId: this.cfg?.selfId, messageId: String(r?.message_id ?? "") },
+        );
+      } catch {
+        // 落盘失败不影响发送
+      }
       return r;
     });
   }
@@ -1123,29 +1396,42 @@ class OneBotClient {
         user_id: ev.user_id,
         message: segs,
       })
-        .then((r) => this._markSent(convKey, normText, inboundMid, r))
+        .then((r) => this._markSent(convKey, normText, inboundMid, r, ev, text, opts))
         .catch((err) => {
           this.logger?.warn?.(
             "[onebot] send_group_temp_msg 失败（" + (err?.message ?? err) + "），回退 send_private_msg",
           );
           return this.call("send_private_msg", { user_id: ev.user_id, message: segs }).then((r) =>
-            this._markSent(convKey, normText, inboundMid, r),
+            this._markSent(convKey, normText, inboundMid, r, ev, text, opts),
           );
         });
     } else {
       method = "send_private_msg";
       params = { user_id: ev.user_id, message: segs };
     }
-    return this.call(method, params).then((r) => this._markSent(convKey, normText, inboundMid, r));
+    return this.call(method, params).then((r) => this._markSent(convKey, normText, inboundMid, r, ev, text, opts));
   }
 
   /** 出口统一收尾：记下这次发了什么，供去重判断 */
-  _markSent(convKey, normText, inboundMid, result) {
+  _markSent(convKey, normText, inboundMid, result, ev, text, opts = {}) {
     try {
       if (convKey && normText) OUT_SENT.set(convKey + "|" + normText, Date.now());
       if (convKey && inboundMid) OUT_REPLIED.set(convKey + "|" + inboundMid, Date.now());
     } catch {
       // 忽略
+    }
+    // 出站也落盘：这样「她和某人的对话」能双向还原
+    try {
+      if (ev && (ev.message_type === "group" || ev.message_type === "private")) {
+        recordOutbound(ev, text, {
+          selfId: this.cfg?.selfId,
+          qid: opts?.quote ? inboundMid : "",
+          to: ev.message_type === "group" ? ev.user_id : "",
+          messageId: String(result?.message_id ?? result?.data?.message_id ?? ""),
+        });
+      }
+    } catch {
+      // 落盘失败不影响发送
     }
     return result;
   }
@@ -2704,7 +2990,15 @@ export function apply(ctx, _pluginConfig) {
       try { base.debug?.(...a); } catch { /* ignore */ }
     },
   };
+
+  LOGGER = logger;
   const cfg = loadConfig(logger);
+  try {
+    migrateLegacyLogs();
+    pruneOldLogs();
+  } catch {
+    // 迁移/清理失败不影响启动
+  }
 
   // ── 只有一种节奏：单线程打字模型（不再分普通/风控） ──
   // 原先风控模式会覆盖 followUpSeconds / maxParts / minSendGapMs / groupMergeWindowMs /
@@ -6265,6 +6559,140 @@ export function apply(ctx, _pluginConfig) {
       );
       logger.info?.("[onebot] 排期表工具已注册（my_schedule）");
 
+      // ── 读对话：她和某人的往来 / 某人说过的所有话（按天分片 + 游标） ──
+      const msgDaySince = (days) => Math.floor(Date.now() / 1000) - Math.max(1, Math.min(365, Number(days) || 30)) * 86400;
+      const fmtMsgTime = (t) => {
+        try {
+          return new Date((Number(t) || 0) * 1000).toISOString().replace("T", " ").slice(0, 19);
+        } catch {
+          return "";
+        }
+      };
+      const slimRow = (r) => {
+        const o = {
+          t: fmtMsgTime(r.t),
+          dir: String(r.d || "i") === "o" ? "out" : "in",
+          text: String(r.x || ""),
+        };
+        if (r.g) o.group = String(r.g);
+        if (r.img?.length) o.img = r.img.length;
+        if (r.fw) o.fw = { id: String(r.fw.id || ""), n: Number(r.fw.n) || 0 };
+        if (r.qid) o.qid = String(r.qid);
+        if (r.to) o.to = String(r.to);
+        if (r.unk?.length) o.unk = r.unk.map((u) => String(u?.t || ""));
+        return o;
+      };
+
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "read_chat_with",
+          description:
+            "看你和某个人之间的往来记录（双向，含你自己发的）。\n" +
+            "scope：all=私聊+群聊（默认）｜private=只看私聊｜group:<群号>=只看那个群。\n" +
+            "带游标：把上一页的 nextCursor 传给 before 就能一直往前翻。",
+          parameters: {
+            qq: { type: "string", description: "对方的 QQ 号" },
+            scope: { type: "string", description: "all / private / group:群号，默认 all" },
+            before: { type: "string", description: "游标（上一页的 nextCursor）" },
+            limit: { type: "number", description: "每页条数，默认 50，最大 200" },
+            days: { type: "number", description: "只看最近多少天，默认 30" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            const qq = String(args?.qq ?? "").trim();
+            if (!/^\d{5,20}$/.test(qq)) return { ok: false, reason: "qq 要填纯数字的 QQ 号" };
+            const scopeRaw = String(args?.scope ?? "all").trim();
+            const sinceSec = msgDaySince(args?.days);
+            let keys = [];
+            if (scopeRaw === "private") keys = ["private:" + qq];
+            else if (scopeRaw.startsWith("group:")) keys = ["group:" + scopeRaw.slice(6)];
+            else keys = ["private:" + qq, ...listMsgKeys().filter((k) => k.startsWith("group:"))];
+
+            const page = readMsgLogPageMulti(keys, {
+              before: args?.before,
+              limit: args?.limit,
+              sinceSec,
+            });
+            const items = [];
+            const selfId1 = String(cfg?.selfId ?? "");
+            for (const r of page.rows) {
+              // 旧记录没有 d：u 等于自己就是她发的
+              const isOut = String(r.d || "") === "o" || (!!selfId1 && String(r.u) === selfId1);
+              if (!isOut && String(r.u) !== qq) continue;
+              if (isOut && String(r.to || "") !== qq) continue;
+              items.push(slimRow(r));
+            }
+            return {
+              ok: true,
+              qq,
+              scope: scopeRaw,
+              count: items.length,
+              hasMore: page.hasMore,
+              nextCursor: page.nextCursor || undefined,
+              items,
+              hint: page.hasMore
+                ? "还有更早的，把 nextCursor 传给 before 继续翻"
+                : "到这里就是全部了（受 days 限制）",
+            };
+          },
+        }),
+      );
+
+      ctx.get?.("tools")?.register?.(
+        defineTool({
+          name: "read_person",
+          description:
+            "看某个人说过的所有话（只他的发言，跨群 + 私聊）。\n" +
+            "带游标：把上一页的 nextCursor 传给 before 继续往前翻。",
+          parameters: {
+            qq: { type: "string", description: "对方 QQ 号" },
+            group: { type: "string", description: "可选，只看某个群号" },
+            before: { type: "string", description: "游标（上一页的 nextCursor）" },
+            limit: { type: "number", description: "每页条数，默认 50，最大 200" },
+            days: { type: "number", description: "只看最近多少天，默认 30" },
+          },
+          output: {
+            schema: { type: "json" },
+            render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
+          },
+          execute: async (args) => {
+            const qq = String(args?.qq ?? "").trim();
+            if (!/^\d{5,20}$/.test(qq)) return { ok: false, reason: "qq 要填纯数字的 QQ 号" };
+            const sinceSec = msgDaySince(args?.days);
+            const keys = args?.group
+              ? ["group:" + String(args.group).replace(/^group:/, "")]
+              : listMsgKeys();
+            const page = readMsgLogPageMulti(keys, {
+              before: args?.before,
+              limit: args?.limit,
+              sinceSec,
+            });
+            const items = [];
+            const selfId2 = String(cfg?.selfId ?? "");
+            for (const r of page.rows) {
+              const isOut = String(r.d || "") === "o" || (!!selfId2 && String(r.u) === selfId2);
+              if (isOut) continue;
+              if (String(r.u) !== qq) continue;
+              items.push(slimRow(r));
+            }
+            return {
+              ok: true,
+              qq,
+              group: args?.group ? String(args.group) : undefined,
+              count: items.length,
+              hasMore: page.hasMore,
+              nextCursor: page.nextCursor || undefined,
+              items,
+              hint: page.hasMore
+                ? "还有更早的，把 nextCursor 传给 before 继续翻"
+                : "到这里就是全部了（受 days 限制）",
+            };
+          },
+        }),
+      );
       // 主人能发什么指令（她自己不知道这些，都是桥里写死的）
       ctx.get?.("tools")?.register?.(
         defineTool({
@@ -7824,6 +8252,7 @@ export function apply(ctx, _pluginConfig) {
             const findTool = (nm) => {
               if (!srcLines) return null;
               const needle = `name: "${nm}"`;
+
               for (let i = 0; i < srcLines.length; i++) {
                 if (srcLines[i].includes(needle)) return i + 1;
               }
@@ -10427,50 +10856,41 @@ async function handleOwnerNatural(ev, text) {
     const vibe = [timeContext(), moodContext()].filter(Boolean).join("\n");
     const vibeNote = vibe ? `${vibe}\n\n` : "";
 
-    // 合并转发：展开前几条
-    // 如果只是"回复了一条转发"，转发内容在被引用的消息里，先追溯回来
-    if (
-      cfg.forwardPreview !== false &&
-      !parsed.forwards?.length &&
-      parsed.replyIds?.length
-    ) {
+    // ── 引用解析（三层兜底，与转发开关解耦） ──
+    // 1) get_msg  2) 本地落盘  3) 引用段自带的摘要
+    if (parsed.replyIds?.length) {
+      const qid0 = String(parsed.replyIds[0]);
+      let qsegs = [];
       try {
-        const quoted = await client.call("get_msg", { message_id: parsed.replyIds[0] }, 6000);
-        const qsegs = Array.isArray(quoted?.message) ? quoted.message : [];
+        const quoted = await client.call("get_msg", { message_id: qid0 }, 6000);
+        qsegs = Array.isArray(quoted?.message)
+          ? quoted.message
+          : Array.isArray(quoted?.content)
+          ? quoted.content
+          : [];
         logger.info?.(
-          `[onebot] 引用消息结构：types=${JSON.stringify(qsegs.map((x) => x?.type))} raw=${JSON.stringify(quoted).slice(0, 400)}`,
+          `[onebot] 引用解析：get_msg 命中 id=${qid0} types=${JSON.stringify(qsegs.map((x) => x?.type))}`,
         );
-        // 被引用的消息里如果有图，也拿给她看
+        const qText1 = qsegs
+          .filter((x) => x?.type === "text")
+          .map((x) => String(x?.data?.text ?? ""))
+          .join("")
+          .trim();
+        if (qText1 && qText1 !== String(parsed.text || "").trim()) {
+          parsed.quotedText = qText1.slice(0, 300);
+          parsed.quotedFrom = String(quoted?.sender?.card || quoted?.sender?.nickname || "");
+        }
+        // 被引用消息里的图
         if (cfg.enableImages && imagePayloads.length < (cfg.maxImagesPerMessage || 2)) {
           const qImg = qsegs.find((x) => x?.type === "image");
-          if (qImg) {
-            const u = String(qImg?.data?.url || qImg?.data?.file || "");
-            if (u) {
-              const got = await imagePayloadFrom(u);
-              if (got) {
-                imagePayloads.push(got);
-                logger.info?.("[onebot] 引用消息里的图已取到");
-              } else {
-                logger.warn?.("[onebot] 引用消息里的图取不到（直连和 get_image 都失败）");
-              }
-            }
+          const u = String(qImg?.data?.url || qImg?.data?.file || "");
+          if (u) {
+            const got = await imagePayloadFrom(u);
+            if (got) imagePayloads.push(got);
+            else logger.warn?.("[onebot] 引用消息里的图取不到");
           }
         }
-        // 被引用消息里的文字，也要作为上下文（引用往往就是在回应这段）
-        try {
-          const qText = qsegs
-            .filter((x) => x?.type === "text")
-            .map((x) => String(x?.data?.text ?? ""))
-            .join("")
-            .trim();
-          if (qText && qText !== String(parsed.text || "").trim()) {
-            parsed.quotedText = qText.slice(0, 300);
-            parsed.quotedFrom = String(quoted?.sender?.card || quoted?.sender?.nickname || "");
-            logger.info?.(`[onebot] 引用内容已取到：${qText.slice(0, 40)}`);
-          }
-        } catch {
-          // 忽略
-        }
+        // 被引用的是转发
         const fwSeg = qsegs.find((x) => x?.type === "forward");
         if (fwSeg) {
           parsed.forwards.push({
@@ -10478,18 +10898,46 @@ async function handleOwnerNatural(ev, text) {
             rawKeys: Object.keys(fwSeg.data ?? {}),
             raw: fwSeg.data ?? {},
           });
-          logger.info?.("[onebot] 从引用消息里找到了转发");
         }
       } catch (err) {
-        // 旧客户端消息可能查不到，用引用段自带的摘要兜底
-        const msg = String(err?.message ?? err);
-        logger.info?.(`[onebot] 追溯引用失败（${msg.slice(0, 60)}），用摘要兜底`);
-        if (parsed.replySummary) {
-          parsed.forwards.push({ id: "", rawKeys: [], raw: {}, summaryOnly: parsed.replySummary });
+        logger.info?.(
+          `[onebot] 引用解析：get_msg 失败（${String(err?.message ?? err).slice(0, 50)}），改查本地`,
+        );
+      }
+      // 2) 本地落盘兜底（旧消息 / 缓存被清）
+      if (!parsed.quotedText) {
+        try {
+          const local = findMsgInLog(msgLogKeyOf(ev), qid0);
+          if (local) {
+            if (local.x) parsed.quotedText = String(local.x).slice(0, 300);
+            if (local.n) parsed.quotedFrom = String(local.n);
+            if (local.fw?.id && !parsed.forwards?.length) {
+              parsed.forwards.push({ id: String(local.fw.id), rawKeys: [], raw: {} });
+            }
+            if (
+              local.img?.length &&
+              cfg.enableImages &&
+              imagePayloads.length < (cfg.maxImagesPerMessage || 2)
+            ) {
+              const u = String(local.img[0]?.url || local.img[0]?.file || "");
+              if (u) {
+                const got = await imagePayloadFrom(u);
+                if (got) imagePayloads.push(got);
+              }
+            }
+            logger.info?.(`[onebot] 引用解析：本地命中 id=${qid0}`);
+          }
+        } catch {
+          // 本地查不到就算了
         }
       }
+      // 3) 引用段自带摘要
+      if (!parsed.quotedText && parsed.replySummary) {
+        parsed.quotedText = String(parsed.replySummary).slice(0, 300);
+        logger.info?.("[onebot] 引用解析：只有摘要");
+      }
+      if (!parsed.quotedText) logger.info?.(`[onebot] 引用解析：什么都没取到 id=${qid0}`);
     }
-
     // 被 @ 但本条既没转发也没引用：回看最近几条，找上面刚发的转发
     if (
       cfg.forwardPreview !== false &&
@@ -11983,11 +12431,10 @@ async function handleOwnerNatural(ev, text) {
               if (pseudo.replyIds?.[0]) rec2.qid = String(pseudo.replyIds[0]);
               if (pseudo.files?.length) rec2.files = pseudo.files.slice(0, 5);
               try {
-                const file = msgLogFileFor(gid);
-                if (file) {
-                  mkdirSync(MSG_LOG_DIR, { recursive: true });
-                  appendFileSync(file, JSON.stringify(rec2) + "\n");
-                }
+                rec2.d = "i";
+                rec2.k = "group:" + gid;
+                rec2.g = gid;
+                appendMsgRec("group:" + gid, rec2);
               } catch {
                 // 回填失败不影响返回
               }

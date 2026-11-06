@@ -5,7 +5,7 @@
 基于 [OneBot 11](https://github.com/botuniverse/onebot-11) 协议，通过 [NapCat](https://github.com/NapNeko/NapCatQQ) 连接 QQ，
 让 DSH 的 Agent 能在私聊和群里说话——并且带记忆、有作息、会主动找你。
 
-> **当前版本 2.1.0**（2026-11-06）。变更见 [CHANGELOG.md](CHANGELOG.md)。
+> **当前版本 2.2.0**（2026-11-06）。变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 > 本项目是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的一个 Cordis 插件，
 > **不是独立程序**。你需要先有 DSH 和 NapCat。
@@ -267,30 +267,32 @@ journalctl -u dsh-web -n 50 | grep -o 'http://127.0.0.1:3080/?token=[A-Za-z0-9_-
 
 ### 消息存哪、怎么翻
 
-每条群消息和私聊消息都会写一条**结构化记录**（旁听也算，@ 不 @ 一视同仁），重启不丢：
+每条群消息和私聊消息都会写一条**结构化记录**（旁听也算，@ 不 @ 一视同仁），**按天分片**，重启不丢：
 
 ```
 ~/.dsh/onebot-bridge/
-├─ messages/<群号>.jsonl         # 群聊，一条一行
-├─ messages/private/<QQ>.jsonl   # 私聊
-├─ users/<QQ>.json               # 人物档案，一人一个文件
-├─ groups/<群号>.json             # 群画像，一群一个文件
+├─ messages/group/<群号>/<YYYY-MM-DD>.jsonl    # 群聊：收到 + 发出
+├─ messages/private/<QQ>/<YYYY-MM-DD>.jsonl    # 私聊：收到 + 发出
+├─ users/<QQ>.json                             # 人物档案，一人一个文件
+├─ groups/<群号>.json                           # 群画像，一群一个文件
 └─ （会话原文、附件仍在 ~/.dsh/sessions/、~/.dsh/attachments/）
 ```
 
 一条记录大概长这样（有哪个字段才写哪个）：
 
 ```json
-{"v":1,"k":"group:123456789","id":"1984189504","u":"100000001","n":"某人","t":1793898085,
+{"v":1,"k":"group:123456789","d":"i","id":"1984189504","u":"100000001","n":"某人","t":1793898085,
  "x":"转发了","atMe":1,"ats":[{"qq":"100000002","name":"某某"}],
  "qid":"1601253466","img":[{"url":"https://…","file":"….jpg"}],
  "fw":{"id":"7704733609204261074","n":4},"unk":[{"t":"video","d":"…"}]}
 ```
 
-- **保留**：单个文件超过 8MB 自动滚动，只留最近 1500 行；更早的在会话原文里
+- **`d`**：`i` 收到的 / `o` 她发出的（发出的还带 `to`，表示这条是回给谁的）
+- **保留**：按天分片，默认留 **180 天**，启动时自动清理过期分片；单日超过 2 万行会裁掉最老的
+- **迁移**：旧版单文件（`messages/<群号>.jsonl`）启动时自动拆成按天文件，原文件改名 `.migrated`
 - **未知类型**：视频 / 语音 / 红包 / 卡片 / 位置等进 `unk` 原样保留，只渲染成占位，不解析、也不会崩
 
-读的时候用这五个工具（都读上面这份记录，QQ 掉线也能用）：
+读的时候用这七个工具（都读上面这份记录，QQ 掉线也能用）：
 
 | 工具 | 用途 |
 |---|---|
@@ -299,8 +301,18 @@ journalctl -u dsh-web -n 50 | grep -o 'http://127.0.0.1:3080/?token=[A-Za-z0-9_-
 | `read_thread({id, depth})` | 沿「回复/引用」往上追：A 引 B、B 引 C |
 | `expand_forward({messageId, from, count})` | 展开合并转发，按条列出 |
 | `search_messages({q, person, group, days})` | 跨群搜**旁听原文**（`recall` 只覆盖进过会话的消息） |
+| **`read_chat_with({qq, scope, before, limit, days})`** | **她和某个人的往来（双向）**：`scope` 可选 `all` / `private` / `group:<群号>`，按 `in`/`out` 交替列出 |
+| **`read_person({qq, group, before, limit, days})`** | **某个人说过的所有话**（只他的发言，跨群 + 私聊） |
 
-翻页统一用 `before=<id>`；返回体里带 `total / shown / hasMore / nextCursor`。
+两个新工具都带**游标**：返回体里的 `nextCursor` 原样传给下一次的 `before`，就能一直往前翻；
+
+```json
+{"ok":true,"count":50,"hasMore":true,"nextCursor":"eyJ0IjoxNzkz…",
+ "items":[{"t":"2026-11-06 12:03:11","dir":"in","text":"…"},
+          {"t":"2026-11-06 12:03:40","dir":"out","text":"…","qid":"…"}]}
+```
+
+翻页约定：`before` 往旧翻，`hasMore=false` 时没有 `nextCursor`；`days` 默认 30，单页上限 200。
 
 ### 记忆
 
@@ -353,7 +365,7 @@ L0 的自我认知**随反思微调**：最短 48 小时改一次，只改有变
 
 ### 内置工具（部分）
 
-代码里一共注册了 **90 个工具**，这里按用途列常用的。
+代码里一共注册了 **92 个工具**，这里按用途列常用的。
 
 **说话**
 
@@ -374,6 +386,7 @@ L0 的自我认知**随反思微调**：最短 48 小时改一次，只改有变
 | `search_messages` | 跨群搜旁听原文 |
 | `look_image` / `list_recent_images` | 看图（先列位置再挑） |
 | `view_avatar` | 看某人头像 |
+| `read_chat_with` / `read_person` | 和某人的往来 / 某人说过的所有话（带游标） |
 
 **看群**
 
@@ -574,7 +587,7 @@ sudo bash scripts/install-watchdog.sh
 
 ```
 .
-├─ index.js                 # 桥本体（单文件，90 个工具）
+├─ index.js                 # 桥本体（单文件，92 个工具）
 ├─ cordis.patch.yml         # DSH 插件挂载点
 ├─ config.example.json      # 配置样例
 ├─ scripts/
