@@ -1,5 +1,60 @@
 # 更新日志
 
+## 3.0.0 · 2026-11-06
+
+**纯结构重构：18,197 行的单文件拆成 1,278 行的入口 + 57 个模块。**
+
+没有新功能，没有行为改版（唯一例外见文末）。这次动的是骨架，不是肌肉。
+
+### 拆分
+
+```
+index.js        1,278 行（原 18,197）—— 只剩装配：配置、状态、路由、启动
+src/
+├── core/       logger / audit / policy / constants / runtime
+├── util/       text / time / misc / send-state / session-files
+├── store/      msglog / selfplan / seen / config / selfviews / facts / people / memory / runtime
+├── onebot/     client / parse / render / events / hooks / session-hooks / tool-hooks
+├── sessions/   manager / windows
+├── net/        fetch
+├── features/   chat / inbound / schedule / activity / qzone / memory-loop / recall
+│               owner / polling / group-admin / groups / stats / misc / timers
+│               length-feedback / runtime-state / stickers
+├── tools/      chat / memory / media / self / toolbox
+└── web/        server / ui
+```
+
+分层单向依赖：`util → core → store → onebot → sessions → features → tools → plugin`。
+
+### 关键设计
+
+- **`ctx.state`**：37 个跨函数可变变量收进一个对象，模块通过引用共享，不再各自复制
+- **`createX(ctx)` 工厂**：每个模块导出工厂，依赖显式传入，不再靠闭包捕获
+- **惰性提升包装**：工厂输出在 `index.js` 里以函数声明形式暴露，首次调用才构造——解决拆分后必然出现的 TDZ 问题
+
+### 顺带修掉的原有 bug
+
+这些在 2.x 里就存在，是函数被误认为在闭包里、实际在模块作用域导致的：
+
+| 位置 | 问题 |
+|---|---|
+| `OneBotClient.sendHuman` | 引用不存在的 `sessions` → 抛错被 catch 吞掉，**私聊防纠缠规则从未生效** |
+| `saveConfig()` | 引用不存在的 `cfg` / `logger`，写配置必然失败 |
+| `saveWatch()` | `dirname` 未导入，目录创建失败 |
+| `deliver()` 尾部 | `sid` / `parsed` / `nickname` 未定义，记忆写入与摘要静默失败 |
+| 看头像限频 | `avatarTimes` 未定义，每小时 3 次的限制从未生效 |
+| 话题标记清理 | `msgTs` 未定义，分支永不执行 |
+| 活动日志 | `actLabel` 未定义 |
+
+### 行为变化
+
+`sendHuman` 的私聊防纠缠、`saveConfig` 的写盘、头像限频这几处**从“静默失败”变成真正生效**。上线后需要观察私聊表现与配置保存。
+
+### 验证
+
+- 静态：`node --check` 全通过、跨模块引用 0 缺失、导入导出 0 不匹配
+- 运行时：线上部署后 53 个工具全部注册、连接正常、零报错，并完成真实收发验证
+
 ## 2.3.0 · 2026-11-06
 
 **她的活动日程从「一个时间戳」变成「她自己的日程表」，计时也从聊天进程里拆了出去。**
