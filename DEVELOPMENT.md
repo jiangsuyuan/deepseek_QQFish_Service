@@ -100,34 +100,65 @@ ls -la ~/.dsh/onebot-bridge/patch-proposals/
 
 ## 发布前必做：隐私清洗
 
-服务器上跑的代码含有真实群号、QQ 号、机器人昵称。**同步到发布仓库前必须清洗**：
+服务器上跑的代码和提交的文档里都可能带真实群号、QQ 号、机器人昵称、服务器 IP。**同步到发布仓库前必须清洗**。
 
-```powershell
-# 群号 → 占位
-$t = $t.Replace('123456789', '123456789')
-# 昵称 → 通用
-$t = $t.Replace('(肥鱼|大鱼|鱼鱼)', '(肥鱼|大鱼|鱼鱼)')
-# 注释里的昵称
-$t = $t.Replace('「@肥鱼」', '「@昵称」')
+3.0 之后代码在 `index.js` + `src/`，**扫的是整棵树，不是单个文件**：
+
+```bash
+# 1) 先扫，看清有哪些
+git grep -nE '[0-9]{8,10}|竹筒[^ ]*|@[^ ]{2,8}' -- '*.js' '*.md' '*.cs' '*.json'
 ```
 
-清洗后扫描一次，确认零命中：
-
-```powershell
-Select-String -Path index.js -Pattern '真实群号|真实QQ号|机器人昵称|服务器IP|token'
+```bash
+# 2) 批量替换（按需改映射表）
+python3 - <<'PY'
+import os
+M = {
+  '真实QQ号': '100000001',
+  '真实群号': '123456789',
+  '机器人昵称': '肥鱼',
+  '服务器IP': '203.0.113.10',
+}
+files = ['index.js']
+for root, _, fs in os.walk('src'):
+    for f in fs:
+        if f.endswith('.js'): files.append(os.path.join(root, f))
+for p in files:
+    s = open(p, encoding='utf-8').read(); o = s
+    for k, v in M.items(): s = s.replace(k, v)
+    if s != o: open(p, 'w', encoding='utf-8').write(s)
+PY
 ```
 
-另外注意：**PowerShell 的 `Set-Content -Encoding UTF8` 会加 BOM**，用 `[System.IO.File]::WriteAllText($p, $t, (New-Object System.Text.UTF8Encoding($false)))` 写。
+```bash
+# 3) 复查必须零命中
+git grep -nE '<你刚才替换掉的那些值>' -- '*.js' '*.md' '*.cs' '*.json'
+```
+
+**注意两点**：
+
+- 替换会命中**注释和提示词里的示例**（比如 `send_message({ target: "group:..." })`），这是对的，一起换
+- 编译产物（`tray-client/*.exe`）改不了，要么接受，要么不提交二进制
 
 ## 改代码时容易踩的坑
 
 按踩坑频率排序，都是这个项目里真实踩过的：
 
-### 1. 作用域（最常见的运行时崩溃）
+### 1. 依赖传递（3.0 之后最容易犯的错）
 
-`logger` / `cfg` / `client` / `sessions` 都在 `apply()` 里定义。**`OneBotClient` 类的方法访问不到它们**，必须用 `this.logger`、`this.cfg`。
+模块通过 `createX(ctx)` 拿依赖，`index.js` 用惰性包装注入。两个高频错误：
 
-`node --check` 查不出这类问题，只能在运行时崩。往类里加代码后，搜一遍裸变量名。
+- **模块里用了没解构的名字** → 运行时 `ReferenceError`，`node --check` 查不出
+- **把 `index.js` 的惰性包装改回 `const { x } = createX(...)`** → 调用点早于初始化时 TDZ 崩
+
+自查办法：
+
+```bash
+# 逐个文件查未定义标识符（用 eslint-scope 或 acorn 写个脚本）
+# 最简单：启动一次，看日志里有没有 ReferenceError / Cannot access
+```
+
+改完模块后，**本地先 `node --input-type=module -e "import('./src/xxx.js')"`** 确认能加载，再部署。
 
 ### 2. 消息处理有两条路径
 

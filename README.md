@@ -404,6 +404,8 @@ journalctl -u dsh-selfclock -f     # 看它什么时候敲了桥
 
 代码里一共注册了 **92 个工具**，这里按用途列常用的。
 
+> 注册代码按域分在 `src/tools/`：`toolbox` 52、`self` 18、`chat` 10、`media` 6、`memory` 6。
+
 **说话**
 
 | 工具 | 作用 |
@@ -652,6 +654,20 @@ sudo bash scripts/install-watchdog.sh
 ```
 
 分层单向依赖：`util → core → store → onebot → sessions → features → tools → plugin`。
+
+### 模块职责
+
+| 目录 | 管什么 | 典型文件 |
+|---|---|---|
+| `core/` | 基础设施：日志、审计、准入策略、常量 | `logger` `audit` `policy` |
+| `util/` | 纯函数，无状态 | `text`（切分/标点）`time` |
+| `store/` | 落盘：消息、配置、人物、记忆、运行时快照 | `msglog` `people` `memory` |
+| `onebot/` | 协议层：连接、解析、渲染、事件入口、钩子 | `client` `parse` `events` |
+| `sessions/` | 会话注册表与续聊窗口 | `manager` `windows` |
+| `features/` | 回合逻辑：对话、日程、活动、空间、记忆回路 | `chat` `schedule` `self-activity` |
+| `tools/` | 工具注册，按域分文件 | `chat` `memory` `media` `self` `toolbox` |
+| `web/` | 本地控制台 | `server` `ui` |
+
 每个模块导出 `createX(ctx)` 工厂，运行时状态统一放在 `ctx.state`。
 
 ---

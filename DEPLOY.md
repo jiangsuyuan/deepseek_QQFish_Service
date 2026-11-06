@@ -157,6 +157,13 @@ dsh plugin --profile web add /path/to/this/repo
 
 验证：输出里应出现 `+ dsh-onebot-bridge`
 
+> **3.0 起是目录而不是单文件。** `dsh plugin add` 指向仓库目录时会整目录 link，`src/` 会跟着走。
+>
+> 如果是手工拷贝部署（不走 `dsh plugin add`），**必须把 `index.js` 和 `src/` 一起拷**，只拷 `index.js` 会直接报 `Cannot find module './src/...'`。
+>
+> 另外：插件启动时会把自身源码同步一份到 `/opt/fish-src`（日志里的「源码副本已同步」）。那是副本，**不要改它**，改了会在下次启动被覆盖。
+
+
 ### 5.2 配套插件
 
 ```bash
