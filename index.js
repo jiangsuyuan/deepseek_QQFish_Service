@@ -162,7 +162,7 @@ const DEFAULTS = {
   quietTopicPerDay: 1,
   /** 群聊记忆互通：把其他群最近在聊的话题带一点进来 */
   crossGroupMemory: true,
-  crossGroupMax: 4,
+  crossGroupMax: 2,
   /** 新闻源与过滤 */
   newsUrl: "https://top.baidu.com/board?tab=realtime",
   newsCacheMinutes: 30,
@@ -2797,10 +2797,12 @@ class SessionManager {
       if (!entry.handle) entry.handle = await this.openAgent(entry.sessionId);
       const agent = entry.handle.agent;
       await withTimeout(agent.whenIdle(), 20000, "silent-idle");
+      const token = Symbol("silent");
       entry.proactiveTurn = true;
       entry.proactiveQuote = false;
       entry.silentTurn = true; // 关键：turn/end 不发送
       entry.silentTurnAt = Date.now();
+      entry.silentToken = token;
       const firstSeq = agent.session.seq;
       try {
         agent.followup(
@@ -2812,7 +2814,11 @@ class SessionManager {
         await withTimeout(agent.whenIdle(), 60000, "silent-turn");
         return extractReply(agent.session, firstSeq);
       } finally {
-        entry.silentTurn = false;
+        if (entry.silentToken === token) {
+          entry.silentTurn = false;
+          entry.silentTurnAt = 0;
+          entry.silentToken = null;
+        }
       }
     });
     entry.queue = job.catch(() => {});
@@ -2822,22 +2828,52 @@ class SessionManager {
   /** 主动回合：让 agent 自己说一段，不进 inTurn（这样自发转发会把它发到 QQ） */
   async runProactive(key, instruction, triggerEv, opts = {}) {
     const entry = await this.ensure(key);
+    const targetKey = String(key || "");
     const job = entry.queue.then(async () => {
       if (!entry.handle) entry.handle = await this.openAgent(entry.sessionId);
       const agent = entry.handle.agent;
       await withTimeout(agent.whenIdle(), 20000, "proactive-idle");
+      // ── 目标必须显式：不能拿「别的会话的 lastTarget」当发送目标 ──
+      let targetEv = triggerEv || null;
+      let targetFrom = triggerEv ? "explicit" : "";
+      if (!targetEv && entry.lastTarget && conversationKey(entry.lastTarget) === targetKey) {
+        targetEv = entry.lastTarget;
+        targetFrom = "session-last";
+      }
+      // 独立会话（自主活动/内省/自检）默认只对主人私聊说，绝不落到某个群
+      if (!targetEv && targetKey.startsWith("self") && this.cfg?.ownerId) {
+        targetEv = { message_type: "private", user_id: Number(this.cfg.ownerId) };
+        targetFrom = "owner-default";
+      }
+      if (!targetEv) {
+        this.logger?.warn?.(`[onebot] 主动回合没有明确目标，跳过：${targetKey}`);
+        return;
+      }
+      const token = Symbol("proactive");
       entry.proactiveTurn = true; // 主动回合：turn/end 负责把话发出去
-      // 记住是「哪条消息」触发的，发送时引用它，避免回错人
-      entry.proactiveTarget = triggerEv || entry.lastTarget;
+      entry.proactiveTarget = targetEv;
+      entry.proactiveToken = token;
+      entry.proactiveSource = opts.source || (targetKey.startsWith("self") ? "activity" : "proactive");
+      entry.proactiveTargetFrom = targetFrom;
+      entry.turnOriginKey = conversationKey(targetEv);
       // 热群插话是「加入正在进行的讨论」，引用某一条会显得突兀，默认不引用
       entry.proactiveQuote = opts.quote === true;
-      agent.followup(
-        createUserMessage({
-          content: [{ type: "text", text: instruction }],
-          source: { kind: "user" },
-        }),
-      );
-      await withTimeout(agent.whenIdle(), 90000, "proactive-turn");
+      try {
+        agent.followup(
+          createUserMessage({
+            content: [{ type: "text", text: instruction }],
+            source: { kind: "user" },
+          }),
+        );
+        await withTimeout(agent.whenIdle(), 90000, "proactive-turn");
+      } finally {
+        // 只有本次 job 还是标志的主人时才清（避免清掉后一个回合的）
+        if (entry.proactiveToken === token) {
+          entry.proactiveTurn = false;
+          entry.proactiveTarget = null;
+          entry.proactiveToken = null;
+        }
+      }
     });
     entry.queue = job.catch(() => {});
     return job;
@@ -9916,7 +9952,7 @@ async function handleOwnerNatural(ev, text) {
     } catch {
       // 落盘失败不影响聊天
     }
-    // 真人在说话：正在跑的内省回合立即作废，别把这条并进「只记东西」的回合里
+    // 真人在说话：正在跑的内省/主动回合立即作废，别把这条并进别的回合里
     try {
       const k0 = conversationKey(ev);
       const ent0 = k0 ? sessions.entries.get(k0) : null;
@@ -9925,6 +9961,15 @@ async function handleOwnerNatural(ev, text) {
         ent0.silentTurnAt = 0;
         logger.info?.(`[onebot] 收到真人消息，静默回合提前结束：${k0}`);
       }
+      // 主动回合的标志绝不能留给下一条真人消息：否则正常回复会被当成「自发消息」发到别处
+      if (ent0?.proactiveTurn) {
+        ent0.proactiveTurn = false;
+        ent0.proactiveTarget = null;
+        ent0.proactiveToken = null;
+        logger.info?.(`[onebot] 收到真人消息，作废未完成的主动回合：${k0}`);
+      }
+      // 记录这一轮真正的来源会话，供发送校验
+      if (ent0) ent0.turnOriginKey = k0;
     } catch {
       // 忽略
     }
@@ -11162,7 +11207,10 @@ async function handleOwnerNatural(ev, text) {
     let crossNote = "";
     if (cfg.crossGroupMemory && ev.message_type === "group") {
       const digest = otherGroupDigest(key, cfg.crossGroupMax);
-      if (digest) crossNote = `[你其他群最近在聊] ${digest}\n`;
+      if (digest) {
+        crossNote =
+          `[你其他群最近在聊（仅供你了解，不要在这里回答那边的问题）] ${digest}\n`;
+      }
     }
 
     let recallNote = "";
@@ -11830,6 +11878,20 @@ async function handleOwnerNatural(ev, text) {
             const text = String(args?.text ?? "").trim();
             if (!target || !text) return { ok: false, reason: "target 和 text 都要" };
             if (!client.connected) return { ok: false, reason: "QQ 现在没连上。" };
+            // 目标来源校验：和本回合来源不一致时记一笔（不拦，但能追出「回错群」）
+            let crossFrom = "";
+            try {
+              const sid0 = String(exec?.agent?.session?.id ?? "");
+              const ent0 = sid0 ? sessions.bySessionId(sid0) : null;
+              const origin0 = ent0?.turnOriginKey || "";
+              if (origin0 && origin0 !== target) {
+                crossFrom = origin0;
+                logger.info?.(`[onebot] 跨会话发送：${origin0} → ${target}`);
+                audit({ kind: "cross_group_send", from: origin0, to: target, text: text.slice(0, 80) });
+              }
+            } catch {
+              // 拿不到就放行
+            }
 
             let ev;
             if (target.startsWith("group:")) {
@@ -14947,9 +15009,26 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
         // 只有「主动回合」才由这里转发；被动回复由 sendHuman 发，避免重复
         if (!entry.proactiveTurn) return;
         entry.proactiveTurn = false;
-        const targetEv = entry.proactiveTarget || entry.lastTarget;
+        // 只发到「本回合明确绑定的目标」：绝不拿 lastTarget 兜底（会把话发到别的群）
+        const targetEv = entry.proactiveTarget || null;
+        const targetFrom = entry.proactiveTargetFrom || "unknown";
+        const src = entry.proactiveSource || "proactive";
         entry.proactiveTarget = null;
-        if (!text || !targetEv) return;
+        entry.proactiveTargetFrom = "";
+        entry.proactiveSource = "";
+        if (!text) {
+          return;
+        }
+        if (!targetEv) {
+          logger.warn?.("[onebot] 主动回合没有明确目标，丢弃（不再用 lastTarget 猜）");
+          audit({ kind: "proactive_no_target" });
+          return;
+        }
+        if (src === "activity" || String(conversationKey(targetEv)).startsWith("self")) {
+          logger.info?.("[onebot] 内部回合的文本不外发，已丢弃");
+          audit({ kind: "internal_text_dropped" });
+          return;
+        }
         // 双保险：和刚 sendHuman 发出去的内容一样就不再重复发
         try {
           const last = entry.lastSent;
@@ -14987,7 +15066,9 @@ ${list.length ? `<ul>${rows}</ul>` : '<p class="empty">还没有页面。她做�
             return;
           }
         }
-        logger.info?.(`[onebot] 自发消息 → ${conversationKey(ev)} ${text.slice(0, 40).replace(/\n/g, " ")}`);
+        logger.info?.(
+          `[onebot] 自发消息 → ${conversationKey(ev)} [src=${src} targetFrom=${targetFrom}] ${text.slice(0, 40).replace(/\n/g, " ")}`,
+        );
         void client
           .sendHuman(ev, text.slice(0, cfg.maxReplyChars), {
             quote: entry.proactiveQuote === true,

@@ -1,5 +1,23 @@
 # 更新日志
 
+## 2.2.1 · 2026-11-06
+
+**修「答错群」和「活动总结进群」：主动回合不再猜目标。**
+
+根因是同一个：`proactiveTurn` / `proactiveTarget` 存在会话（session entry）上，不是回合上；
+一个主动回合留下的标志，会被下一条真人消息继承，于是正常回复走了「自发转发」分支，
+目标又取 `proactiveTarget || lastTarget`——可能是另一个群。
+
+### 修复
+
+- **主动目标必须显式**：`runProactive` 只接受 `triggerEv` 或本会话自己的事件；都没有就用主人私聊（仅独立会话），再没有就**不发**并记 `proactive_no_target`
+- **删掉 `lastTarget` 兜底**：`turn/end` 只发到本回合绑定的目标
+- **真人消息到达即作废主动回合标志**，并记录 `turnOriginKey`
+- **自主活动/内省文本不外发**：`src=activity` 的自发文本直接丢弃（记 `internal_text_dropped`）
+- **跨群话题降噪**：prompt 里的「其他群最近在聊」改成「仅供了解，不要在这里回答那边的问题」，条数 4 → 2
+- **可观测**：自发消息日志带 `[src=proactive|activity targetFrom=explicit|session-last|owner-default]`；
+  `send_message` 目标与本回合来源不一致时记 `cross_group_send` 审计
+
 ## 2.2.0 · 2026-11-06
 
 **消息存储改成按天分片，并且第一次能还原「完整对话」——因为她的回复也落盘了。**
