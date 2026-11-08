@@ -35,6 +35,7 @@ import { createPersonaStore } from "./src/store/persona-store.js";
 import { createPersonaTools } from "./src/tools/persona.js";
 import { createSessionSegments } from "./src/features/session-segments.js";
 import { createDeferredReview } from "./src/features/deferred-review.js";
+import { createEcho } from "./src/features/echo.js";
 import { AUDIT_PATH, auditEnabled, audit, rotateAudit, summarizeDay, renderStats, ymdOffset, setAuditEnabled } from "./src/core/audit.js";
 import { bindConfig } from "./src/store/config.js";
 import { SELF_PLAN_PATH, PLAN_GRACE_MS, readSelfPlan, writeSelfPlan, addSelfPlan, updateSelfPlan, nextSelfPlan, claimDueSelfPlan, ensureSelfPlanPending } from "./src/store/selfplan.js";
@@ -421,6 +422,16 @@ export function apply(ctx, _pluginConfig) {
     LAYERS: { P0: 5, P1: 8, P2: 20 },
   };
   // 惰性构造：logger 在 apply 后面才初始化，这里直接读会 TDZ
+  let __mem_echo = null;
+  function __init_echo() {
+    return (__mem_echo ??= createEcho({ client: () => client, logger, audit }));
+  }
+  const echo = {
+    feed: (...a) => __init_echo().feed(...a),
+    takeNotes: (...a) => __init_echo().takeNotes(...a),
+    status: (...a) => __init_echo().status(...a),
+  };
+
   let __mem_review = null;
   function __init_review() {
     return (__mem_review ??= createDeferredReview({ logger, enqueueEvent, makeEvent }));
@@ -487,7 +498,7 @@ export function apply(ctx, _pluginConfig) {
   let __mem_createPromptCore = null;
   function __init_createPromptCore() { return (__mem_createPromptCore ??= createPromptCore({ cfg, formatLenHint, recentOutageNote })); }
   function promptCore(...a) { return __init_createPromptCore().core(...a); }
-  function __init_createChatFeature() { return (__mem_createChatFeature ??= createChatFeature({ LEN_TIER_NAMES, WAKE_KEY, activeHoursOk, activityTimeline, appendMem, audit, bumpWindow, cfg, client, enqueueEvent, eventTarget, flushInbox, flushSeen, followMax, hitWindow, lenTierOf, logger, makeEvent, markRuntimeDirty, markSeen, openWindow, pendingEvents, pendingWhileBooting, processingIds, pushLen, recentIds, renderEventForAgent, promptCore, segments, deferredReview, seenDirty, seenState, sessions, sleep, state, todayKey })); }
+  function __init_createChatFeature() { return (__mem_createChatFeature ??= createChatFeature({ LEN_TIER_NAMES, WAKE_KEY, activeHoursOk, activityTimeline, appendMem, audit, bumpWindow, cfg, client, enqueueEvent, eventTarget, flushInbox, flushSeen, followMax, hitWindow, lenTierOf, logger, makeEvent, markRuntimeDirty, markSeen, openWindow, pendingEvents, pendingWhileBooting, processingIds, pushLen, recentIds, renderEventForAgent, promptCore, segments, deferredReview, echo, seenDirty, seenState, sessions, sleep, state, todayKey })); }
   function deliver(...a) { return __init_createChatFeature().deliver(...a); }
   function wakeNow(...a) { return __init_createChatFeature().wakeNow(...a); }
   function checkQuietGroups(...a) { return __init_createChatFeature().checkQuietGroups(...a); }
@@ -1370,9 +1381,27 @@ const base = ctx.logger ?? {};
   void toolCatalog
     .register()
     .then(() => createPersonaTools({ ctx, logger, personaStore }).register())
-    .then(() => {
+    .then(async () => {
       // 提前跑一次迁移，别等到第一条消息才建 persona.json
       __init_personaStore();
+      // 复读机开关（默认关，她自己开）
+      try {
+        const { defineTool } = await import("@deepseek-ai/dsh-tools");
+        const tools = ctx?.get?.("tools");
+        const def = __init_echo().register();
+        tools?.register?.(
+          defineTool({
+            name: def.name,
+            description: def.description,
+            parameters: def.parameters,
+            output: { schema: { type: "json" }, render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }] },
+            execute: def.execute,
+          }),
+        );
+        logger?.info?.("[onebot] 复读机工具已注册（echo_mode，默认关）");
+      } catch (err) {
+        logger?.warn?.("[onebot] 复读机注册失败：" + (err?.message ?? err));
+      }
       return installSystemPrompt();
     })
     .then(() => userTools.registerMeta().then(() => userTools.loadAll()))

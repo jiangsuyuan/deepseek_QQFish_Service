@@ -1,6 +1,6 @@
 // QQ 事件入口（原 apply() 内的 client.onEvent 赋值）。
 export function createEventHandler(app) {
-  const { activeHoursOk, activeWindowTarget, allowed, audit, cfg, client, closeWindowFor, conversationKey, deferredReview, dedupe, downloadImage, enqueue, facts, fetchLinkPreview, findMsgInLog, flushSeen, formatLenHint, groupMetaTouch, handleGroupRequest, handleOwnerInviteReply, handleOwnerLeaveGroup, handleOwnerNatural, handleOwnerRelay, handleOwnerRemember, handlePoke, health, hitWindow, imagePayloadFrom, isRefused, judgeSwitchTalk, l1Push, l1TakeText, loadCore, loadGroupMeta, logger, markRuntimeDirty, markSeen, mergeBuf, moodContext, msgLogKeyOf, netWalk, noteMirrorSource, openWindow, otherGroupDigest, parseMessage, pendingWhileBooting, people, recallSearch, recentDigestText, recentOutageNote, recordMessage, renderRecall, seenDirty, seenState, selfModelText, selfViews, sessions, state, stripLoneSurrogates, switchJudgeAt, textOverlaps, timeContext, todayKey, watchHit, webPush, pluginCtx: ctx } = app;
+  const { activeHoursOk, activeWindowTarget, allowed, audit, cfg, client, closeWindowFor, conversationKey, deferredReview, echo, dedupe, downloadImage, enqueue, facts, fetchLinkPreview, findMsgInLog, flushSeen, formatLenHint, groupMetaTouch, handleGroupRequest, handleOwnerInviteReply, handleOwnerLeaveGroup, handleOwnerNatural, handleOwnerRelay, handleOwnerRemember, handlePoke, health, hitWindow, imagePayloadFrom, isRefused, judgeSwitchTalk, l1Push, l1TakeText, loadCore, loadGroupMeta, logger, markRuntimeDirty, markSeen, mergeBuf, moodContext, msgLogKeyOf, netWalk, noteMirrorSource, openWindow, otherGroupDigest, parseMessage, pendingWhileBooting, people, recallSearch, recentDigestText, recentOutageNote, recordMessage, renderRecall, seenDirty, seenState, selfModelText, selfViews, sessions, state, stripLoneSurrogates, switchJudgeAt, textOverlaps, timeContext, todayKey, watchHit, webPush, pluginCtx: ctx } = app;
   return async (ev) => {
     if (ev?.__fromWebUI) logger.info?.(`[onebot] WebUI 事件进入 onEvent：${ev.message_id} type=${ev.post_type}/${ev.message_type}`);
     const trace = (m) => {
@@ -292,6 +292,15 @@ export function createEventHandler(app) {
       } catch {
         // 判断失败就当普通旁听
       }
+    }
+
+    // 复读机：群里有好几个人连发同一句时，她可能跟着发一句（默认关，她自己开）
+    try {
+      if (ev.message_type === "group" && parsed.text) {
+        void echo?.feed?.({ groupId: ev.group_id, userId: ev.user_id, text: parsed.text });
+      }
+    } catch {
+      // 忽略
     }
 
     // 群里没 @ 她、也不是在续聊：只旁观、记录，不回复

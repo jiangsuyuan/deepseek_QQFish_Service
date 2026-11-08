@@ -2,7 +2,7 @@ import { noteError } from "../core/error-watch.js";
 // 一轮对话的投递与唤醒。
 
 export function createChatFeature(ctx) {
-  const { LEN_TIER_NAMES, WAKE_KEY, segments, deferredReview, activeHoursOk, activityTimeline, appendMem, audit, bumpWindow, cfg, client, enqueueEvent, eventTarget, flushInbox, flushSeen, followMax, hitWindow, lenTierOf, logger, makeEvent, markRuntimeDirty, markSeen, openWindow, pendingEvents, pendingWhileBooting, processingIds, pushLen, recentIds, renderEventForAgent, promptCore, seenDirty, seenState, sessions, sleep, state, todayKey } = ctx;
+  const { LEN_TIER_NAMES, WAKE_KEY, segments, deferredReview, echo, activeHoursOk, activityTimeline, appendMem, audit, bumpWindow, cfg, client, enqueueEvent, eventTarget, flushInbox, flushSeen, followMax, hitWindow, lenTierOf, logger, makeEvent, markRuntimeDirty, markSeen, openWindow, pendingEvents, pendingWhileBooting, processingIds, pushLen, recentIds, renderEventForAgent, promptCore, seenDirty, seenState, sessions, sleep, state, todayKey } = ctx;
   async function wakeNow() {
       if (state.state === "busy") return;
       state.state = "busy";
@@ -26,6 +26,14 @@ export function createChatFeature(ctx) {
             core = "";
           }
           const notes = e.payload?.notes ? String(e.payload.notes).trimEnd() + "\n\n" : "";
+          // 复读机跟完要让她知道
+          let echoNote = "";
+          try {
+            echoNote = echo?.takeNotes?.() || "";
+            if (echoNote) echoNote += "\n\n";
+          } catch {
+            echoNote = "";
+          }
           const tools =
             "\n\n**重要：你说的话不会自动发出去。** 要说，必须调工具，target 从上面的事件里抄。" +
             "（比如 group:123456789 或 private:123456789）\n\n" +
@@ -90,7 +98,7 @@ export function createChatFeature(ctx) {
               (last.length ? `，最后几句：\n${last.join("\n")}` : "") +
               `\n 细节可以用 search_messages 查。）\n\n`;
           }
-          await sessions.runSilent(runKey, segNote + header + core + notes + body + tools);
+          await sessions.runSilent(runKey, echoNote + segNote + header + core + notes + body + tools);
 
           // 用 session 事件判断：有 tool/call 才算「处理了」
           let calledTool = false;
