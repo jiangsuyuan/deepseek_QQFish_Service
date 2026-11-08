@@ -285,7 +285,9 @@ class OneBotClient {
           ent0.lastReplyAt = Date.now();
           ent0.lastReplyText = String(parts[0] || "").slice(0, 120);
         }
-        this.windows?.openWindow?.(k0, ev.user_id);
+        // 认群不认人：她说完之后，群里任何人接话都算续聊
+        //（她自己决定是普通回复还是针对某人回复，事件里有对方的 messageId）
+        this.windows?.openWindow?.(k0, "*");
         this.deferredReview?.arm?.(k0);
       }
     } catch {

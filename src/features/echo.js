@@ -20,7 +20,7 @@ const PATH = join(HOME, ".dsh/onebot-bridge/echo.json");
 const WINDOW_MS = 60 * 1000;
 const COOLDOWN_MS = 10 * 60 * 1000;
 const MIN_LEN = 2;
-const MAX_LEN = 20;
+
 const BAD = /(操你|傻逼|妈的|滚|死|杀|裸|约炮|@|http|www\.|\.com)/i;
 
 function norm(t) {
@@ -65,7 +65,7 @@ export function createEcho(app = {}) {
     const gid = String(groupId || "");
     if (!gid || !userId) return;
     const t = String(text || "").trim();
-    if (t.length < MIN_LEN || t.length > MAX_LEN) return;
+    if (t.length < MIN_LEN) return; // 不设上限：真实复读常是二三十字的一句吐槽
     if (BAD.test(t)) return;
     if (/\[[^\]]+\]/.test(t)) return; // [图片] [卡片] 之类占位
     const n = norm(t);

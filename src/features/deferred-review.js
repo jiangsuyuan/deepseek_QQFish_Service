@@ -9,7 +9,7 @@
 //
 // 目的：她说完话之后，别人接着说不带 @ 的话，她也能看见；但不会参与无关话题。
 
-const WAIT_MS = 60 * 1000; // 她说完话后的观察窗
+const WAIT_MS = 120 * 1000; // 她说完话后的观察窗（120 秒：群里接话比私聊慢）
 const EXPIRE_MS = 10 * 60 * 1000; // 等"第一条"最多等这么久，超了就关周期
 
 export function createDeferredReview(app = {}) {
