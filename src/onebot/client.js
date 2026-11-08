@@ -1,6 +1,6 @@
 // OneBot 客户端：连接、收发、打字模型。
 import { sleep } from "../util/time.js";
-import { splitMessage, humanizePunct, collapseLines } from "../util/text.js";
+import { splitMessage, humanizePunct } from "../util/text.js";
 import { audit } from "../core/audit.js";
 import { conversationKey } from "./parse.js";
 import { noteSent, SEND_STATE, OUT_SENT, OUT_REPLIED, DUP_TEXT_MS, DUP_MSG_MS, normOut } from "../util/send-state.js";
@@ -269,8 +269,7 @@ class OneBotClient {
     const parts = [];
     for (const seg of segs) {
       for (const piece of splitMessage(seg, this.cfg)) {
-        // 先把换行断出来的短句并成一段（清单除外），再处理句末标点
-        parts.push(humanizePunct(collapseLines(piece)));
+        parts.push(humanizePunct(piece));
       }
     }
     await this.typing(ev);

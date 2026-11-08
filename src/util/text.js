@@ -60,28 +60,6 @@ function humanizePunct(input) {
   return t;
 }
 
-/**
- * 把换行断出来的短句并成一段。
- * 人聊天不会一句一行；除非真是清单（每行以 - · 数字. 开头），否则并起来。
- */
-function collapseLines(input) {
-  const t = String(input || "");
-  if (!t.includes("\n")) return t;
-  const lines = t.split("\n").map((x) => x.trim()).filter(Boolean);
-  if (lines.length < 2) return lines.join("");
-  const isList = lines.every((x) => /^([-·•]|\d+[.、)]|（\d+）)/.test(x));
-  if (isList) return t;
-  let out = "";
-  for (let i = 0; i < lines.length; i += 1) {
-    const cur = lines[i];
-    if (i === 0) { out = cur; continue; }
-    out = out.replace(/[，,、；;]$/, "");
-    if (/[。！？!?…]$/.test(out)) out += cur;
-    else out += "，" + cur;
-  }
-  return out;
-}
-
 function splitMessage(text, cfg) {
   const t = String(text || "").trim();
   if (!t) return [""];
@@ -130,4 +108,4 @@ function splitMessage(text, cfg) {
   return parts;
 }
 
-export { safeSegData, smartCut, stripLoneSurrogates, safeSlice, humanizePunct, collapseLines, splitMessage };
+export { safeSegData, smartCut, stripLoneSurrogates, safeSlice, humanizePunct, splitMessage };
