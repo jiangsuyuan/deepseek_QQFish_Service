@@ -396,6 +396,7 @@ export function apply(ctx, _pluginConfig) {
   function clipInbound(...a) { return __init_createInbound().clipInbound(...a); }
   function enqueueEvent(...a) { return __init_createInbound().enqueueEvent(...a); }
   function flushInbox(...a) { return __init_createInbound().flushInbox(...a); }
+  function cancelReviews(...a) { return __init_createEvents().cancelReviews(...a); }
   let __mem_createChatFeature = null;
   const toolTable = createToolTable({ ctx });
   // 惰性：logger 在 apply 后面才初始化

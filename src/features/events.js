@@ -21,7 +21,23 @@ export function createEvents(ctx) {
       return inbox.filter((x) => x.status === "unread");
     }
 
-  return { pendingEvents, pushEvent };
+  /** 取消某个群还在排队的回看事件（来了新 @ 时用：旧的回看已经没意义了） */
+  function cancelReviews(groupId) {
+    const gid = String(groupId || "");
+    if (!gid) return 0;
+    let n = 0;
+    for (let i = inbox.length - 1; i >= 0; i -= 1) {
+      const x = inbox[i];
+      if (x?.kind === "review" && String(x.source?.groupId || "") === gid) {
+        inbox.splice(i, 1);
+        n += 1;
+      }
+    }
+    if (n) state.inboxDirty = true;
+    return n;
+  }
+
+  return { pendingEvents, pushEvent, cancelReviews };
 }
 
 export {  };

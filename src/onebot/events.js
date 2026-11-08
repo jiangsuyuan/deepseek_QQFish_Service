@@ -1,6 +1,6 @@
 // QQ 事件入口（原 apply() 内的 client.onEvent 赋值）。
 export function createEventHandler(app) {
-  const { activeHoursOk, activeWindowTarget, allowed, audit, cfg, client, closeWindowFor, conversationKey, deferredReview, echo, dedupe, downloadImage, enqueue, facts, fetchLinkPreview, findMsgInLog, flushSeen, formatLenHint, groupMetaTouch, handleGroupRequest, handleOwnerInviteReply, handleOwnerLeaveGroup, handleOwnerNatural, handleOwnerRelay, handleOwnerRemember, handlePoke, health, hitWindow, imagePayloadFrom, isRefused, judgeSwitchTalk, l1Push, l1TakeText, loadCore, loadGroupMeta, logger, markRuntimeDirty, markSeen, mergeBuf, moodContext, msgLogKeyOf, netWalk, noteMirrorSource, openWindow, otherGroupDigest, parseMessage, pendingWhileBooting, people, recallSearch, recentDigestText, recentOutageNote, recordMessage, renderRecall, seenDirty, seenState, selfModelText, selfViews, sessions, state, stripLoneSurrogates, switchJudgeAt, textOverlaps, timeContext, todayKey, watchHit, webPush, pluginCtx: ctx } = app;
+  const { activeHoursOk, activeWindowTarget, allowed, audit, cfg, client, closeWindowFor, conversationKey, deferredReview, echo, cancelReviews, dedupe, downloadImage, enqueue, facts, fetchLinkPreview, findMsgInLog, flushSeen, formatLenHint, groupMetaTouch, handleGroupRequest, handleOwnerInviteReply, handleOwnerLeaveGroup, handleOwnerNatural, handleOwnerRelay, handleOwnerRemember, handlePoke, health, hitWindow, imagePayloadFrom, isRefused, judgeSwitchTalk, l1Push, l1TakeText, loadCore, loadGroupMeta, logger, markRuntimeDirty, markSeen, mergeBuf, moodContext, msgLogKeyOf, netWalk, noteMirrorSource, openWindow, otherGroupDigest, parseMessage, pendingWhileBooting, people, recallSearch, recentDigestText, recentOutageNote, recordMessage, renderRecall, seenDirty, seenState, selfModelText, selfViews, sessions, state, stripLoneSurrogates, switchJudgeAt, textOverlaps, timeContext, todayKey, watchHit, webPush, pluginCtx: ctx } = app;
   return async (ev) => {
     if (ev?.__fromWebUI) logger.info?.(`[onebot] WebUI 事件进入 onEvent：${ev.message_id} type=${ev.post_type}/${ev.message_type}`);
     const trace = (m) => {
@@ -199,8 +199,13 @@ export function createEventHandler(app) {
     }
 
     // 硬信号（@ 她）走即时路径，并且打断待触发的回看
+    // 同时把这个群还在排队的旧回看全部作废——她已经看到新消息了，旧的回看没意义
     try {
-      if (ev.message_type === "group" && parsed.hasAt) deferredReview?.cancel?.(key);
+      if (ev.message_type === "group" && parsed.hasAt) {
+        deferredReview?.cancel?.(key);
+        const dropped = cancelReviews?.(ev.group_id);
+        if (dropped) logger.info?.(`[onebot] 新 @ 到达，作废本群 ${dropped} 条排队回看`);
+      }
     } catch {
       // 忽略
     }
