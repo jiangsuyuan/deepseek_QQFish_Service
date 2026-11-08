@@ -17,8 +17,9 @@ const HOME = process.env.HOME || homedir();
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PATH = join(HOME, ".dsh/onebot-bridge/echo.json");
 
-const WINDOW_MS = 60 * 1000;
+const WINDOW_MS = 5 * 60 * 1000; // 真实复读是慢的：实测同一句能隔十几分钟还在复读
 const COOLDOWN_MS = 10 * 60 * 1000;
+const SAME_TEXT_MS = 30 * 60 * 1000; // 同一句 30 分钟内只跟一次
 const MIN_LEN = 2;
 
 const BAD = /(操你|傻逼|妈的|滚|死|杀|裸|约炮|@|http|www\.|\.com)/i;
@@ -71,21 +72,26 @@ export function createEcho(app = {}) {
     const n = norm(t);
     if (n.length < MIN_LEN) return;
 
-    const g = (s.groups[gid] = s.groups[gid] || { recent: [], lastEchoAt: 0 });
+    const g = (s.groups[gid] = s.groups[gid] || { recent: [], lastEchoAt: 0, lastText: "" });
     const now = Date.now();
     g.recent = (g.recent || []).filter((x) => now - x.at <= WINDOW_MS);
     g.recent.push({ n, at: now, by: String(userId) });
 
     const same = g.recent.filter((x) => x.n === n);
     const people = new Set(same.map((x) => x.by));
+    if (g.recent.length >= 2 && people.size === 1) {
+      logger?.debug?.(`[onebot] 复读候选但只有同一个人：${t.slice(0, 20)}`);
+    }
     if (people.size < 2) return; // 至少两个不同的人
     if (now - (g.lastEchoAt || 0) < COOLDOWN_MS) return; // 频率
+    if (g.lastText === n && now - (g.lastEchoAt || 0) < SAME_TEXT_MS) return; // 同一句别反复跟
 
     // 发
     try {
       const cli = typeof client === "function" ? client() : client;
       await cli.call("send_group_msg", { group_id: Number(gid), message: t });
       g.lastEchoAt = now;
+      g.lastText = n;
       g.recent = [];
       s.pending.push({ at: now, groupId: gid, text: t, people: people.size });
       if (s.pending.length > 20) s.pending = s.pending.slice(-20);
