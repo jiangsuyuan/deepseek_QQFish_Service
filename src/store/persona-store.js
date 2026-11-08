@@ -56,13 +56,13 @@ function ensureDir(p) {
 }
 
 /** 含专名/年份/书名号 —— 用来判断“这是不是具体内容” */
-const PROPER = /《[^》]+》|\d{4}\s*年|[A-Za-z]{4,}|\d{2,}\s*(卷|篇|章)|[一二三四五六七八九十百千万两零]+\s*(年|卷|次|篇|章|分钟)/;
+const PROPER = /《[^》]+》|\d{4}\s*年|[A-Za-z]{4,}|\d{2,}\s*(卷|篇|章)/;
 
 /** 判断一条底色是不是写得太"完整"（像散文/书面语） */
 function tooComplete(text) {
   const t = String(text || "");
   const why = [];
-  if (t.length > 20) why.push("超过 20 字");
+  if (t.length > 60) why.push("超过 60 字");
   if (/(因为|所以|但是|而是|值得|因此|然而|好比|仿佛|像.{0,6}一样)/.test(t)) why.push("有书面连接词或比喻");
   if (/是.{0,12}的地方|是.{0,12}的事/.test(t)) why.push("「是……的地方」句式");
   return why;
@@ -257,7 +257,7 @@ export function createPersonaStore(app = {}) {
     d.items.push(item);
     save(d);
     hist({ at: now, op: "add", layer, id: item.id, before: "", after: item.text, why: why || "", evidence: evidence || [], by: by || "self" });
-    return { ok: true, item, ...(hint.length ? { hint: "这条读着有点完整：" + hint.join("、") + "。人说话会省掉主语和因果，比如「数完了心里踏实」。" } : {}) };
+    return { ok: true, item, ...(hint.length ? { hint: "这条读着有点文：" + hint.join("、") + "。人格条目要能单独看懂，又要直白，别写成散文。" } : {}) };
   }
 
   function revise({ id, text, evidence, why, by }) {
@@ -265,7 +265,7 @@ export function createPersonaStore(app = {}) {
     const item = d.items.find((x) => x.id === id);
     if (!item) return { ok: false, reason: `没有 ${id} 这条` };
     if (item.layer === "P1" && PROPER.test(text)) return { ok: false, reason: "底色层不能含专名/年份/书名号" };
-    const v = item.layer === "P2" ? { ok: true } : verifyEvidence(item.layer, evidence);
+    const v = by === "creator" || item.layer === "P2" ? { ok: true } : verifyEvidence(item.layer, evidence);
     if (!v.ok) return { ok: false, reason: v.reason };
     const before = item.text;
     item.text = String(text).slice(0, 200);
