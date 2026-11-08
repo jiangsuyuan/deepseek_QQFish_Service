@@ -1,6 +1,6 @@
 {
   "name": "dsh-onebot-bridge",
-  "version": "4.0.10",
+  "version": "4.0.11",
   "private": true,
   "type": "module",
   "main": "index.js",
