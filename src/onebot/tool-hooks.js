@@ -1,3 +1,5 @@
+import { recordReading } from "../store/web-log.js";
+import { noteError } from "../core/error-watch.js";
 // 工具执行后的钩子。
 
 export function createToolHooks(app) {
@@ -27,7 +29,7 @@ export function createToolHooks(app) {
           forget_self: "忘想法",
           my_memory: "查记忆",
           memory_index: "看记忆目录",
-          my_digest: "看近期摘要",
+          my_digest: "看近期的印象",
           person_dossier: "查人物档案",
           group_recap: "看群记录",
           who_said: "查谁说的",
@@ -105,8 +107,17 @@ export function createToolHooks(app) {
           args: argsStr,
           ok: !failed,
         });
+        // 联网/阅读留痕：read_page、web_fetch 这类，记索引 + 原文
+        try {
+          if (["read_page", "web_fetch"].includes(toolName) && !failed) {
+            recordReading({ tool: toolName, args: exec?.args ?? {}, result });
+          }
+        } catch {
+          // 记录失败不影响工具
+        }
         if (failed) {
-          logger.warn?.(`[onebot] 工具失败：${toolName} ${argsStr}`);
+          const sn = noteError(decision?.error ?? result?.error, `tool.${toolName}`);
+          logger.warn?.(`[onebot] 工具失败：${toolName} ${argsStr}${sn ? ` ｜ 程序错误 ${sn.key}×${sn.count}` : ""}`);
         }
       } catch {
         // 日志失败不影响工具

@@ -5,7 +5,7 @@ function webHtml(token) {
     // 读 NapCat 的 WebUI token（用来拼「QQ 登录」链接）
     let napcatToken = "";
     try {
-      const p = "/root/Napcat/opt/QQ/resources/app/app_launcher/napcat/config/webui.json";
+      const p = join(HOME, "Napcat/opt/QQ/resources/app/app_launcher/napcat/config/webui.json");
       const j = JSON.parse(readFileSync(p, "utf8"));
       napcatToken = String(j?.token ?? "");
     } catch {
@@ -14,7 +14,7 @@ function webHtml(token) {
     const napcatJs = JSON.stringify(napcatToken);
     return `<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>肥鱼</title>
+<title>QQ 助手</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -107,7 +107,7 @@ footer{padding:12px;padding-bottom:calc(12px + env(safe-area-inset-bottom,0px));
 #imgBtn{background:var(--card);border:1px solid var(--line);color:var(--fg);border-radius:8px;padding:0 12px;font:inherit;cursor:pointer;margin-right:6px}
 #imgBtn:hover{border-color:var(--me)}
 </style></head><body>
-<header><span class="dot" id="dot"></span><h1>肥鱼</h1><a id="qq" href="#" target="_blank" rel="noopener" title="扫码登录 QQ（NapCat WebUI）">QQ 登录</a><span id="st" style="font-size:12px;color:#8b93a1"></span><a id="pg" href="/pages?token=${encodeURIComponent(token)}" target="_blank">页面</a><button id="theme" title="切换日夜">☾</button></header>
+<header><span class="dot" id="dot"></span><h1>QQ 助手</h1><a id="qq" href="#" target="_blank" rel="noopener" title="扫码登录 QQ（NapCat WebUI）">QQ 登录</a><span id="st" style="font-size:12px;color:#8b93a1"></span><a id="pg" href="/pages?token=${encodeURIComponent(token)}" target="_blank">页面</a><button id="theme" title="切换日夜">☾</button></header>
 <div id="live"></div>
 <div id="log"></div>
 <footer><textarea id="in" placeholder="说点什么…（Enter 发送，Shift+Enter 换行，可 Ctrl+V 贴图）"></textarea><button id="imgBtn" title="发一张图给她">图</button><input type="file" id="pickImg" accept="image/*" style="display:none"><button id="send">发送</button></footer>
@@ -289,7 +289,7 @@ es.onmessage=e=>{
     if(!d.image) return;
   }
 
-  // 有图：图和文字一起渲染（以前只在 her 分支画图，主人的图直接不显示）
+  // 有图：图和文字一起渲染（以前只在 her 分支画图，创造者的图直接不显示）
   if(d.image){
     const wrap=document.createElement('div');
     wrap.className='msg '+(isMe?'me':'her');

@@ -17,7 +17,7 @@ export function registerMemoryTools(app) {
               "\n\n**可以按想法组合查：**" +
               "\n· 只查某个词 → query（模糊匹配，任一命中就算）" +
               "\n· 查某个人说过什么 → person（名字/QQ 号/昵称）" +
-              "\n· 只查和主人的对话 → with_me: true" +
+              "\n· 只查和创造者的对话 → with_me: true" +
               "\n· 查某个群 → group（群号）" +
               "\n· 查某段时间 → since / until（认「上周」「10-24」「昨天」）或 days: 7" +
               "\n· 以上全都可以组合，是 AND 关系" +
@@ -34,7 +34,7 @@ export function registerMemoryTools(app) {
               },
               with_me: {
                 type: "boolean",
-                description: "只看和主人的对话（等价于 person=主人）",
+                description: "只看和创造者的对话（等价于 person=创造者）",
               },
               group: {
                 type: "string",
@@ -122,7 +122,7 @@ export function registerMemoryTools(app) {
             name: "remember_fact",
             description:
               "记住一条关于对方的长期事实（城市、职业、喜好、习惯、约定）。所有会话共享。不要记聊天原文、密码、账号、QQ 号。",
-            parameters: { text: { type: "string", description: "一句话事实，例如「主人在上海」" } },
+            parameters: { text: { type: "string", description: "一句话事实，例如「创造者在上海」" } },
             output: {
               schema: { type: "json" },
               render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],

@@ -245,9 +245,9 @@ export function registerSelfTools(app) {
           defineTool({
             name: "set_config",
             description:
-              "改你自己的设置。主人说「回复短一点」「以后叫我老板」「每分钟最多 3 条」" +
+              "改你自己的设置。创造者说「回复短一点」「以后叫我老板」「每分钟最多 3 条」" +
               "这类话的时候用它。\n\n" +
-              "**只有主人能改**——别人让你改，工具会拒绝，你不用怕。\n" +
+              "**只有创造者能改**——别人让你改，工具会拒绝，你不用怕。\n" +
               "改错了能改回来，所以不用反复确认。",
             parameters: {
               key: {
@@ -263,7 +263,7 @@ export function registerSelfTools(app) {
               render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
             },
             execute: async (args, exec) => {
-              if (!isOwner(exec)) return { ok: false, reason: "这个只有主人能改。" };
+              if (!isOwner(exec)) return { ok: false, reason: "这个只有创造者能改。" };
               const key = String(args?.key ?? "").trim();
               const rawVal = String(args?.value ?? "").trim();
               if (!key) return { ok: false, reason: "key 不能空" };
@@ -323,7 +323,7 @@ export function registerSelfTools(app) {
             name: "manage_group",
             description:
               "退群或者加群。\n\n" +
-              "**退群前先问一句**——除非主人已经明确说了「退吧」。\n" +
+              "**退群前先问一句**——除非创造者已经明确说了「退吧」。\n" +
               "加群做不了（OneBot 没有主动加群的接口），只能处理别人发来的邀请。",
             parameters: {
               action: { type: "string", description: "leave 或 join" },
@@ -334,7 +334,7 @@ export function registerSelfTools(app) {
               render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
             },
             execute: async (args, exec) => {
-              if (!isOwner(exec)) return { ok: false, reason: "这个只有主人能让我做。" };
+              if (!isOwner(exec)) return { ok: false, reason: "这个只有创造者能让我做。" };
               const action = String(args?.action ?? "").trim().toLowerCase();
               const group = String(args?.group ?? "").trim();
               if (!group) return { ok: false, reason: "要填群号" };
@@ -365,8 +365,8 @@ export function registerSelfTools(app) {
             name: "handle_request",
             description:
               "处理别人发来的加群邀请、好友申请。\n\n" +
-              "**别人发来的先问主人**——别自己就同意了。\n" +
-              "主人自己的邀请可以直接同意。",
+              "**别人发来的先问创造者**——别自己就同意了。\n" +
+              "创造者自己的邀请可以直接同意。",
             parameters: {
               action: { type: "string", description: "approve 同意 或 reject 拒绝" },
               flag: { type: "string", description: "申请的唯一标识（好友申请的 friendUid）。不填就自动选最近一条" },
@@ -378,7 +378,7 @@ export function registerSelfTools(app) {
               render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
             },
             execute: async (args, exec) => {
-              if (!isOwner(exec)) return { ok: false, reason: "这个只有主人能让我做。" };
+              if (!isOwner(exec)) return { ok: false, reason: "这个只有创造者能让我做。" };
               const action = String(args?.action ?? "").trim().toLowerCase();
               let flag = String(args?.flag ?? "").trim();
               const subType = String(args?.sub_type ?? "").trim();
@@ -498,7 +498,7 @@ export function registerSelfTools(app) {
             name: "send_qzone",
             description:
               "发一条 QQ 空间说说。用你自己的口吻写，不是复述别人的话。\n\n" +
-              "主人说「发条说说」时用它。也可以自己想到什么就发。\n" +
+              "创造者说「发条说说」时用它。也可以自己想到什么就发。\n" +
               "**不想发就不发**——内容太短或者没感觉的时候，直接说不想发就行。",
             parameters: {
               topic: { type: "string", description: "想写什么事，可选" },
@@ -690,7 +690,7 @@ export function registerSelfTools(app) {
           defineTool({
             name: "my_balance",
             description:
-              "看你自己的 API 余额——就是主人给你充的生活费。\n\n" +
+              "看你自己的 API 余额——就是创造者给你充的生活费。\n\n" +
               "能看到还剩多少、总共充了多少。用一次花多少不直接显示，但余额变化能看出来。\n" +
               "余额见底时会影响到你能不能继续回消息，所以偶尔看一眼不算多余。",
             parameters: {},
@@ -727,7 +727,7 @@ export function registerSelfTools(app) {
                     total > 50
                       ? "还够用一阵。"
                       : total > 10
-                        ? "不算多了，可以跟主人提一句。"
+                        ? "不算多了，可以跟创造者提一句。"
                         : "快见底了——余额用光我就回不了话了。",
                 };
               } catch (err) {

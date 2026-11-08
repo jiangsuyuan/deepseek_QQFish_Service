@@ -1,5 +1,19 @@
 // 自主活动与内省回合。
 
+const ACT_LABELS = {
+  read: "在看书",
+  play: "在玩",
+  explore: "在查东西",
+  think: "在想事情",
+  write: "在写东西",
+  watch_groups: "在看群",
+  dream: "在做梦",
+};
+
+function actLabel(kind) {
+  return ACT_LABELS[String(kind || "")] || "在忙";
+}
+
 export function createSelfActivity(ctx) {
   const { HOME, SELF_ACTIVITY_KEY, appendActivity, appendExploreLog, appendMem, audit, cfg, client, distillCore, isOfflineMode, join, loadActivities, loadCore, loadLearnings, loadSelfState, logger, maybeMakeDigest, patchSelfState, readFileSync, reflectPhase, runThinkingCycle, saveLearnings, scheduleNextSelfActivity, selfActivityHoursOk, selfViews, sessions, state, thinkPhase, updateSelfPlan, webPush, writeFileSync } = ctx;
   async function exploreByIntent(intent, why, nextHint) {
@@ -79,7 +93,7 @@ export function createSelfActivity(ctx) {
     }
 
   async function runThinkingCycleInner(opts = {}) {
-      // 主人点名/测试触发的活动：不占她的每日额度
+      // 创造者点名/测试触发的活动：不占她的每日额度
       const byOwner = opts.byOwner === true;
       if (!selfActivityHoursOk()) return;
       const offline = isOfflineMode();
@@ -548,7 +562,7 @@ export function createSelfActivity(ctx) {
           // 忽略
         }
         audit({ kind: "self_activity", act: kind, len: out.length });
-        // 让主人在 WebUI 里看到她在忙什么（内生驱动可见）
+        // 让创造者在 WebUI 里看到她在忙什么（内生驱动可见）
         try {
           webPush({
             role: "activity",
@@ -761,7 +775,7 @@ export function createSelfActivity(ctx) {
         const hourTo = Number(cfg.selfActivityCountToHour ?? 23);
         const resetAt = Number(loadSelfState().selfActivityResetAt) || 0;
         const done = loadActivities(300).filter((a) => {
-          if (a.byOwner) return false; // 主人点名/测试触发的，不占额度
+          if (a.byOwner) return false; // 创造者点名/测试触发的，不占额度
           if (resetAt && a.at < resetAt) return false;
           const d = new Date(a.at);
           if (d.toDateString() !== today) return false;

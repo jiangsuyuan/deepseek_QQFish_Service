@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 
 const HOME = process.env.HOME || homedir();
+/** 插件自己所在的目录（发布版不再写死绝对路径） */
+const HERE = dirname(fileURLToPath(import.meta.url));
 
 const CONFIG_PATH = join(HOME, ".dsh/onebot-bridge/config.json");
 
@@ -45,7 +47,7 @@ const DEFAULTS = {
   /** 表情包目录（png/jpg/gif/webp，文件名带情绪关键词） */
   stickerDir: '',
   stickerEnabled: false,
-  /** 控制者（主人）的 QQ 号：写进提示词，且私聊只认他 */
+  /** 控制者（创造者）的 QQ 号：写进提示词，且私聊只认他 */
   ownerId: 0,
   /** 拟人化：把长回复拆成多条发 */
   splitReplies: true,
@@ -151,9 +153,7 @@ const DEFAULTS = {
   thinkNotice: true,
   // QQ 场景的回复风格约束：拼在每条消息前，控制篇幅（不影响 Web 会话的全局人格）
   styleHint:
-    "（QQ 聊天场景：像真人发消息一样简短，默认 1-3 句、40-120 字。" +
-    "不要用 markdown 标题、列表、加粗，不要复述我的问题，不要总结。" +
-    "只有我明确说「详细说说」时才展开。）",
+    "（QQ 聊天，用平时说话的口吻。默认一句，说完就停。非要把一件事讲清楚才多两句，别写成一段。能省就省：主语能不说就不说，因果能不说就不说，回半句也行。口语优先：短句、少转折、不用比喻、不用「值得注意 / 总的来说 / 换句话说」这种词。只有真要列数据、资料、步骤的时候才分行；列的时候一行一个，不加「凉的 / 热的」「第一 / 第二」这种分类标题，也不用冒号起头。句子别收太整齐：短句不用句号，直接停。偶尔带个「啊 / 吧 / 呢 / 嘛」，别每条都带。要问就短问：咋了 / 你说呢。别复述对方刚说过的数字和事实，别在结尾补一句总结。情绪到位可以发张表情包，不配文字也行。对方明确要解释或要步骤时，才可以完整说。不要 markdown、不要旁白式解释。）",
   /**
    * 自由说明：拼在每条 QQ 消息的 prompt 里。
    * 目的不是放宽限制，是让她知道「限制可以商量」——

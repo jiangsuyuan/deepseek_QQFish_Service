@@ -7,6 +7,8 @@ import { dirnameOf } from "./msglog.js";
 import { mkdirSync, renameSync, appendFileSync } from "node:fs";
 
 const HOME = process.env.HOME || homedir();
+/** 插件自己所在的目录（发布版不再写死绝对路径） */
+const HERE = dirname(fileURLToPath(import.meta.url));
 
 const SELF_PLAN_PATH = join(HOME, ".dsh/onebot-bridge/self-plan.jsonl");
 

@@ -225,7 +225,7 @@ export function createMisc(app = {}) {
           const real = extractRealInbound(raw);
           if (!real) return { text: "", role: "" }; // 纯内部提示，不收
           // 把「谁说的」也带上——不然「搜某人 QQ 号」永远搜不到，
-          // 因为 extractRealInbound 的正则会把「发言人 149（100000002）」整段吃掉。
+          // 因为 extractRealInbound 的正则会把「发言人 149（100000004）」整段吃掉。
           let speaker = "";
           const mg = raw.match(
             /\[QQ群消息\][^\n]*?发言人\s*([^：:\n]+)[：:]/,

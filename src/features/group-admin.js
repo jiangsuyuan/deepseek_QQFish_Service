@@ -4,7 +4,7 @@ export function createGroupAdmin(ctx) {
   const { audit, cfg, client, facts, logger, pendingFriends, pendingInvites } = ctx;
   async function handleGroupRequest(ev) {
       try {
-        // 加好友请求：转告主人
+        // 加好友请求：转告创造者
         if (ev.request_type === "friend") {
           const userId = String(ev.user_id ?? "");
           const comment = String(ev.comment ?? "").trim().slice(0, 100);
@@ -21,7 +21,7 @@ export function createGroupAdmin(ctx) {
             `\n要加吗？回复「同意好友」或「拒绝好友」。`;
           if (cfg.ownerId) {
             await client.sendPrivate(cfg.ownerId, msg);
-            logger.info?.(`[onebot] 好友请求已转告主人：${userId}`);
+            logger.info?.(`[onebot] 好友请求已转告创造者：${userId}`);
             audit({ kind: "friend_request", userId });
           }
           return;
@@ -37,7 +37,7 @@ export function createGroupAdmin(ctx) {
         const isOwner = cfg.ownerId && inviter === String(cfg.ownerId);
         if (isOwner) {
           await client.call("set_group_add_request", { flag, sub_type: subType, approve: true });
-          logger.info?.(`[onebot] 主人的邀请，直接同意：群 ${groupId}`);
+          logger.info?.(`[onebot] 创造者的邀请，直接同意：群 ${groupId}`);
           return;
         }
 
@@ -48,7 +48,7 @@ export function createGroupAdmin(ctx) {
           `\n要进吗？回复「同意」或「拒绝」（这是最近一条邀请）。`;
         if (cfg.ownerId) {
           await client.sendPrivate(cfg.ownerId, msg);
-          logger.info?.(`[onebot] 入群邀请已转问主人：群 ${groupId} 来自 ${inviter}`);
+          logger.info?.(`[onebot] 入群邀请已转问创造者：群 ${groupId} 来自 ${inviter}`);
         } else {
           logger.warn?.("[onebot] 收到入群邀请但未配置 ownerId，无法确认");
         }
@@ -65,7 +65,7 @@ export function createGroupAdmin(ctx) {
       const saved = facts.add(m[2], "owner");
       if (saved) {
         await client.sendPrivate(cfg.ownerId, `记住了：${saved}\n（所有会话都能用到）`);
-        logger.info?.(`[onebot] 主人写入全局事实：${saved}`);
+        logger.info?.(`[onebot] 创造者写入全局事实：${saved}`);
       } else {
         await client.sendPrivate(cfg.ownerId, "这条没存：内容为空或含敏感信息（QQ号/密钥/路径/口令）。");
       }
@@ -133,7 +133,7 @@ export function createGroupAdmin(ctx) {
         });
         pendingInvites.delete(flag);
         await client.sendPrivate(cfg.ownerId, yes ? `已同意进群 ${info.groupId}` : `已拒绝进群 ${info.groupId}`);
-        logger.info?.(`[onebot] 主人${yes ? "同意" : "拒绝"}了群 ${info.groupId} 的邀请`);
+        logger.info?.(`[onebot] 创造者${yes ? "同意" : "拒绝"}了群 ${info.groupId} 的邀请`);
       } catch (err) {
         logger.warn?.(`[onebot] 执行入群决定失败：${err?.message ?? err}`);
         await client.sendPrivate(cfg.ownerId, `操作失败：${String(err?.message ?? err).slice(0, 120)}`);

@@ -132,13 +132,13 @@ export function registerChatTools(app) {
 
         reg(
           defineTool({
-            name: "send_message",
+            name: "qq_send",
             description:
               "主动发一句话到某个群或私聊。想说话的时候用——不用等别人叫你。\n\n" +
               "**target 和 text 都必须填**，不然发不出去。\n" +
               "target 格式：group:群号 或 private:QQ号（从事件里抄）。\n" +
               "可以带 sticker 参数，发完文字顺便补一张表情（大笑/无语/生气/委屈/震惊/开心/睡觉/random）。\n" +
-              "例：send_message({ target: \"group:123456789\", text: \"这个我也在想\" })",
+              "例：qq_send({ target: \"group:123456789\", text: \"这个我也在想\" })",
             parameters: {
               target: {
                 type: "string",
@@ -294,7 +294,7 @@ export function registerChatTools(app) {
           }),
         );
 
-        logger.info?.("[onebot] 出站工具已注册（send_message / reply_to）");
+        logger.info?.("[onebot] 出站工具已注册（qq_send / reply_to）");
       } catch (err) {
         logger.warn?.("[onebot] 出站工具注册失败：" + (err?.message ?? err));
       }
@@ -311,7 +311,7 @@ export function registerChatTools(app) {
             description:
               "主动给某个好友发私聊。想找谁说话的时候用——不用等他先开口。\n" +
               "qq 填好友的 QQ 号，不是昵称。只在好友列表里的人能发。\n" +
-              "跟 send_message 的 private:xxx 是同一件事，但这个更直接（不用拼 target）。",
+              "跟 qq_send 的 private:xxx 是同一件事，但这个更直接（不用拼 target）。",
             parameters: {
               qq: { type: "string", description: "对方的 QQ 号" },
               text: { type: "string", description: "要说的话" },

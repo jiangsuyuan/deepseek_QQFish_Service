@@ -100,7 +100,7 @@ export function createSchedule(app) {
       setTimeout(() => {
         void (async () => {
           try {
-            // 简讯只发给主人私聊（dailyBriefTarget 可覆盖成别的会话）
+            // 简讯只发给创造者私聊（dailyBriefTarget 可覆盖成别的会话）
             const briefKey =
               String(cfg.dailyBriefTarget || "").trim() ||
               (cfg.ownerId ? `private:${cfg.ownerId}` : "");
@@ -227,7 +227,7 @@ export function createSchedule(app) {
         if (!picked) return;
         const text = await sessions.generate(
           picked[0],
-          "（内部：现在是一天结束的时候，写一段你今天的日记，给主人看。" +
+          "（内部：现在是一天结束的时候，写一段你今天的日记，给创造者看。" +
             "回顾今天：和谁聊了什么、看到什么有意思的事、有没有说错话、心情怎么样。" +
             "150 字以内，第一人称，像真人写日记，不要分点、不要总结成报告。）\n" +
             `【今天的数字】收到 ${st.inbound ?? 0} 条消息，回了 ${st.replies ?? 0} 条。\n` +

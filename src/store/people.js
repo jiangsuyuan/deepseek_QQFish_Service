@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 
 const HOME = process.env.HOME || homedir();
+/** 插件自己所在的目录（发布版不再写死绝对路径） */
+const HERE = dirname(fileURLToPath(import.meta.url));
 
 const USERS_PATH = join(HOME, ".dsh/onebot-bridge/users.json");
 

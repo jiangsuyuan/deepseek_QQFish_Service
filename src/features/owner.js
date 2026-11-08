@@ -1,4 +1,4 @@
-// 主人指令处理。
+// 创造者指令处理。
 
 export function createOwnerCommands(ctx) {
   const { audit, cfg, client, flushSeen, join, loadStickerLabels, logger, markSeen, openWindow, readdirSync, relayDone, sessions } = ctx;
@@ -197,7 +197,7 @@ export function createOwnerCommands(ctx) {
           // 不指定内容：让她按上下文自己开口
           content = await sessions.generate(
             `group:${groupId}`,
-            `（内部指令：主人让你去群里找 QQ ${targetQq} 主动搭一句话。` +
+            `（内部指令：创造者让你去群里找 QQ ${targetQq} 主动搭一句话。` +
               `结合你对这个人的印象和群里最近的话题，说一句自然、简短、有来由的话，` +
               `不要@符号、不要称呼对方 QQ 号、不要解释你在执行任务，50 字以内。）`,
           );

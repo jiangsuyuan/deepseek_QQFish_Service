@@ -47,9 +47,10 @@ export function createInbound(ctx) {
             nickname: target?.sender?.nickname,
           },
           {
-            // merged 是完整 prompt（含内部说明），提取真正的正文给她看
-            text: extractRealInbound(merged) || clipInbound(merged),
+            // 正文用事件自己的文本；notes 是这批消息的补充说明（引用/转发/图片/续聊…）
+            text: target?.__parsedText || target?.raw_message || extractRealInbound(merged) || clipInbound(merged),
             messageId: target?.message_id,
+            notes: merged,
           },
         ),
       );
@@ -75,7 +76,7 @@ export function createInbound(ctx) {
               userId: ev?.user_id,
               nickname: ev?.sender?.nickname,
             },
-            { text: ev?.__parsedText || (ev?.raw_message ?? ""), messageId: ev?.message_id },
+            { text: ev?.__parsedText || (ev?.raw_message ?? ""), messageId: ev?.message_id, notes: prompt },
           ),
         );
         return;

@@ -1,3 +1,5 @@
+import { noteError } from "../core/error-watch.js";
+import { CORE_TOOLS } from "../core/constants.js";
 // 会话注册表：每个群/私聊一个 DSH 会话。
 import { withTimeout } from "../util/time.js";
 import { conversationKey, sessionIdBase } from "../onebot/parse.js";
@@ -122,7 +124,21 @@ class SessionManager {
     const resume = () => agents.resume({ resumeSessionId: SessionId(sessionId), setup, agentOptions });
     const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     try {
-      return await resume();
+      const handle = await resume();
+      // 只把核心工具常驻给她；其余走 tool_catalog / describe_tool / call_tool
+      try {
+        const agentCtx = handle?.agent?.ctx ?? handle?.ctx ?? null;
+        const tools = agentCtx?.get?.("tools") ?? agentCtx?.tools ?? null;
+        if (tools?.restrict && tools?.schemas) {
+          const all = (tools.schemas() || []).map((x) => x.name);
+          const keep = [...new Set([...CORE_TOOLS, ...all.filter((n) => String(n).startsWith("x_"))])];
+          tools.restrict({ allow: keep });
+          this.logger?.info?.(`[onebot] 工具表已精简：常驻 ${keep.length} 个，其余走目录（共 ${all.length} 个）`);
+        }
+      } catch {
+        // 拿不到 agent 作用域就算了，不影响对话
+      }
+      return handle;
     } catch (err) {
       const msg = String(err?.message ?? err);
       // 会话被别的实例握着写锁：等一会儿再试，别立刻判失败
@@ -187,7 +203,10 @@ class SessionManager {
         return await this.turn(entry, text, images);
       } catch (err) {
         const msg = String(err?.message ?? err);
-        this.logger?.warn?.(`[onebot] 常驻轮失败（${msg.slice(0, 120)}），重建 agent 后重试`);
+        const sn = noteError(err, "manager.turn");
+        this.logger?.warn?.(
+          `[onebot] 常驻轮失败（${msg.slice(0, 120)}），重建 agent 后重试${sn ? ` ｜ 程序错误 ${sn.key}×${sn.count}` : ""}`,
+        );
         try {
           await entry.handle?.dispose?.();
         } catch {
@@ -209,6 +228,12 @@ class SessionManager {
     try {
       return await this._turn(entry, text, images);
     } finally {
+      // 只读统计：回合结束时量一次上下文构成（不要影响任何返回值）
+      try {
+        this.onTurnUsage?.(entry?.handle?.agent?.session, entry?.key);
+      } catch {
+        // 统计失败不影响对话
+      }
       entry.inTurn = false;
       entry.running = false;
     }
@@ -445,7 +470,7 @@ class SessionManager {
             : { message_type: "private", user_id: id0 };
         targetFrom = "key";
       }
-      // 独立会话（自主活动/内省/自检）默认只对主人私聊说，绝不落到某个群
+      // 独立会话（自主活动/内省/自检）默认只对创造者私聊说，绝不落到某个群
       if (!targetEv && targetKey.startsWith("self") && this.cfg?.ownerId) {
         targetEv = { message_type: "private", user_id: Number(this.cfg.ownerId) };
         targetFrom = "owner-default";
@@ -472,7 +497,7 @@ class SessionManager {
         );
         await withTimeout(agent.whenIdle(), 90000, "proactive-turn");
       } finally {
-        // 只有本次 job 还是标志的主人时才清（避免清掉后一个回合的）
+        // 只有本次 job 还是标志的创造者时才清（避免清掉后一个回合的）
         if (entry.proactiveToken === token) {
           entry.proactiveTurn = false;
           entry.proactiveTarget = null;

@@ -5,6 +5,8 @@ import { homedir } from "node:os";
 import { getLogger } from "./logger.js";
 
 const HOME = process.env.HOME || homedir();
+/** 插件自己所在的目录（发布版不再写死绝对路径） */
+const HERE = dirname(fileURLToPath(import.meta.url));
 
 function ymdOffset(days) {
   const d = new Date();

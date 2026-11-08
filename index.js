@@ -14,7 +14,8 @@ import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync, copyFileSync, chmodSync, chownSync } from "node:fs";
-import { join, join as pathJoin } from "node:path";
+import { join, join as pathJoin, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { SessionId } from "@deepseek-ai/dsh-session";
 import { zstdDecompressSync } from "node:zlib";
@@ -23,6 +24,16 @@ import { safeSegData, smartCut, stripLoneSurrogates, safeSlice, humanizePunct, s
 import { setLogger, getLogger } from "./src/core/logger.js";
 import { MSG_LOG_DIR, MSG_LOG_PRIVATE_DIR, MSG_LOG_GROUP_DIR, MSG_LOG_DAY_MAX_LINES, MSG_LOG_DAY_KEEP_LINES, MSG_LOG_KEEP_DAYS, MSG_LOG_STATE, msgLogKeyOf, msgLogIsPrivate, msgLogDirFor, msgLogLegacyFileFor, msgLogDay, msgLogFileFor, msgLogDayFiles, appendMsgRec, dirnameOf, recordMessage, recordOutbound, parseMsgLines, readMsgLog, cmpMsgRec, encodeCursor, decodeCursor, readMsgLogPage, readMsgLogPageMulti, findMsgInLog, listMsgKeys, migrateLegacyLogs, pruneOldLogs } from "./src/store/msglog.js";
 import { mirrorSource } from "./src/store/source-mirror.js";
+import { createUsageStats } from "./src/store/usage.js";
+import { createPromptCore } from "./src/features/prompt.js";
+import { createUserTools } from "./src/features/user-tools.js";
+import { createToolCatalog } from "./src/features/tool-catalog.js";
+import { createToolTable } from "./src/features/tool-table.js";
+import { createSystemHints } from "./src/features/system-hints.js";
+import { createPersona } from "./src/features/persona.js";
+import { createPersonaStore } from "./src/store/persona-store.js";
+import { createPersonaTools } from "./src/tools/persona.js";
+import { createSessionSegments } from "./src/features/session-segments.js";
 import { AUDIT_PATH, auditEnabled, audit, rotateAudit, summarizeDay, renderStats, ymdOffset, setAuditEnabled } from "./src/core/audit.js";
 import { bindConfig } from "./src/store/config.js";
 import { SELF_PLAN_PATH, PLAN_GRACE_MS, readSelfPlan, writeSelfPlan, addSelfPlan, updateSelfPlan, nextSelfPlan, claimDueSelfPlan, ensureSelfPlanPending } from "./src/store/selfplan.js";
@@ -88,6 +99,8 @@ export const name = "dsh-onebot-bridge";
 export const inject = [];
 
 const HOME = process.env.HOME || homedir();
+/** 插件自己所在的目录（发布版不再写死绝对路径） */
+const HERE = dirname(fileURLToPath(import.meta.url));
 
 /**
  * 单一出口去重：所有发往 QQ 的文本都走 sendText / sendPrivate，
@@ -382,7 +395,85 @@ export function apply(ctx, _pluginConfig) {
   function enqueueEvent(...a) { return __init_createInbound().enqueueEvent(...a); }
   function flushInbox(...a) { return __init_createInbound().flushInbox(...a); }
   let __mem_createChatFeature = null;
-  function __init_createChatFeature() { return (__mem_createChatFeature ??= createChatFeature({ LEN_TIER_NAMES, WAKE_KEY, activeHoursOk, activityTimeline, appendMem, audit, bumpWindow, cfg, client, enqueueEvent, eventTarget, flushInbox, flushSeen, followMax, hitWindow, lenTierOf, logger, makeEvent, markRuntimeDirty, markSeen, openWindow, pendingEvents, pendingWhileBooting, processingIds, pushLen, recentIds, renderEventForAgent, seenDirty, seenState, sessions, sleep, state, todayKey })); }
+  const toolTable = createToolTable({ ctx });
+  // 惰性：logger 在 apply 后面才初始化
+  let __mem_personaStore = null;
+  function __init_personaStore() {
+    if (!__mem_personaStore) {
+      __mem_personaStore = createPersonaStore({ logger });
+      try {
+        __mem_personaStore.migrateIfNeeded();
+      } catch (err) {
+        console.warn("[onebot] 人格迁移失败：" + (err?.message ?? err));
+      }
+    }
+    return __mem_personaStore;
+  }
+  const personaStore = {
+    list: (...a) => __init_personaStore().list(...a),
+    counts: (...a) => __init_personaStore().counts(...a),
+    add: (...a) => __init_personaStore().add(...a),
+    revise: (...a) => __init_personaStore().revise(...a),
+    retract: (...a) => __init_personaStore().retract(...a),
+    history: (...a) => __init_personaStore().history(...a),
+    stateAt: (...a) => __init_personaStore().stateAt(...a),
+    LAYERS: { P0: 5, P1: 8, P2: 20 },
+  };
+  // 惰性构造：logger 在 apply 后面才初始化，这里直接读会 TDZ
+  let __mem_segments = null;
+  function __init_segments() { return (__mem_segments ??= createSessionSegments({ logger })); }
+  const segments = {
+    channelOf: (...a) => __init_segments().channelOf(...a),
+    keyFor: (...a) => __init_segments().keyFor(...a),
+    noteTurn: (...a) => __init_segments().noteTurn(...a),
+  };
+
+  // 静态内容（风格 + 工具表）放进系统提示：每次请求都发，但不进对话历史，
+  // 不会像以前那样每轮往历史里追加一份。
+  async function installSystemPrompt() {
+    const systemHints = createSystemHints({ cfg });
+    const persona = createPersona({ personaStore });
+    let sys = null;
+    for (let i = 0; i < 50; i += 1) {
+      try {
+        sys = ctx?.get?.("systemPrompt") ?? null;
+      } catch {
+        sys = null;
+      }
+      if (sys?.section) break;
+      await new Promise((r) => setTimeout(r, 400).unref?.());
+    }
+    if (!sys?.section) {
+      logger?.warn?.("[onebot] 系统提示服务不可用，静态提示仍走用户消息");
+      return;
+    }
+    sys.section({
+      name: "onebot-hints",
+      order: 900,
+      interpolate: false,
+      text: () => {
+        const stat = systemHints.staticText();
+        const table = toolTable.text();
+        let who = "";
+        try {
+          who = persona.text();
+        } catch {
+          who = "";
+        }
+        return (
+          (stat ? stat + "\n\n" : "") +
+          (who ? who + "\n\n" : "") +
+          "【工具】（用 call_tool 调用；参数带类型，? 表示可选；不确定就先 describe_tool）\n" +
+          table
+        );
+      },
+    });
+    logger?.info?.("[onebot] 系统提示已注入（风格 + 人格 + 工具表）");
+  }
+  let __mem_createPromptCore = null;
+  function __init_createPromptCore() { return (__mem_createPromptCore ??= createPromptCore({ cfg, formatLenHint, recentOutageNote })); }
+  function promptCore(...a) { return __init_createPromptCore().core(...a); }
+  function __init_createChatFeature() { return (__mem_createChatFeature ??= createChatFeature({ LEN_TIER_NAMES, WAKE_KEY, activeHoursOk, activityTimeline, appendMem, audit, bumpWindow, cfg, client, enqueueEvent, eventTarget, flushInbox, flushSeen, followMax, hitWindow, lenTierOf, logger, makeEvent, markRuntimeDirty, markSeen, openWindow, pendingEvents, pendingWhileBooting, processingIds, pushLen, recentIds, renderEventForAgent, promptCore, segments, seenDirty, seenState, sessions, sleep, state, todayKey })); }
   function deliver(...a) { return __init_createChatFeature().deliver(...a); }
   function wakeNow(...a) { return __init_createChatFeature().wakeNow(...a); }
   function checkQuietGroups(...a) { return __init_createChatFeature().checkQuietGroups(...a); }
@@ -560,7 +651,7 @@ const base = ctx.logger ?? {};
   client.onOutage = (kind, ts) => noteOutageFromClient(kind, ts);
   
   // QQ 离线时，本该私聊发出的内容改成推到 WebUI。
-  // 但要分清是发给谁的：发给主人的，主人本来就该看到；
+  // 但要分清是发给谁的：发给创造者的，创造者本来就该看到；
   // 发给第三方的，正文不能进 WebUI 历史（那是她的私聊内容，
   // 而且 webui-history.jsonl 会被 /history 全量返回，见 2.0.1 的教训）。
   
@@ -719,7 +810,7 @@ const base = ctx.logger ?? {};
   // 配置 / 群管理工具（替代原来的 30+ 个正则指令）
   // ═══════════════════════════════════════════════════════════════
 
-  /** 只有主人能改的东西 */
+  /** 只有创造者能改的东西 */
   
   /** set_config 允许改的 key（白名单） */
   
@@ -729,7 +820,7 @@ const base = ctx.logger ?? {};
   // ═══════════════════════════════════════════════════════════════
 
   // ═══════════════════════════════════════════════════════════════
-  // 余额工具：看她自己的 API 余额（主人充的"生活费"）
+  // 余额工具：看她自己的 API 余额（创造者充的"生活费"）
   // ═══════════════════════════════════════════════════════════════
   
   // 用 SVG 画图：适合图表、示意、简笔，不依赖外部 API
@@ -761,7 +852,7 @@ const base = ctx.logger ?? {};
   // 待确认的入群邀请：flag -> { groupId, inviter, subType, at }
   const pendingInvites = new Map();
 
-  /** 处理群邀请/加群请求：主人的邀请直接同意，别人的先问主人 */
+  /** 处理群邀请/加群请求：创造者的邀请直接同意，别人的先问创造者 */
   // 待处理的好友请求：flag -> { userId, comment, at }
   const pendingFriends = new Map();
 
@@ -796,9 +887,9 @@ const base = ctx.logger ?? {};
   // 只提供三样信息：她的惯例分布、最近 10 条实际字数、最近 100 条实测比例。
   // 原实现是 Math.random() 抽一个档位塞给她当命令，实测压不住（抽到长档实际中位 45 字，
   // 抽到短档反而是 24 字）——所以改成「给她看自己的习惯」，选哪档由她定。
-  const LEN_TIER_EDGES = [8, 25, 60]; // 极短 ≤8 / 短 ≤25 / 中 ≤60 / 长 61-150
+  const LEN_TIER_EDGES = [8, 25, 40]; // 极短 ≤8 / 短 ≤25 / 中 ≤40 / 长 41-80（超过 80 不进统计）
   const LEN_TIER_NAMES = ["极短", "短", "中", "长"];
-  const LEN_RING_MAX = 100;
+  const LEN_RING_MAX = 30; // 只统计最近 30 条：窗口太长会自我强化（越写越长，提示越纵容）
   const LEN_RING = [];
   
   /** 启动后第一次调用时从 audit.log 尾部回填，重启不丢连续性 */
@@ -809,30 +900,30 @@ const base = ctx.logger ?? {};
   
   /** 今日统计报表 */
   
-  /** 完整功能与指令清单（给主人看的） */
+  /** 完整功能与指令清单（给创造者看的） */
   
-  /** 主人的自然语言控制：状态/打断/思考档位/群内发言/静音 */
+  /** 创造者的自然语言控制：状态/打断/思考档位/群内发言/静音 */
   // ── 轮询好友申请（NapCat 不以 request 事件推送，只能主动查） ──
   const notifiedFriends = new Set();
   
   /** 戳一戳：只有当刚才在跟自己说话时才回应 */
   
-  /** 主人私聊指令：表情包清单 / 单独看某一张 */
+  /** 创造者私聊指令：表情包清单 / 单独看某一张 */
   
   /**
- * 只保留「危险或涉及主人身份」的指令给桥直接执行：
+ * 只保留「危险或涉及创造者身份」的指令给桥直接执行：
  * 退群、加群、改配置、代发言、同意/拒绝、静音/风控、续聊参数。
  * 其余（活动、提醒、记住、查询类）全部交给 agent 自己判断并调工具。
  */
 
-  /** 主人的「定向搭话」：去某群 @ 某人说一句 */
+  /** 创造者的「定向搭话」：去某群 @ 某人说一句 */
   const relayDone = new Set(); // 已执行过的定向搭话指令 id
   
-  /** 主人的「记住 X」：直接落库，不经过模型 */
+  /** 创造者的「记住 X」：直接落库，不经过模型 */
   
-  /** 主人的退群指令：识别群号或群名，执行后保留记忆与档案 */
+  /** 创造者的退群指令：识别群号或群名，执行后保留记忆与档案 */
   
-  /** 主人对邀请的答复：返回 true 表示这条消息被消费掉了 */
+  /** 创造者对邀请的答复：返回 true 表示这条消息被消费掉了 */
   
   /** 合并窗口：对方连续快速发消息时，攒一会儿一起回 */
   const mergeBuf = new Map();
@@ -878,7 +969,7 @@ const base = ctx.logger ?? {};
   /** 事件入队：空闲立刻醒，忙则排队 */
   
   // ═══════════════════════════════════════════════════════════════
-  // send_message / reply_to —— 出站工具
+  // qq_send / reply_to —— 出站工具
   // ═══════════════════════════════════════════════════════════════
   
   // ═══════════════════════════════════════════════════════════════
@@ -924,9 +1015,9 @@ const base = ctx.logger ?? {};
   
   /** 只写变了的群：一群一个文件 */
   
-  // ── 需求记事本：她想要的东西随手记下来，等主人有空处理 ──
+  // ── 需求记事本：她想要的东西随手记下来，等创造者有空处理 ──
   
-  // ── 主人专用 WebUI：HTTP + SSE，只认 token ──
+  // ── 创造者专用 WebUI：HTTP + SSE，只认 token ──
   const webClients = new Set(); // SSE 连接
   const webHistory = []; // 最近 100 条，刷新页面能看到
   
@@ -1024,7 +1115,7 @@ const base = ctx.logger ?? {};
   // 两天前的代码，改动申请里的 oldCode 对不上。现在每次启动都覆盖一次。
   try {
     // 3.0 起是目录：整棵树（index.js + src/）都镜像过去，否则她只看得到装配层
-    const r = mirrorSource("/root/dev/dsh-onebot-bridge");
+    const r = mirrorSource(HERE);
     logger.info?.(`[onebot] 源码副本已同步：${r.files} 个文件 / ${r.kb} KB`);
   } catch (err) {
     logger.warn?.(`[onebot] 源码副本同步失败：${err?.message ?? err}`);
@@ -1081,7 +1172,7 @@ const base = ctx.logger ?? {};
   
   // ── 早上统一补回昨晚错过的消息 ─────────────────────────────
   
-  // ── 她的一天：每晚总结发给主人 ─────────────────────────────
+  // ── 她的一天：每晚总结发给创造者 ─────────────────────────────
   
   // ── 自我反思：每天一次 ─────────────────────────────────────
   
@@ -1094,7 +1185,7 @@ const base = ctx.logger ?? {};
   setAuditEnabled(cfg.auditLog !== false);
   rotateAudit();
   audit({ kind: "boot", selfId: cfg.selfId, ownerId: cfg.ownerId });
-  // 主人专用 WebUI
+  // 创造者专用 WebUI
   try {
     webStart();
   } catch (err) {
@@ -1145,7 +1236,7 @@ const base = ctx.logger ?? {};
   
   /**
    * 从多个入口并行游走
-   * @param entries 形如 ["topic:偏头痛", "person:100000001", "day:2026-10-28"]
+   * @param entries 形如 ["topic:偏头痛", "person:123456789", "day:2026-10-28"]
    * @param opts   { depth, maxNodes }
    */
   
@@ -1251,6 +1342,28 @@ const base = ctx.logger ?? {};
   registerChatTools({ cfg, client, logger, pushLen, sessions, state, pluginCtx: ctx });
   registerMemoryTools({ cfg, logger, recallSearch, pluginCtx: ctx });
   startTimers({ ACTIVITY_KINDS, EXPLORE_LOG, HEALTH_PATH, HOME, INBOUND_TEXT_MAX, NET_DECAY, NET_MAX_DEPTH, NET_MIN_W, NET_VISIT_CAP, OUTAGE_PATH, QZONE_PLAN, RUNTIME_PATH, SELF_ACTIVITY_KEY, SELF_HISTORY_PATH, SELF_MODEL_PATH, TOOL_LOG_SKIP, WEBHIST_PATH, activeHoursOk, audit, auditEnabled, cfg, checkQuietGroups, checkReminders, checkSoloStreak, checkTokenBudget, chmodSync, client, copyFileSync, createWebServer, entryLastTopic, existsSync, fireDuePlan, flushInbox, health, hourlyIntrospect, inQuietHours, join, loadActivities, loadSelfModel, loadWebHistory, logger, maybeCompactAll, maybeQzone, memSeen, mkdirSync, myMsgIds, myMsgOrder, net, nextQzoneTick, nextSelfPlan, noteMyMessage, pendingWhileBooting, pickTarget, pollFriendRequests, pollMissedMentions, qzoneLog, readFileSync, recentIds, refreshQqOnline, rotateAudit, runThinkingCycle, saveSelfModel, scheduleDailyBrief, scheduleDiary, scheduleMorningCatchup, scheduleNextSelfActivity, scheduleProactive, seenState, sessions, sleep, snapshotRuntime, statSync, state, unlinkSync, webClients, webHistory, webPush, webStart, pluginCtx: ctx });
+  // 只读统计：每 5 分钟采一次上下文用量与构成（system / tools / messages）
+  const usageStats = createUsageStats({ ctx, sessions, logger });
+  sessions.onTurnUsage = (session, key) => usageStats.note(session, key);
+  usageStats.start();
+  ctx.on?.("dispose", () => usageStats.stop());
+
+  // 工具目录：常驻 18 个，其余按需查（省掉每次请求 60KB 的 schema）
+  const toolCatalog = createToolCatalog({ ctx, logger, toolTable });
+  void toolCatalog
+    .register()
+    .then(() => createPersonaTools({ ctx, logger, personaStore }).register())
+    .then(() => {
+      // 提前跑一次迁移，别等到第一条消息才建 persona.json
+      __init_personaStore();
+      return installSystemPrompt();
+    })
+    .then(() => userTools.registerMeta().then(() => userTools.loadAll()))
+    .catch((err) => logger?.warn?.(`[onebot] 工具目录初始化失败：${err?.message ?? err}`));
+
+  // 她自己造的工具：注册三个入口 + 加载已存在的（坏的定义跳过，不影响启动）
+  const userTools = createUserTools({ ctx, logger });
+
   client.start();
 
   ctx.on?.("dispose", () => {

@@ -244,10 +244,12 @@ export function createRuntimeState(ctx) {
         return [
           `L0 自我认知：${sm.fact?.text ? "有（三层）" : "还没有"}`,
           `L1 工作记忆：当前对话（这个 session）`,
-          `L2 近期摘要：${digests.length} 段，最新 ${digests.length ? new Date(digests[digests.length - 1].to).toLocaleDateString("zh-CN") : "无"}`,
+          `L2 近期印象：${digests.length} 段，最新 ${digests.length ? new Date(digests[digests.length - 1].to).toLocaleDateString("zh-CN") : "无"}`,
           `L3 核心自我：${core.length} 条（belief/care/want/change）`,
           `L4 长期记忆：${mems.length} 条记录，今天 ${todayCount} 条`,
           `L5 专项记录：探险 ${learnCount} 条 / 活动 ${acts.length} 次 / 游戏 / 书单 / 需求本`,
+          "（这些都是**印象**，被压缩过。细节不会消失——想不起来就用 recall / search_messages / " +
+            "read_context 把原话翻出来，别凭印象编。）",
         ].join("\n");
       } catch {
         return "";

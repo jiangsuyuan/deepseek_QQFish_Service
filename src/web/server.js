@@ -6,6 +6,8 @@ import { webHtml } from "./ui.js";
 import { downloadImage } from "../net/fetch.js";
 
 const HOME = process.env.HOME || homedir();
+/** 插件自己所在的目录（发布版不再写死绝对路径） */
+const HERE = dirname(fileURLToPath(import.meta.url));
 
 export function createWebServer(ctx) {
   const { WEBHIST_PATH, cfg, client, fireDuePlan, loadActivities, logger, state, webClients, webHistory } = ctx;
@@ -143,7 +145,7 @@ export function createWebServer(ctx) {
           // 不是聊天内容。混在消息流里会被渲染成「发表情」这种怪气泡，
           // 还会把真正的对话挤到错误位置。
           list = list.filter((m) => m && m.role !== "tool");
-          // scope=private 只看跟主人的私聊（群聊太吵，客户端默认就这个视图）
+          // scope=private 只看跟创造者的私聊（群聊太吵，客户端默认就这个视图）
           if (scope === "private") {
             list = list.filter((m) => !String(m.channel || "").startsWith("group"));
           } else if (scope === "group") {
@@ -179,7 +181,7 @@ export function createWebServer(ctx) {
         // 她发的图片（表情包等）
         // PWA：manifest（start_url 带 token，否则从桌面图标打开会 401）
         if (u.pathname === "/manifest.json") {
-          const iconDir = "/root/dev/dsh-onebot-bridge/icons";
+          const iconDir = join(HERE, "icons");
           const has = (f) => {
             try {
               return existsSync(join(iconDir, f));
@@ -200,7 +202,7 @@ export function createWebServer(ctx) {
               purpose: "maskable",
             });
           const manifest = {
-            name: "肥鱼",
+            name: "QQ 助手",
             short_name: "肥鱼",
             description: "她在这儿",
             start_url: `/?token=${encodeURIComponent(String(cfg.webuiToken || ""))}`,
@@ -221,7 +223,7 @@ export function createWebServer(ctx) {
         }
         if (u.pathname.startsWith("/icon-")) {
           const name = u.pathname.slice(1).replace(/[^a-zA-Z0-9._-]/g, "");
-          const file = join("/root/dev/dsh-onebot-bridge/icons", name);
+          const file = join(HERE, "icons", name);
           try {
             const buf = readFileSync(file);
             res.writeHead(200, {
@@ -235,7 +237,7 @@ export function createWebServer(ctx) {
           return;
         }
 
-        // 主人从 WebUI 发来的图片（存在 uploads/，带 token 校验）
+        // 创造者从 WebUI 发来的图片（存在 uploads/，带 token 校验）
         if (u.pathname.startsWith("/uploads/")) {
           const name = u.pathname.slice(9).replace(/[^a-zA-Z0-9._-]/g, "");
           if (!name) {
@@ -405,7 +407,7 @@ export function createWebServer(ctx) {
           let tok = "";
           let port = 6099;
           try {
-            const p = "/root/Napcat/opt/QQ/resources/app/app_launcher/napcat/config/webui.json";
+            const p = join(HOME, "Napcat/opt/QQ/resources/app/app_launcher/napcat/config/webui.json");
             const j = JSON.parse(readFileSync(p, "utf8"));
             tok = String(j?.token ?? "");
             port = Number(j?.port) || 6099;
@@ -443,7 +445,7 @@ export function createWebServer(ctx) {
               const t = String(parsedBody.text || "").trim();
               const from = String(parsedBody.from || "").slice(0, 40);
 
-              // 主人发来的图片：base64（可带 data:image/png;base64, 前缀）
+              // 创造者发来的图片：base64（可带 data:image/png;base64, 前缀）
               const rawImg = String(parsedBody.image || "");
               const segs = [];
               let savedName = "";
@@ -499,7 +501,7 @@ export function createWebServer(ctx) {
                     data: {
                       url: `${base}/uploads/${savedName}?token=${encodeURIComponent(String(cfg.webuiToken || ""))}`,
                       file: savedName,
-                      summary: String(parsedBody.imageName || "主人发来的图").slice(0, 60),
+                      summary: String(parsedBody.imageName || "创造者发来的图").slice(0, 60),
                     },
                   });
                   logger.info?.(`[onebot] WebUI 收到图片 ${savedName}（${Math.round(buf.length / 1024)} KB）`);
@@ -525,12 +527,12 @@ export function createWebServer(ctx) {
                 user_id: Number(cfg.ownerId) || 0,
                 message_id: `webui-${Date.now()}`,
                 time: Math.floor(Date.now() / 1000),
-                sender: { user_id: Number(cfg.ownerId) || 0, nickname: "主人" },
+                sender: { user_id: Number(cfg.ownerId) || 0, nickname: "创造者" },
                 message: segs,
                 raw_message: t || "[图片]",
                 __fromWebUI: true,
                 __fromButton: from || "",
-                // via: "assistant" 表示这条是 AI 助手代主人发的，不是主人本人打的
+                // via: "assistant" 表示这条是 AI 助手代创造者发的，不是创造者本人打的
                 __viaAssistant: /^assistant$/i.test(String(parsedBody.via || "")),
               };
               // 先把「你发的」记进网页聊天历史。
@@ -544,7 +546,7 @@ export function createWebServer(ctx) {
                   text: t.slice(0, 500),
                   ...(savedName ? { image: `/uploads/${savedName}` } : {}),
                   // via=assistant 时前端/客户端要在气泡上标「助手」——
-                  // 图片消息同样要标，不然分不出是主人发的还是助手代发的
+                  // 图片消息同样要标，不然分不出是创造者发的还是助手代发的
                   ...(isAssistant ? { via: "assistant" } : {}),
                 });
               } catch (err) {

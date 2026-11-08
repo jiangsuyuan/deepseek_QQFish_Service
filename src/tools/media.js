@@ -3,8 +3,10 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 
 const HOME = process.env.HOME || homedir();
+/** 插件自己所在的目录（发布版不再写死绝对路径） */
+const HERE = dirname(fileURLToPath(import.meta.url));
 
-import { lastSvgRender } from "../features/stickers.js";
+import { lastSvgRender, setLastSvgRender } from "../features/stickers.js";
 import { audit } from "../core/audit.js";
 import { downloadImage, fetchHotNews } from "../net/fetch.js";
 import { findMsgInLog, readMsgLog } from "../store/msglog.js";
@@ -94,7 +96,7 @@ export function registerMediaTools(app) {
                 } catch {
                   // 存不了也不影响发送，只是她看不见
                 }
-                lastSvgRender = { ref, bytes: png.length, sent: wantSend };
+                setLastSvgRender({ ref, bytes: png.length, sent: wantSend });
 
                 if (wantSend) {
                   await client.sendImage(target, tmp);

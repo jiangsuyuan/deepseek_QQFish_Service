@@ -1,5 +1,8 @@
 import { searchSource, readSource, listSourceFiles, findInSource } from "../store/source-mirror.js";
 // 全部工具注册（原 apply() 内的巨型 IIFE）。
+// 看头像的限频时间戳（原先引用了一个不存在的变量，导致这个工具一调就抛）
+const avatarTimes = [];
+
 export async function registerToolbox(app) {
   const { ACTIVITY_KINDS, ALLOWED_TOOLS, HOME, appendFileSync, audit, cfg, chmodSync, chownSync, client, conversationKey, copyFileSync, crossGroupScope, downloadImage, execFile, execFileSync, existsSync, facts, followUps, groupLabel, health, imagePayloadFrom, join, lastStickerPreview, listMsgKeys, loadActivities, loadDigests, loadGroupMeta, loadMemLog, loadReminders, loadSelfState, loadStickerLabels, loadWants, logger, markRuntimeDirty, mkdirSync, nextSelfPlan, patchSelfState, people, pickSticker, pickStickerCandidates, proactiveLocationNote, promisify, readFileSync, readMsgLog, readMsgLogPageMulti, readSelfPlan, readdirSync, refusePerson, renderMsgRec, resolveSticker, runThinkingCycle, saveReminders, saveWants, selfViews, sessions, smartCut, statSync, state, stripToText, unlinkSync, webPush, writeFileSync, pluginCtx: ctx, savedStickerTimes } = app;
   try {
@@ -319,15 +322,15 @@ export async function registerToolbox(app) {
           );
           logger.info?.("[onebot] 存表情工具已注册");
 
-          // 功能申请：她可以提一次，由主人决定加不加
+          // 功能申请：她可以提一次，由创造者决定加不加
           ctx.get?.("tools")?.register?.(
             defineTool({
               name: "request_feature",
               description:
-                "觉得自己缺某个能力，提一次功能申请给主人。**一天最多一次**，只有真的卡住才提。" +
+                "觉得自己缺某个能力，提一次功能申请给创造者。**一天最多一次**，只有真的卡住才提。" +
                 "提之前先想想有没有现有工具能绕过去。\n" +
                 "注意：note_want({kind:\"feature\"}) 也能记功能需求，而且**不限次数**——" +
-                "只是记下来等主人看的话用它；真要主人现在就知道、并且已经卡住你了，才用这个。",
+                "只是记下来等创造者看的话用它；真要创造者现在就知道、并且已经卡住你了，才用这个。",
               parameters: {
                 idea: { type: "string", description: "你想要的新功能，一句话说清" },
                 why: { type: "string", description: "为什么需要它（今天遇到了什么具体情况）" },
@@ -339,7 +342,7 @@ export async function registerToolbox(app) {
               },
               execute: async (args, exec) => {
                 if (cfg.featureRequestEnabled === false) {
-                  return { ok: false, reason: "主人关掉了这个通道" };
+                  return { ok: false, reason: "创造者关掉了这个通道" };
                 }
                 const coolHours = Number(cfg.featureRequestCooldownHours) || 24;
                 const last = Number(loadSelfState().lastFeatureRequestAt) || 0;
@@ -367,7 +370,7 @@ export async function registerToolbox(app) {
                 }
                 logger.info?.(`[onebot] 收到功能申请：${idea}`);
                 audit({ kind: "feature_request", idea, why, how });
-                return { ok: true, note: "已经发给主人了，等他判断" };
+                return { ok: true, note: "已经发给创造者了，等他判断" };
               },
             }),
           );
@@ -936,7 +939,7 @@ export async function registerToolbox(app) {
                   text = readFileSync(path, "utf8");
                 } catch {
                   try {
-                    text = readFileSync("/root/dev/dsh-onebot-bridge/CHANGELOG.md", "utf8");
+                    text = readFileSync(join(HERE, "CHANGELOG.md"), "utf8");
                   } catch {
                     return { ok: false, reason: "更新日志不在服务器上" };
                   }
@@ -1289,15 +1292,15 @@ export async function registerToolbox(app) {
           );
           logger.info?.("[onebot] 沙箱工具已注册（exec_sandbox/read_source）");
 
-          // 需求记事本：想要什么随手记，主人有空再看
+          // 需求记事本：想要什么随手记，创造者有空再看
           ctx.get?.("tools")?.register?.(
             defineTool({
               name: "note_want",
               description:
                 "把「我想要什么」记进记事本：感兴趣的网站要账号、缺的功能、想看的书/番…" +
-                "随时可以记，不占额度，不限次数。主人有空会看，恢复联络时会一起报给他。\n" +
+                "随时可以记，不占额度，不限次数。创造者有空会看，恢复联络时会一起报给他。\n" +
                 "kind 填 account（要账号）/ feature（要功能）/ other（其它）。\n" +
-                "跟 request_feature 的区别：这个只是**记下来**等主人看；request_feature 是**现在就通知他**且一天只能一次。",
+                "跟 request_feature 的区别：这个只是**记下来**等创造者看；request_feature 是**现在就通知他**且一天只能一次。",
               parameters: {
                 kind: { type: "string", description: "account / feature / other" },
                 what: { type: "string", description: "想要什么，一句话" },
@@ -1315,7 +1318,7 @@ export async function registerToolbox(app) {
                 const wants = loadWants();
                 // 同一件事别重复记
                 if (wants.some((w) => w.status === "pending" && w.what === what)) {
-                  return { ok: true, note: "这条已经记过了，等主人看" };
+                  return { ok: true, note: "这条已经记过了，等创造者看" };
                 }
                 wants.push({
                   id: Date.now().toString(36),
@@ -1331,7 +1334,7 @@ export async function registerToolbox(app) {
                 audit({ kind: "want", wantKind: kind, what, why });
                 return {
                   ok: true,
-                  note: `记下了。现在本子上有 ${pend} 条待处理，主人有空会看。`,
+                  note: `记下了。现在本子上有 ${pend} 条待处理，创造者有空会看。`,
                 };
               },
             }),
@@ -1853,12 +1856,12 @@ export async function registerToolbox(app) {
               },
             }),
           );
-          // 主人能发什么指令（她自己不知道这些，都是桥里写死的）
+          // 创造者能发什么指令（她自己不知道这些，都是桥里写死的）
           ctx.get?.("tools")?.register?.(
             defineTool({
               name: "owner_commands",
               description:
-                "查主人能对你发哪些指令。有人问「你能做什么」「有哪些指令」「怎么让你去探险」时用它，" +
+                "查创造者能对你发哪些指令。有人问「你能做什么」「有哪些指令」「怎么让你去探险」时用它，" +
                 "别凭印象乱说。",
               parameters: {},
               output: {
@@ -1917,7 +1920,7 @@ export async function registerToolbox(app) {
                   ok: true,
                   total: groups.reduce((n2, g) => n2 + g.items.length, 0),
                   groups,
-                  note: "这些都是主人在 QQ 私聊或网页里直接发的；她不需要「听懂」某个指令，桥会自己拦截处理。",
+                  note: "这些都是创造者在 QQ 私聊或网页里直接发的；她不需要「听懂」某个指令，桥会自己拦截处理。",
                 };
               },
             }),
@@ -1996,7 +1999,7 @@ export async function registerToolbox(app) {
 
           logger.info?.("[onebot] 群印象/我的想法 工具已注册（group_impressions/my_thoughts）");
 
-          // 让她能自己决定开始一轮活动（主人说「活动一下」「去探险」时由她自己调）
+          // 让她能自己决定开始一轮活动（创造者说「活动一下」「去探险」时由她自己调）
           ctx.get?.("tools")?.register?.(
             defineTool({
               name: "run_activity",
@@ -2042,12 +2045,12 @@ export async function registerToolbox(app) {
             }),
           );
 
-          // 提醒（主人说「提醒我…」时由她自己设）
+          // 提醒（创造者说「提醒我…」时由她自己设）
           ctx.get?.("tools")?.register?.(
             defineTool({
               name: "set_reminder",
               description:
-                "给主人设一个提醒。他说「提醒我…」「到点告诉我…」时用。" +
+                "给创造者设一个提醒。他说「提醒我…」「到点告诉我…」时用。" +
                 "minutes 填多少分钟后提醒（最少 1 分钟）",
               parameters: {
                 minutes: { type: "number", description: "多少分钟后提醒" },
@@ -2376,13 +2379,13 @@ export async function registerToolbox(app) {
 
           logger.info?.("[onebot] 本子/PDF 工具已注册（write_notebook/read_notebook/read_pdf）");
 
-          // ── 改动申请：她想改代码时，写一份设计报告给主人，不自己动手 ──
+          // ── 改动申请：她想改代码时，写一份设计报告给创造者，不自己动手 ──
           const PROPOSAL_DIR = join(HOME, ".dsh/onebot-bridge/patch-proposals");
           ctx.get?.("tools")?.register?.(
             defineTool({
               name: "propose_patch",
               description:
-                "你想改自己代码的时候用这个：写一份「改动申请」发给主人，由他来执行。你改不了代码，但可以把想法说清楚。\n" +
+                "你想改自己代码的时候用这个：写一份「改动申请」发给创造者，由他来执行。你改不了代码，但可以把想法说清楚。\n" +
                 "\n" +
                 "【写之前先做三件事】\n" +
                 "1. 用 read_source 或 my_source 把那一段**原文照抄下来**（oldCode 要能精确定位，不能凭印象）\n" +
@@ -2391,15 +2394,15 @@ export async function registerToolbox(app) {
                 "\n" +
                 "【六个字段，每个都要写实】\n" +
                 "· file    —— 哪个文件（通常 index.js）\n" +
-                "· where   —— 大概位置（函数名 + 行号），方便主人找\n" +
-                "· oldCode —— **原文照抄**，必须唯一（出现两次以上主人没法改）\n" +
+                "· where   —— 大概位置（函数名 + 行号），方便创造者找\n" +
+                "· oldCode —— **原文照抄**，必须唯一（出现两次以上创造者没法改）\n" +
                 "· newCode —— 改成什么（只改一行，别整段重写）\n" +
                 "· why     —— **举具体反例**：「输入 X 会变成 Y，应该是 Z」，不要写「这样更合理」\n" +
                 "· principle —— **原理**：为什么这么改能解决，背后的道理是什么\n" +
                 "· risk    —— **主动说副作用**：什么情况下会出问题，影响面多大\n" +
-                "· verify  —— **给可执行的样例**：输入 → 期望输出，主人照着跑就能验\n" +
+                "· verify  —— **给可执行的样例**：输入 → 期望输出，创造者照着跑就能验\n" +
                 "\n" +
-                "【反面例子（会被主人退回）】\n" +
+                "【反面例子（会被创造者退回）】\n" +
                 "✗ why: 「这样更规范」\n" +
                 "✗ verify: 「测试一下看对不对」\n" +
                 "✗ risk: 「应该没影响」\n" +
@@ -2413,10 +2416,10 @@ export async function registerToolbox(app) {
                 "verify: 「①「今天读数 2.52.」应原样返回 ②「短句测试。」应变成「短句测试」\n" +
                 "    ③「Hello there.」应保留句号 ④ 超 40 字长段句号保留」\n" +
                 "\n" +
-                "写得好，主人看一遍就敢动手；写得含糊，他只能来问你，白等一轮。",
+                "写得好，创造者看一遍就敢动手；写得含糊，他只能来问你，白等一轮。",
               parameters: {
                 file: { type: "string", description: "要改哪个文件，比如 index.js / README.md" },
-                where: { type: "string", description: "大概位置：函数名或行号附近，方便主人找" },
+                where: { type: "string", description: "大概位置：函数名或行号附近，方便创造者找" },
                 oldCode: { type: "string", description: "原来的那一行（照抄）" },
                 newCode: { type: "string", description: "改成什么" },
                 why: { type: "string", description: "为什么要改：现在的写法有什么问题" },
@@ -2472,7 +2475,7 @@ export async function registerToolbox(app) {
                   verify ? `## 改完怎么验证\n${verify}` : "",
                   "",
                   "---",
-                  `由她于 ${d.toLocaleString("zh-CN")} 提出，等待主人执行。`,
+                  `由她于 ${d.toLocaleString("zh-CN")} 提出，等待创造者执行。`,
                   "",
                 ]
                   .filter(Boolean)
@@ -2482,7 +2485,7 @@ export async function registerToolbox(app) {
                   mkdirSync(PROPOSAL_DIR, { recursive: true });
                   writeFileSync(join(PROPOSAL_DIR, `${id}.md`), doc, "utf8");
                   audit({ kind: "patch_proposal", id, file });
-                  // 推给主人的 WebUI，让他第一时间看到
+                  // 推给创造者的 WebUI，让他第一时间看到
                   try {
                     webPush({
                       role: "her",
@@ -2495,7 +2498,7 @@ export async function registerToolbox(app) {
                     ok: true,
                     id,
                     saved: `~/.dsh/onebot-bridge/patch-proposals/${id}.md`,
-                    note: "已发给主人。他执行完会告诉你。",
+                    note: "已发给创造者。他执行完会告诉你。",
                   };
                 } catch (err) {
                   return { ok: false, reason: String(err?.message ?? err).slice(0, 200) };
@@ -2507,7 +2510,7 @@ export async function registerToolbox(app) {
           ctx.get?.("tools")?.register?.(
             defineTool({
               name: "my_patch_proposals",
-              description: "看你提过哪些改动申请、主人执行了没有。",
+              description: "看你提过哪些改动申请、创造者执行了没有。",
               parameters: {},
               output: {
                 schema: { type: "json" },
@@ -2537,7 +2540,7 @@ export async function registerToolbox(app) {
                     count: items.length,
                     pending,
                     note: pending
-                      ? `有 ${pending} 份还在等主人执行`
+                      ? `有 ${pending} 份还在等创造者执行`
                       : "都处理完了",
                     items,
                   };
@@ -2571,7 +2574,7 @@ export async function registerToolbox(app) {
                 ],
                 fields: [
                   { key: "file", what: "哪个文件，通常 index.js" },
-                  { key: "where", what: "函数名 + 行号，方便主人找" },
+                  { key: "where", what: "函数名 + 行号，方便创造者找" },
                   { key: "oldCode", what: "原文照抄，必须唯一（出现两次以上没法改）" },
                   { key: "newCode", what: "改成什么，只改一行" },
                   { key: "why", what: "举具体反例：输入 X 变成 Y，应该是 Z" },
@@ -2581,7 +2584,7 @@ export async function registerToolbox(app) {
                 ],
                 bad: [
                   "why 写「这样更规范」——没有具体反例",
-                  "verify 写「测试一下看对不对」——主人没法跑",
+                  "verify 写「测试一下看对不对」——创造者没法跑",
                   "risk 写「应该没影响」——说明你没想过",
                   "oldCode 凭印象写的——和源码对不上就没法改",
                 ],
@@ -2590,7 +2593,7 @@ export async function registerToolbox(app) {
                   risk: "整句英文（Hello there.）会保留句号，不再被拟人化。影响面很小",
                   verify: "①「2.52.」原样 ②「短句测试。」去点 ③「Hello there.」保留 ④ 超 40 字长段保留",
                 },
-                note: "写得好，主人看一遍就敢动手；写得含糊，他只能来问你，白等一轮。",
+                note: "写得好，创造者看一遍就敢动手；写得含糊，他只能来问你，白等一轮。",
               }),
             }),
           );
@@ -3258,15 +3261,15 @@ export async function registerToolbox(app) {
 
           logger.info?.("[onebot] 统一文件工具已注册（files）");
 
-          // ── 主动联系主人 ──
-          // 她想说点什么、发现了新鲜事、有改动申请，都可以用这个主动推给主人。
+          // ── 主动联系创造者 ──
+          // 她想说点什么、发现了新鲜事、有改动申请，都可以用这个主动推给创造者。
           // 不走 QQ（QQ 可能封号），直接推到 WebUI / WinForms 客户端（它们轮询 /history）。
           const NOTIFY_LOG = join(HOME, ".dsh/onebot-bridge/owner-notifications.jsonl");
           ctx.get?.("tools")?.register?.(
             defineTool({
               name: "notify_owner",
               description:
-                "主动跟主人说句话——不用等他先开口。\n" +
+                "主动跟创造者说句话——不用等他先开口。\n" +
                 "适合：发现了有意思的事、读到一段想分享的话、有件事想让他知道、" +
                 "或者只是想冒个泡。\n" +
                 "**不适合**：闲聊、催促、重复说过的话。一天最多 3 次，说之前先想清楚值不值得打断他。\n" +
@@ -3513,7 +3516,7 @@ export async function registerToolbox(app) {
             defineTool({
               name: "render_page",
               description:
-                "做一张网页给自己或主人看：展示统计、记录、记忆、时间线、想法都行。" +
+                "做一张网页给自己或创造者看：展示统计、记录、记忆、时间线、想法都行。" +
                 "生成后在 WebUI 里能打开（聊天里我会告诉你地址）；QQ 里只能发文字说明。" +
                 "html 填完整页面或片段都行；不想写 CSS 也没关系，下面这些 class 已经写好了样式：\n" +
                 "· 标题：h1 / h2 / h3，副标题用 class=\"sub\"，灰字用 class=\"muted\"\n" +
@@ -3611,7 +3614,7 @@ export async function registerToolbox(app) {
                   id,
                   title,
                   url: `http://127.0.0.1:${Number(cfg.webuiPort) || 3081}/page/${id}`,
-                  note: "在 WebUI 里打开这个地址能看到；在 QQ 里主人得自己去 WebUI 看。",
+                  note: "在 WebUI 里打开这个地址能看到；在 QQ 里创造者得自己去 WebUI 看。",
                 };
               },
             }),
@@ -3641,7 +3644,7 @@ export async function registerToolbox(app) {
               name: "add_webui_button",
               description:
                 "在 WebUI 主界面给自己加一个入口按钮（最多 12 个）。按钮有两种用法：" +
-                "① 填 prompt：点一下等于主人发一句话给你，你照着做；" +
+                "① 填 prompt：点一下等于创造者发一句话给你，你照着做；" +
                 "② 填 pageId：点一下直接打开你做过的某个网页。\n" +
                 "想加好用的快捷入口就加，比如「今天的我」→ prompt「给我看看你今天的活动」；" +
                 "「潮汐」→ prompt「查一下今天潮汐怎么样」。别加太多，4-6 个刚好。",
@@ -3707,7 +3710,7 @@ export async function registerToolbox(app) {
               description:
                 "当某人说话让你难堪、被冒犯、恶心到不想再理他时用：先在回复里明确说一句「不想理你了 / 别再跟我说这些」，" +
                 "然后调用这个工具登记。登记后一段时间内，他 @ 你、接你的话都不会再回。" +
-                "只在真的受不了时用，别因为小摩擦就拒聊；对主人无效。",
+                "只在真的受不了时用，别因为小摩擦就拒聊；对创造者无效。",
               parameters: {
                 minutes: { type: "number", description: "多久不再理他，单位分钟，默认 120" },
                 reason: { type: "string", description: "一句话原因，留给自己以后看" },
@@ -3723,7 +3726,7 @@ export async function registerToolbox(app) {
                 const uid = String(target?.user_id ?? "");
                 if (!uid) return { ok: false, reason: "不知道这次是针对谁，先别登记" };
                 if (cfg.ownerId && uid === String(cfg.ownerId)) {
-                  return { ok: false, reason: "这是主人，不理他做不到" };
+                  return { ok: false, reason: "这是创造者，不理他做不到" };
                 }
                 const minutes = Math.max(5, Math.min(24 * 60, Number(args?.minutes) || 120));
                 const rec = refusePerson(uid, minutes, { reason: args?.reason, key: conversationKey(target ?? {}) });

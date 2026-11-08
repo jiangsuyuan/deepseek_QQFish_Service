@@ -6,6 +6,8 @@ import { smartCut, safeSlice, stripLoneSurrogates } from "../util/text.js";
 import { statSync } from "node:fs";
 
 const HOME = process.env.HOME || homedir();
+/** 插件自己所在的目录（发布版不再写死绝对路径） */
+const HERE = dirname(fileURLToPath(import.meta.url));
 
 async function downloadImage(url, maxBytes) {
   if (!url || !/^https?:\/\//i.test(url)) return null;

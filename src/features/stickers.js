@@ -1,9 +1,12 @@
 // 表情包选择与描述缓存。
 import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
-import { join, join as pathJoin } from "node:path";
+import { join, join as pathJoin, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 
 const HOME = process.env.HOME || homedir();
+/** 插件自己所在的目录（发布版不再写死绝对路径） */
+const HERE = dirname(fileURLToPath(import.meta.url));
 
 function loadStickerLabels(dir) {
   try {
@@ -16,6 +19,11 @@ function loadStickerLabels(dir) {
 const STICKER_NEGS = ["不", "没", "无", "别", "莫", "非", "表", "儿"];
 
 let lastSvgRender = null;
+
+/** 记下最近一次 SVG 渲染结果（跨模块写，必须走 setter） */
+export function setLastSvgRender(v) {
+  lastSvgRender = v;
+}
 
 let lastStickerPreview = [];
 

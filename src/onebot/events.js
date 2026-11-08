@@ -25,7 +25,7 @@ export function createEventHandler(app) {
       return;
     }
     if (ev.post_type !== "message") return trace("非 message 事件");
-    // 临时消息 / 陌生人消息：多半是好友申请或陌生人搭话，转告主人
+    // 临时消息 / 陌生人消息：多半是好友申请或陌生人搭话，转告创造者
     if (ev.message_type === "temp" || ev.message_type === "stranger" || ev.sub_type === "temp") {
       try {
         const segs = Array.isArray(ev.message) ? ev.message : [];
@@ -42,7 +42,7 @@ export function createEventHandler(app) {
             `陌生人发来消息：${nick || "?"}(${who})\n内容：${txt.slice(0, 100) || "（无文字）"}` +
               `\n如果是好友申请，需要你在 QQ 或 WebUI 里处理（NapCat 没开放普通好友申请的接口）。`,
           );
-          logger.info?.(`[onebot] 临时消息已转告主人：${nick || who}`);
+          logger.info?.(`[onebot] 临时消息已转告创造者：${nick || who}`);
           audit({ kind: "temp_message", from: who, text: txt.slice(0, 120) });
         }
       } catch (err) {
@@ -115,10 +115,10 @@ export function createEventHandler(app) {
     trace(`parsed text=${JSON.stringify(parsed.text)} hasAt=${parsed.hasAt} imgs=${parsed.images.length} segs=${Array.isArray(ev.message) ? ev.message.length : "无message"}`);
     ev.__hasAt = parsed.hasAt;
 
-    // 主人自己在 QQ 里打的字，也要进网页聊天历史。
+    // 创造者自己在 QQ 里打的字，也要进网页聊天历史。
     // 以前只有「她说的话」会进来（/send 那条路也只管网页那边发出去的），
     // 于是 WinForms/WebUI 面板上全是她的话，看着像她一个人自言自语。
-    // 只镜像「主人私聊」：群里的主人发言、以及她自己发的，都不在这儿处理。
+    // 只镜像「创造者私聊」：群里的创造者发言、以及她自己发的，都不在这儿处理。
     try {
       if (
         !ev.__fromWebUI &&
@@ -139,7 +139,7 @@ export function createEventHandler(app) {
         }
       }
     } catch (err) {
-      logger.debug?.(`[onebot] 主人消息未记入网页历史：${err?.message ?? err}`);
+      logger.debug?.(`[onebot] 创造者消息未记入网页历史：${err?.message ?? err}`);
     }
     // 空文本也可能是「只 @ 不说话」，交给后面按 hasAt 判断
     if (!parsed.text && !parsed.hasAt) return;
@@ -154,7 +154,7 @@ export function createEventHandler(app) {
 
     const key = conversationKey(ev);
 
-    // 主人的自然语言控制：状态/静音/打断/档位/代发言
+    // 创造者的自然语言控制：状态/静音/打断/档位/代发言
     let ownerHandled = false;
     try {
       ownerHandled = await handleOwnerNatural(ev, parsed.text);
@@ -163,7 +163,7 @@ export function createEventHandler(app) {
       logger.warn?.(`[onebot] 堆栈：${String(err?.stack ?? "").split("\n").slice(0, 4).join(" | ")}`);
     }
     if (ownerHandled) {
-      logger.info?.(`[onebot] 被「主人指令」拦截：${String(parsed.text || "").slice(0, 40)}`);
+      logger.info?.(`[onebot] 被「创造者指令」拦截：${String(parsed.text || "").slice(0, 40)}`);
       // 指令类消息处理完必须标记「已处理」，
       // 否则私聊补回复（catchUpPrivate）会把同一条指令重新执行一遍，
       // 表现为「一个指令被反复执行」（定向搭话那次连发了 7 遍）。
@@ -179,15 +179,15 @@ export function createEventHandler(app) {
       return;
     }
 
-    // 主人的管理指令：定向搭话 / 记住 / 退群
+    // 创造者的管理指令：定向搭话 / 记住 / 退群
     if (await handleOwnerRelay(ev, parsed.text)) return;
     if (await handleOwnerRemember(ev, parsed.text)) return;
     if (await handleOwnerLeaveGroup(ev, parsed.text)) return;
 
-    // 主人正在回答「要不要进群」：这条消息不送给模型
+    // 创造者正在回答「要不要进群」：这条消息不送给模型
     if (await handleOwnerInviteReply(ev, parsed.text)) return;
 
-    // 她说过「不再回复」的人：这段时间内直接跳过（主人除外）
+    // 她说过「不再回复」的人：这段时间内直接跳过（创造者除外）
     if (
       cfg.ownerId &&
       String(ev.user_id) !== String(cfg.ownerId) &&
@@ -350,7 +350,7 @@ export function createEventHandler(app) {
         // 旁听也要统计活跃度——否则热群插话永远看不到「群很热闹」
         const nTs = Date.now();
         // 补推的旧消息不能算「刚刚发生」，否则冷群/热群判断都会失真
-        const msgTs = Number(ev.time) * 1000 || nTs;
+        const msgTs = Number(ev.time) * 1000 || Date.now();
         const isOld = nTs - msgTs > 5 * 60000;
         entry.lastMessageAt = Math.max(entry.lastMessageAt ?? 0, msgTs);
         groupMetaTouch(entry.key, { lastMessageAt: entry.lastMessageAt });
@@ -672,6 +672,8 @@ export function createEventHandler(app) {
           }
         }
         // 冷群暖场的解除条件：只要「她开口之后有人说过话」就算有人回应。
+        // 用消息发生时间比，补推的旧消息不会把刚设好的标记立刻清掉。
+        const msgTs = Number(ev.time) * 1000 || Date.now();
         // 注意要用消息发生时间比，不能用「当前时间」——
         // 否则补推的旧消息会把刚设置好的标记立刻清掉。
         try {
@@ -915,40 +917,28 @@ export function createEventHandler(app) {
     if (parsed.replyIds?.length && imagePayloads.length > 0 && !parsed.text) {
       msgText = "（@ 了你，并引用了上面那张图，没打字）";
     }
-    // 分清是谁在说话：主人本人 还是 助手代发
+    // 分清是谁在说话：创造者本人 还是 助手代发
     const whoHint =
       ev.__fromWebUI && ev.__viaAssistant
-        ? "\n（这条打着「助手代发」的标——是 AI 助手在替主人操作，**不是主人本人打的**。" +
-          "正常回答就行，但如果涉及「你决定」「你同意吗」这类要主人拍板的事，" +
-          "要说清楚「等主人本人确认」，别把助手的话当成主人的意思。）\n"
+        ? "\n（这条打着「助手代发」的标——是 AI 助手在替创造者操作，**不是创造者本人打的**。" +
+          "正常回答就行，但如果涉及「你决定」「你同意吗」这类要创造者拍板的事，" +
+          "要说清楚「等创造者本人确认」，别把助手的话当成创造者的意思。）\n"
         : "";
 
-    // 她自己该知道的事：主人能发什么指令（不然问起来只能瞎猜）
+    // 她自己该知道的事：创造者能发什么指令（不然问起来只能瞎猜）
     const cmdHint =
-      "\n（主人能直接发这些指令，桥会拦下来处理，你不用「听懂」：" +
+      "\n（创造者能直接发这些指令，桥会拦下来处理，你不用「听懂」：" +
       "活动一下 / 去探险 / 读点书 / 玩会儿 / 想想事 / 回忆一下 / 憧憬一下 / 研究代码 / 连做 N 轮 / " +
       "重置活动额度 / 状态 / 需求清单 / 各个群印象 / 全部想法 / 全部自省 / 记忆查询 xxx / " +
       "记住 xxx / 提醒我 xxx / 查看提醒 / 取消提醒 / 改配置 xxx / 以后叫我 xxx / " +
       "申请加群 xxx / 发条说说 / 代发言 / 定向搭话 / 退群 / 同意 / 拒绝 / 帮助。" +
       "有人问「有哪些指令」就照着答，不懂细节就用 owner_commands 查。）\n";
 
-    // 私聊：教她像真人那样把两句话分开发
-    const splitHint =
-      ev.message_type === "group"
-        ? ""
-        : "\n（私聊时，**两句在说不同的事**就分两条发——像真人那样。判断标准：" +
-          "\n· 一句在报状态/给结论，另一句在补充、认错、反问、换角度 → 拆" +
-          "\n· 例：「变 15:11 了，正好四十分钟后。[split]你说的对，是我刚才看到旧值」" +
-          "\n· 例：「正版源我读不到。[split]要不你讲两段，我听着」" +
-          "\n· 例：「是吧。[split]好心要靠烧车才证明，这就不叫好意了」" +
-          "\n· 反过来，如果两句话其实是同一件事的两个部分（「我查了[split]是 2.52 米」这种）→ 别拆，用逗号连起来" +
-          "\n写法：在两句之间写 [split]，第一句末尾的句号去掉。最多拆两条。\n）\n";
-
     // 网页聊天用单独的标签，历史才能按渠道分开
-    // 网页聊天还要再分一层：主人本人 / 助手代发
+    // 网页聊天还要再分一层：创造者本人 / 助手代发
     const channelTag = ev.__fromWebUI
       ? ev.__viaAssistant
-        ? "[网页聊天·助手代发]" // ← 这条不是主人打的，是 AI 助手在替他操作
+        ? "[网页聊天·助手代发]" // ← 这条不是创造者打的，是 AI 助手在替他操作
         : "[网页聊天]"
       : "[QQ私聊]";
     const bodyBase =
@@ -1350,16 +1340,6 @@ export function createEventHandler(app) {
     const catchupNote = ev.__catchup
       ? "（你刚才离线了一阵，这是恢复连接后补看到的消息，直接回一句就好，不要解释掉线。）\n"
       : "";
-    let selfLine = "";
-    if (cfg.selfViews !== false) {
-      const views = selfViews.render(4);
-      if (views) selfLine = `[你自己的想法] ${views}\n`;
-      if (cfg.selfReflect !== false) {
-        const ref = selfViews.renderReflections(1);
-        if (ref) selfLine += `[你最近的自我反省] ${ref}\n`;
-      }
-    }
-
     let factLine = "";
     if (ev.message_type !== "group" || cfg.shareFactsToGroup) {
       const rendered = facts.render(6);
@@ -1369,29 +1349,7 @@ export function createEventHandler(app) {
     let memoryNote = "";
     try {
       const parts = [];
-      // L0：我是谁（最先，决定怎么说话）
-      const selfText = selfModelText();
-      if (selfText) parts.push(selfText);
-      // L3：核心自我（belief/care/want/change）
-      const core = loadCore().slice(-20);
-      if (core.length) {
-        const byType = {};
-        for (const c of core) {
-          const ty = c.type || "belief";
-          byType[ty] = byType[ty] || [];
-          byType[ty].push(c.text);
-        }
-        const labels = { belief: "你认定的事", care: "你在意的", want: "你想做的事", change: "你变了的地方" };
-        const lines = [];
-        for (const ty of ["belief", "care", "want", "change"]) {
-          if (!byType[ty]?.length) continue;
-          lines.push(`· ${labels[ty]}：${byType[ty].slice(-4).join("；")}`);
-        }
-        if (lines.length) parts.push(`[你自己的话]\n${lines.join("\n")}\n`);
-      }
-      // L2：最近几天的经历摘要
-      const dg = recentDigestText(3);
-      if (dg) parts.push(`[你这几天经历过什么]\n${dg}\n`);
+      // L0/L3/L2 已移到系统提示的人格投影（persona.js），这里只留与本条消息相关的记忆
       // 相关记忆：多入口并行游走（最深 10 跳，权重衰减）
       try {
         const entries = [];
@@ -1448,14 +1406,12 @@ export function createEventHandler(app) {
     const followNote = continuing
       ? "（这条没 @ 你，是你在续聊窗口里看到的。接不接、怎么接，你自己判断；不想接就什么都不用说。）\n"
       : "";
-    const body =
+    const notesOnly =
       vibeNote +
       memoryNote +
       cmdHint +
       whoHint +
-      splitHint +
       slangNote +
-      selfLine +
       emptyAtNote +
       quoteNote +
       followNote +
@@ -1465,12 +1421,11 @@ export function createEventHandler(app) {
       recallNote +
       linkNote +
       crossNote +
-      factLine +
-      bodyBase +
-      observed;
+      factLine;
+    const body = notesOnly + bodyBase + observed;
     const ownerNote =
       cfg.ownerId && String(ev.user_id) === String(cfg.ownerId) && ev.message_type !== "group"
-        ? "（这是你的主人。）\n"
+        ? "（这是你的创造者。）\n"
         : "";
     const lenHint = formatLenHint();
     // 她需要知道自己是不是刚断过线，否则会莫名其妙答不上对方的话
@@ -1492,12 +1447,6 @@ export function createEventHandler(app) {
       // 忽略
     }
 
-    // 私聊偶尔多说两句（大部分还是一句）
-    const privateExtra =
-      ev.message_type !== "group" &&
-      Math.random() < (Number(cfg.privateMultiSentenceChance) || 0.2)
-        ? "（这次可以多说两句，2-3 句，聊开一点。）\n"
-        : "";
     // 记下这一轮她真正看到的图（含引用/转发补进来的），save_sticker 只认这些
     try {
       const entSeen = await sessions.ensure(key);
@@ -1511,7 +1460,7 @@ export function createEventHandler(app) {
       // 忽略
     }
 
-    enqueue(key, ev, privateExtra + prompt, imagePayloads);
+    enqueue(key, ev, notesOnly, imagePayloads);
   };
 }
 

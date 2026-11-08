@@ -71,7 +71,7 @@ export const ALLOWED_TOOLS = new Set([
     "schedule_activity",
     "send_face",
     "send_like",
-    "send_message",
+    "qq_send",
     "send_private",
     "send_qzone",
     "send_sticker",
@@ -110,3 +110,55 @@ export const SAFE_CONFIG_KEYS = new Set([
   ]);
 
 export {  };
+
+/**
+ * 从模型工具表里摘掉的工具（A 方案）。
+ *
+ * 依据：近 7 天调用统计里这些一次没用过，或者已经被我们的黑名单挡住。
+ * 它们仍然注册在本地，只是不出现在模型的工具表里 —— 每一条都在吃 token。
+ * 想恢复某个：从列表里删掉即可。
+ */
+export const DENY_TOOLS = Object.freeze([
+  // DSH 自带、她没用过的
+  "workflow",
+  "schedule_create",
+  "schedule_update",
+  "schedule_list",
+  "schedule_delete",
+  "subagent",
+  "subagent_fork",
+  "list_agents",
+  "interrupt_agent",
+  "job_list",
+  "job_output",
+  "job_kill",
+  "todo_write",
+  "create_goal",
+  "get_goal",
+  "update_goal",
+  "exit_plan_mode",
+  "present",
+  "working_directory",
+  "ask_user_question",
+  "skill",
+  // 被我们自己黑名单挡住的
+  "bash",
+  "read",
+  "write",
+  "edit",
+  "glob",
+  "grep",
+  // 和 qq_send 重名、已被弃用的
+  "send_message",
+]);
+
+/**
+ * 常驻给模型的工具（A 方案第 1 步）。
+ *
+ * 依据是近 7 天调用统计：这 15 个覆盖 82% 的调用。
+ * 其余工具不常驻，通过 tool_catalog 查、describe_tool 看参数、call_tool 调用。
+ */
+export const CORE_TOOLS = Object.freeze([
+  "call_tool",
+  "describe_tool",
+]);

@@ -1,4 +1,4 @@
-// 记忆沉淀：摘要、蒸馏、记忆网络。
+// 记忆沉淀：印象、蒸馏、记忆网络。
 
 export function createMemoryLoop(ctx) {
   const { MEMLOG_PATH, NET_DECAY, NET_MAX_DEPTH, NET_MAX_LINKS, NET_MIN_W, NET_VISIT_CAP, SELF_ACTIVITY_KEY, audit, cfg, loadActivities, loadCore, loadDigests, loadMemLog, logger, memSeen, memoryLayersIndex, net, netAddNode, recentDigestText, saveCore, saveDigests, selfModelText, sessions, writeFileSync } = ctx;
@@ -16,7 +16,7 @@ export function createMemoryLoop(ctx) {
         const out = String(
           (await sessions.runSilent(
             runKey,
-            "（内部整理，不要发消息。这是给你自己看的记忆摘要。）\n" +
+            "（内部整理，不要发消息。这是你自己留下的印象。）\n" +
               "下面是你最近做的事、学到的东西、聊的要点：\n" +
               text +
               "\n\n把它们压成一段 150-200 字的「这几天我经历了什么」：\n" +
@@ -35,9 +35,9 @@ export function createMemoryLoop(ctx) {
         });
         saveDigests(digests);
         audit({ kind: "digest", count: pending.length, len: out.length });
-        logger.info?.(`[onebot] 记忆摘要 +1（${pending.length} 条）：${out.slice(0, 40)}`);
+        logger.info?.(`[onebot] 印象 +1（${pending.length} 条）：${out.slice(0, 40)}`);
       } catch (err) {
-        logger.warn?.(`[onebot] 摘要生成失败：${err?.message ?? err}`);
+        logger.warn?.(`[onebot] 印象生成失败：${err?.message ?? err}`);
       }
     }
 
@@ -148,7 +148,7 @@ export function createMemoryLoop(ctx) {
         "\n\n[L2 最近几天]\n" +
         digest +
         "\n\n" +
-        "你可以先查任意一层再决定——工具：my_memory（分类查）/ my_digest（近期摘要）/ " +
+        "你可以先查任意一层再决定——工具：my_memory（分类查）/ my_digest（近期印象）/ " +
         "memory_index（记忆目录）/ my_adventures（走过的路）/ my_wants（想要的东西）/ " +
         "recall（久远对话）。想看就查，不想看就直接想。\n\n" +
         "现在问自己：**这会儿我想做什么？为什么？**\n" +
@@ -226,61 +226,10 @@ export function createMemoryLoop(ctx) {
     }
 
   async function distillCore() {
-      const acts = loadActivities(40);
-      if (acts.length < 6) return;
-      const core = loadCore();
-      const recentText = acts
-        .slice(-20)
-        .map((a) => `[${a.kind}] ${String(a.content || "").slice(0, 120)}`)
-        .join("\n");
-      const oldCore = core.slice(-10).map((c) => `· ${c.text}`).join("\n");
-      const runKey = SELF_ACTIVITY_KEY;
-      logger.info?.("[onebot] 开始沉淀核心记忆");
-      try {
-        const out = String(
-          (await sessions.runSilent(
-            runKey,
-            "（内部整理，不要发消息，也不要用工具。）\n" +
-              "下面是你这段时间自己做的事和想的事。\n" +
-              (oldCore ? `[你之前沉淀过的核心记忆]\n${oldCore}\n` : "") +
-              `[最近的事]\n${recentText}\n\n` +
-              "现在提炼 1-2 条「关于你自己的核心记忆」——不是总结做了什么，是**你变成了什么样的人**：\n" +
-              "· belief：你认定的事\n" +
-              "· care：你反复在意的\n" +
-              "· want：**想做的事**（具体的，比如想读完某本书、想弄清某个问题）\n" +
-              "· change：你变了的地方（以前怎样，现在怎样）\n" +
-              "· joy：**什么让你觉得有意思、高兴**（不是「想要」，是已经让你开心过的事或瞬间）\n" +
-              "· liked：**你喜欢什么**（口味：喜欢哪一类东西、哪种说话方式、哪种人不喜欢）\n" +
-              "要求：一句话一条，像写在自己的本子上；只写新增的或修正的，重复的不要。\n" +
-              '只输出 JSON：{"core":[{"type":"belief","text":"..."}]}，没有就输出 {"core":[]}', 
-          )) ?? "",
-        ).trim();
-        const m = out.match(/\{[\s\S]*\}/);
-        if (!m) return;
-        const obj = JSON.parse(m[0]);
-        const list = Array.isArray(obj.core) ? obj.core : [];
-        const fresh = list
-          .map((x) => {
-            if (typeof x === "string") return { type: "belief", text: x.trim().slice(0, 150) };
-            const ty = String(x?.type ?? "belief").toLowerCase();
-            return {
-              type: ["belief", "care", "want", "change", "joy", "liked"].includes(ty) ? ty : "belief",
-              text: String(x?.text ?? "").trim().slice(0, 150),
-            };
-          })
-          .filter((x) => x.text.length > 4 && !core.some((c) => c.text === x.text));
-        if (!fresh.length) {
-          logger.info?.("[onebot] 这次没沉淀出新东西");
-          return;
-        }
-        for (const it of fresh) core.push({ type: it.type, text: it.text, at: Date.now(), from: "distill" });
-        saveCore(core);
-        audit({ kind: "core_memory", added: fresh.length, items: fresh });
-        logger.info?.(`[onebot] 核心记忆 +${fresh.length}：${fresh[0].text.slice(0, 40)}`);
-      } catch (err) {
-        logger.warn?.(`[onebot] 沉淀失败：${err?.message ?? err}`);
-      }
-    }
+      // 4.0：不再自动写人格。沉淀由她自己用 sediment 决定，这里不代劳。
+      logger?.debug?.("[onebot] 沉淀由她自己决定（sediment），自动写入已停用");
+      return;
+  }
 
   return { distillCore, maybeMakeDigest, netWalk, appendMem, reflectPhase, thinkPhase };
 }

@@ -323,8 +323,8 @@ class OneBotClient {
 
   /** 给指定 QQ 号发私聊（非当前会话） */
   sendPrivate(userId, text) {
-    // QQ 离线时不要抛错：调用方（比如主人指令）会整条崩掉，连普通对话都被吞。
-    // 改成把内容推给 WebUI，至少主人能看到。
+    // QQ 离线时不要抛错：调用方（比如创造者指令）会整条崩掉，连普通对话都被吞。
+    // 改成把内容推给 WebUI，至少创造者能看到。
     if (!this.connected) {
       const txt = String(text || "");
       try {
@@ -458,8 +458,8 @@ class OneBotClient {
       if (fm) segs.push({ type: "face", data: { id: fm[1] } });
       else segs.push({ type: "text", data: { text: part } });
     }
-    // 发到 QQ 的也和 WebUI 同步一份——但只同步「发给主人」和「群聊」。
-    // 她和别人的私聊是私事，不该出现在主人的界面上。
+    // 发到 QQ 的也和 WebUI 同步一份——但只同步「发给创造者」和「群聊」。
+    // 她和别人的私聊是私事，不该出现在创造者的界面上。
     try {
       const owner = String(this.cfg?.ownerId ?? "");
       const uid = String(ev?.user_id ?? "");

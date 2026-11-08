@@ -1,3 +1,4 @@
+import { dirname } from "node:path";
 // 运行时快照：健康、掉线、限频、记忆网络边。
 
 export function createRuntimeStore(ctx) {

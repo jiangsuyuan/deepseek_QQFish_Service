@@ -35,7 +35,7 @@ export function createActivityLoop(ctx) {
           } catch (err) {
             logger.warn?.(`[onebot] 断线补偿失败：${err?.message ?? err}`);
           }
-          // 顺手把「她这段时间想要的东西」报给主人
+          // 顺手把「她这段时间想要的东西」报给创造者
           try {
             const pend = loadWants().filter((w) => w.status === "pending");
             if (pend.length && cfg.ownerId) {
@@ -50,7 +50,7 @@ export function createActivityLoop(ctx) {
                     `（回「给她 <序号>」批，回「算了 <序号>」拒；或者你自己看 wants.json）`,
                 )
                 .catch(() => {});
-              logger.info?.(`[onebot] 已向主人汇报 ${pend.length} 条待处理需求`);
+              logger.info?.(`[onebot] 已向创造者汇报 ${pend.length} 条待处理需求`);
             }
           } catch {
             // 忽略

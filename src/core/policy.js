@@ -4,7 +4,7 @@ export function createPolicy(ctx) {
   const { ACTIVITY_KINDS, HOME, audit, cfg, client, join, rateKey, rateUser, readFileSync, searchTimes, sessions, state, summarizeDay } = ctx;
   function allowRate(key, userId) {
       const now = Date.now();
-      // 主人不受限流：他在一小时内发 10 条是正常交流，不是刷屏
+      // 创造者不受限流：他在一小时内发 10 条是正常交流，不是刷屏
       if (cfg.ownerId && String(userId) === String(cfg.ownerId)) {
         return { ok: true };
       }
