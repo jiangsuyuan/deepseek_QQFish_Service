@@ -431,7 +431,17 @@ class SessionManager {
             source: { kind: "user" },
           }),
         );
-        await withTimeout(agent.whenIdle(), 60000, "silent-turn");
+        // 10 分钟上限：只为防"卡死导致永久失声"，不用来卡正常回合
+        // （实测对话 P90 19s、活动 P90 70s、最长 619s）
+        const stuckTimer = setTimeout(() => {
+          this.logger?.warn?.("[onebot] 这一轮已经跑了 120 秒还没结束（可能卡住了）");
+        }, 120000);
+        stuckTimer.unref?.();
+        try {
+          await withTimeout(agent.whenIdle(), 600000, "silent-turn");
+        } finally {
+          clearTimeout(stuckTimer);
+        }
         return extractReply(agent.session, firstSeq);
       } finally {
         if (entry.silentToken === token) {
