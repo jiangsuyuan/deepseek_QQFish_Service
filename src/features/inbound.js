@@ -155,9 +155,9 @@ export function createInbound(ctx) {
         .map((l) => {
           try {
             const o = JSON.parse(l);
-            return `· ${o.d === "o" ? "你" : o.n || "对方"}：${String(o.x || "").slice(0, 60)}`;
+            return { id: String(o.id || ""), who: o.d === "o" ? "你" : o.n || "对方", text: String(o.x || "").slice(0, 60) };
           } catch {
-            return "";
+            return null;
           }
         })
         .filter(Boolean);
@@ -217,22 +217,37 @@ export function createInbound(ctx) {
         lines.push("你之前给自己留了句话：「" + String(e.payload.what || "").slice(0, 200) + "」");
       } else if (e.kind === "review") {
         // 延迟回看：她说完话之后群里接着说的几条
-        lines.push(
-          (e.reviewMode === "single" ? "你刚才说完话之后，群里来了一条。" : "你刚才说完话之后，群里接着说了几条。"),
-        );
-        try {
-          const last = readRecentForReview(e);
-          if (last.length) {
-            lines.push("");
-            for (const row of last) lines.push(row);
-            lines.push("");
-          }
-        } catch {
-          // 拿不到就不列
+        // 注意：必须给 target（和 messageId），否则她只能凭记忆填 —— 会发错群
+        const isGroup = e.source?.type === "group";
+        if (isGroup) {
+          lines.push("群 " + e.source.groupId);
+          lines.push("target: group:" + e.source.groupId);
+        } else {
+          lines.push("私聊 · " + (e.source?.nickname || e.source?.userId || ""));
+          lines.push("target: private:" + (e.source?.userId || ""));
         }
-        lines.push(
-          "这条是不是在回复你？不是就什么都别做，是的话你自己判断是否做什么。",
-        );
+        let last = [];
+        try {
+          last = readRecentForReview(e);
+        } catch {
+          last = [];
+        }
+        if (last.length) {
+          const newest = last[last.length - 1];
+          if (newest?.id) lines.push("messageId: " + newest.id);
+          lines.push("");
+          lines.push(
+            e.reviewMode === "single" ? "你刚才说完话之后，群里来了一条：" : "你刚才说完话之后，群里接着说了这几条：",
+          );
+          for (const row of last) lines.push(`· ${row.who}：${row.text}${row.id ? "（id " + row.id + "）" : ""}`);
+          lines.push("");
+        } else {
+          lines.push("");
+          lines.push("你刚才说完话之后，群里没有新消息。");
+          lines.push("");
+        }
+        lines.push("这条是不是在回复你？不是就什么都别做，是的话你自己判断是否做什么。");
+        if (isGroup) lines.push("要回哪条，就用那条的 id 做 messageId；不想引用就 qq_send 直接说。");
       } else if (e.kind === "activity_due") {
         lines.push("你之前排的活动时间到了。");
         // kind 以前只存不用：她 schedule_activity({kind:"read"}) 记下来的东西
