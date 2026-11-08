@@ -350,7 +350,7 @@ export function apply(ctx, _pluginConfig) {
   function reflectPhase(...a) { return __init_createMemoryLoop().reflectPhase(...a); }
   function thinkPhase(...a) { return __init_createMemoryLoop().thinkPhase(...a); }
   let __mem_createActivityLoop = null;
-  function __init_createActivityLoop() { return (__mem_createActivityLoop ??= createActivityLoop({ SELF_ACTIVITY_KEY, SELF_HISTORY_PATH, addSelfPlan, audit, cfg, client, l1Push, loadActivities, loadGroupMeta, loadSelfModel, loadSelfState, loadWants, logger, offlineDigest, patchSelfState, readSelfPlan, recentDigestText, saveSelfModel, sessions, state, updateSelfPlan, watchHit, writeFileSync, pluginCtx: ctx })); }
+  function __init_createActivityLoop() { return (__mem_createActivityLoop ??= createActivityLoop({ SELF_ACTIVITY_KEY, SELF_HISTORY_PATH, segments, addSelfPlan, audit, cfg, client, l1Push, loadActivities, loadGroupMeta, loadSelfModel, loadSelfState, loadWants, logger, offlineDigest, patchSelfState, readSelfPlan, recentDigestText, saveSelfModel, sessions, state, updateSelfPlan, watchHit, writeFileSync, pluginCtx: ctx })); }
   function scheduleNextSelfActivity(...a) { return __init_createActivityLoop().scheduleNextSelfActivity(...a); }
   function hourlyIntrospect(...a) { return __init_createActivityLoop().hourlyIntrospect(...a); }
   function maybeAdjustSelfModel(...a) { return __init_createActivityLoop().maybeAdjustSelfModel(...a); }

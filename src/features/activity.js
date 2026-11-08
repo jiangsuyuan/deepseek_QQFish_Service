@@ -1,7 +1,7 @@
 // 活动调度：下次活动、整点内省、自我模型调整。
 
 export function createActivityLoop(ctx) {
-  const { SELF_ACTIVITY_KEY, SELF_HISTORY_PATH, addSelfPlan, audit, cfg, client, l1Push, loadActivities, loadGroupMeta, loadSelfModel, loadSelfState, loadWants, logger, offlineDigest, patchSelfState, readSelfPlan, recentDigestText, saveSelfModel, sessions, state, updateSelfPlan, watchHit, writeFileSync } = ctx;
+  const { SELF_ACTIVITY_KEY, SELF_HISTORY_PATH, segments, addSelfPlan, audit, cfg, client, l1Push, loadActivities, loadGroupMeta, loadSelfModel, loadSelfState, loadWants, logger, offlineDigest, patchSelfState, readSelfPlan, recentDigestText, saveSelfModel, sessions, state, updateSelfPlan, watchHit, writeFileSync } = ctx;
   function isOfflineMode() {
       if (client.connected && state.qqOnline) {
         if (state.offlineSince) {
@@ -113,7 +113,14 @@ export function createActivityLoop(ctx) {
         return;
       }
       const gid = bestKey.slice(6);
-      logger.info?.(`[onebot] 内省：回顾最近一小时（${bestKey}）`);
+      // 群回顾也用分段会话：这条以前挂永久键，一个群能涨到 20 万 token
+      let reviewKey = bestKey;
+      try {
+        reviewKey = segments ? segments.keyFor("review:group:" + gid).key : bestKey;
+      } catch {
+        reviewKey = bestKey;
+      }
+      logger.info?.(`[onebot] 内省：回顾最近一小时（${bestKey} → ${reviewKey}）`);
       audit({ kind: "introspect", key: bestKey });
       // backNote 从 1.1.7 起就是个没定义的标识符：走到「有活跃群的每小时回顾」这个分支
       // 必抛 ReferenceError，被下面的 catch 吞成一行 warn —— 于是这条内省从来没跑成过
@@ -122,7 +129,7 @@ export function createActivityLoop(ctx) {
       const backNote = "";
       try {
         await sessions.runSilent(
-          bestKey,
+          reviewKey,
           "（内部回顾，不用回复任何人，也不要发任何消息到群里。）\n" +
             backNote +
             "刚才这一小时你在这个群聊了不少。想一想：\n" +

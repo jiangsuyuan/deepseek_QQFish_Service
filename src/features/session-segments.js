@@ -56,7 +56,7 @@ export function createSessionSegments(app = {}) {
   function keyFor(channel) {
     const m = load();
     const rec = m[channel] || { seg: 1, lastAt: 0, turns: 0 };
-    const kind = channel.startsWith("group:") ? "group" : "private";
+    const kind = channel.includes("group:") ? "group" : "private";
     const win = WINDOW_MS[kind] || WINDOW_MS.group;
     const now = Date.now();
     const stale = rec.lastAt && now - rec.lastAt > win;
