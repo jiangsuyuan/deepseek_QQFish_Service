@@ -18,8 +18,8 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const PATH = join(HOME, ".dsh/onebot-bridge/echo.json");
 
 const WINDOW_MS = 5 * 60 * 1000; // 真实复读是慢的：实测同一句能隔十几分钟还在复读
-const COOLDOWN_MS = 10 * 60 * 1000;
-const SAME_TEXT_MS = 30 * 60 * 1000; // 同一句 30 分钟内只跟一次
+const COOLDOWN_MS = 5 * 60 * 1000; // 群级冷却：跟完一句，5 分钟内不再跟
+const ROUND_GAP_MS = 3 * 60 * 1000; // 同一句隔 3 分钟没人再说 = 这一轮复读结束
 const MIN_LEN = 2;
 
 const BAD = /(操你|傻逼|妈的|滚|死|杀|裸|约炮|@|http|www\.|\.com)/i;
@@ -72,7 +72,13 @@ export function createEcho(app = {}) {
     const n = norm(t);
     if (n.length < MIN_LEN) return;
 
-    const g = (s.groups[gid] = s.groups[gid] || { recent: [], lastEchoAt: 0, lastText: "" });
+    const g = (s.groups[gid] = s.groups[gid] || {
+      recent: [],
+      lastEchoAt: 0,
+      lastText: "",
+      lastTextAt: 0,
+      echoedInRound: false,
+    });
     const now = Date.now();
     g.recent = (g.recent || []).filter((x) => now - x.at <= WINDOW_MS);
     g.recent.push({ n, at: now, by: String(userId) });
@@ -83,8 +89,15 @@ export function createEcho(app = {}) {
       logger?.debug?.(`[onebot] 复读候选但只有同一个人：${t.slice(0, 20)}`);
     }
     if (people.size < 2) return; // 至少两个不同的人
-    if (now - (g.lastEchoAt || 0) < COOLDOWN_MS) return; // 频率
-    if (g.lastText === n && now - (g.lastEchoAt || 0) < SAME_TEXT_MS) return; // 同一句别反复跟
+    // 同一轮复读只跟一次：
+    //   同一句隔 ROUND_GAP_MS 没人再说 → 算新的一轮，可以再跟
+    if (g.lastText !== n || now - (g.lastTextAt || 0) > ROUND_GAP_MS) {
+      g.lastText = n;
+      g.echoedInRound = false;
+    }
+    g.lastTextAt = now;
+    if (g.echoedInRound) return; // 这一轮已经跟过
+    if (now - (g.lastEchoAt || 0) < COOLDOWN_MS) return; // 群级冷却
 
     // 发
     try {
@@ -92,6 +105,7 @@ export function createEcho(app = {}) {
       await cli.call("send_group_msg", { group_id: Number(gid), message: t });
       g.lastEchoAt = now;
       g.lastText = n;
+      g.echoedInRound = true;
       g.recent = [];
       s.pending.push({ at: now, groupId: gid, text: t, people: people.size });
       if (s.pending.length > 20) s.pending = s.pending.slice(-20);
