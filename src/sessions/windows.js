@@ -4,7 +4,11 @@ export function createWindows(ctx) {
   const { cfg, followUps, logger } = ctx;
   const followSecs = () => Number(cfg.followUpSeconds) || 60;
 
-  const followMax = () => Number(cfg.followUpMaxTurns) || 5;
+  // 0 或不填 = 不限轮数（早先那套"主动 @ 别人"的指令已经没了，轮数上限没意义）
+  const followMax = () => {
+    const v = Number(cfg.followUpMaxTurns);
+    return Number.isFinite(v) && v > 0 ? v : 0;
+  };
 
   function openWindow(key, userId, resetTurns = true) {
       const map = followUps.get(key) ?? new Map();
@@ -53,7 +57,7 @@ export function createWindows(ctx) {
         if (!rec) continue;
         rec.turns += 1;
         rec.until = Date.now() + followSecs() * 1000;
-        if (rec.turns >= rec.max) {
+        if (rec.max > 0 && rec.turns >= rec.max) {
           map.delete(who);
           logger.info?.(`[onebot] 续聊满 ${rec.max} 轮，关闭窗口 ${key}（${who}）`);
         }

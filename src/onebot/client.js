@@ -277,6 +277,17 @@ class OneBotClient {
       const k0 = conversationKey(ev);
       const ent0 = this.sessions?.entries.get(k0);
       if (ent0) ent0.lastSpeaker = "me";
+      // 续聊窗口：她在这个群说过话之后，对方不 @ 也能接着聊。
+      // 以前这里没开窗，导致「续聊命中」永远是 0——她看到的只有 @ 她的消息。
+      if (ev.message_type === "group" && ev.user_id) {
+        if (ent0) {
+          ent0.lastReplyTo = String(ev.user_id);
+          ent0.lastReplyAt = Date.now();
+          ent0.lastReplyText = String(parts[0] || "").slice(0, 120);
+        }
+        this.windows?.openWindow?.(k0, ev.user_id);
+        this.deferredReview?.arm?.(k0);
+      }
     } catch {
       // 忽略
     }

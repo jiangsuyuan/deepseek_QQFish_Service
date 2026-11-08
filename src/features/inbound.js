@@ -1,4 +1,11 @@
 // 入站消息：合并缓冲、入队、渲染成给她的 prompt。
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
+
+const HOME = process.env.HOME || homedir();
+/** 插件自己所在的目录（发布版不再写死绝对路径） */
+const HERE = dirname(fileURLToPath(import.meta.url));
 
 export function createInbound(ctx) {
   const { INBOUND_TEXT_MAX, INBOX_PATH, cfg, extractRealInbound, inbox, logger, makeEvent, mergeBuf, pendingEvents, pushEvent, state, wakeNow, writeFileSync } = ctx;
@@ -131,6 +138,34 @@ export function createInbound(ctx) {
       return s.slice(0, lim) + "……（后面还有 " + (s.length - lim) + " 字，超过单条上限被截断）";
     }
 
+  /** 回看用：读这个频道最近几条消息（不走模型，纯读落盘） */
+  function readRecentForReview(e, n = 6) {
+    try {
+      const src = e.source || {};
+      const kind = src.type === "group" ? "group" : "private";
+      const id = kind === "group" ? src.groupId : src.userId;
+      if (!id) return [];
+      const d = new Date();
+      const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      const f = join(HOME, ".dsh/onebot-bridge/messages", kind, String(id), day + ".jsonl");
+      return readFileSync(f, "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .slice(-n)
+        .map((l) => {
+          try {
+            const o = JSON.parse(l);
+            return `· ${o.d === "o" ? "你" : o.n || "对方"}：${String(o.x || "").slice(0, 60)}`;
+          } catch {
+            return "";
+          }
+        })
+        .filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+
   function renderEventForAgent(e, idx) {
       const t = new Date(e.at).toLocaleTimeString("zh-CN", { hour12: false, hour: "2-digit", minute: "2-digit" });
       const lines = [];
@@ -180,6 +215,24 @@ export function createInbound(ctx) {
         if (e.payload.lastSpeaker) lines.push("最后说话的是「" + e.payload.lastSpeaker + "」");
       } else if (e.kind === "reminder_due") {
         lines.push("你之前给自己留了句话：「" + String(e.payload.what || "").slice(0, 200) + "」");
+      } else if (e.kind === "review") {
+        // 延迟回看：她说完话之后群里接着说的几条
+        lines.push(
+          (e.reviewMode === "single" ? "你刚才说完话之后，群里来了一条。" : "你刚才说完话之后，群里接着说了几条。"),
+        );
+        try {
+          const last = readRecentForReview(e);
+          if (last.length) {
+            lines.push("");
+            for (const row of last) lines.push(row);
+            lines.push("");
+          }
+        } catch {
+          // 拿不到就不列
+        }
+        lines.push(
+          "这条是不是在回复你？不是就什么都别做，是的话你自己判断是否做什么。",
+        );
       } else if (e.kind === "activity_due") {
         lines.push("你之前排的活动时间到了。");
         // kind 以前只存不用：她 schedule_activity({kind:"read"}) 记下来的东西

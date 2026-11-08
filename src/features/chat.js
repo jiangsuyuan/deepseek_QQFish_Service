@@ -2,7 +2,7 @@ import { noteError } from "../core/error-watch.js";
 // 一轮对话的投递与唤醒。
 
 export function createChatFeature(ctx) {
-  const { LEN_TIER_NAMES, WAKE_KEY, segments, activeHoursOk, activityTimeline, appendMem, audit, bumpWindow, cfg, client, enqueueEvent, eventTarget, flushInbox, flushSeen, followMax, hitWindow, lenTierOf, logger, makeEvent, markRuntimeDirty, markSeen, openWindow, pendingEvents, pendingWhileBooting, processingIds, pushLen, recentIds, renderEventForAgent, promptCore, seenDirty, seenState, sessions, sleep, state, todayKey } = ctx;
+  const { LEN_TIER_NAMES, WAKE_KEY, segments, deferredReview, activeHoursOk, activityTimeline, appendMem, audit, bumpWindow, cfg, client, enqueueEvent, eventTarget, flushInbox, flushSeen, followMax, hitWindow, lenTierOf, logger, makeEvent, markRuntimeDirty, markSeen, openWindow, pendingEvents, pendingWhileBooting, processingIds, pushLen, recentIds, renderEventForAgent, promptCore, seenDirty, seenState, sessions, sleep, state, todayKey } = ctx;
   async function wakeNow() {
       if (state.state === "busy") return;
       state.state = "busy";
@@ -103,6 +103,11 @@ export function createChatFeature(ctx) {
             // 判断失败按「没调工具」处理
           }
           if (channel) segments.noteTurn(channel);
+          try {
+            if (channel) deferredReview?.settle?.(channel, calledTool);
+          } catch {
+            // 忽略
+          }
           e.status = calledTool ? "handled" : "ignored";
           state.inboxDirty = true;
           flushInbox();

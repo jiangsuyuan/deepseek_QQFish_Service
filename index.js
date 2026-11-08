@@ -34,6 +34,7 @@ import { createPersona } from "./src/features/persona.js";
 import { createPersonaStore } from "./src/store/persona-store.js";
 import { createPersonaTools } from "./src/tools/persona.js";
 import { createSessionSegments } from "./src/features/session-segments.js";
+import { createDeferredReview } from "./src/features/deferred-review.js";
 import { AUDIT_PATH, auditEnabled, audit, rotateAudit, summarizeDay, renderStats, ymdOffset, setAuditEnabled } from "./src/core/audit.js";
 import { bindConfig } from "./src/store/config.js";
 import { SELF_PLAN_PATH, PLAN_GRACE_MS, readSelfPlan, writeSelfPlan, addSelfPlan, updateSelfPlan, nextSelfPlan, claimDueSelfPlan, ensureSelfPlanPending } from "./src/store/selfplan.js";
@@ -420,6 +421,19 @@ export function apply(ctx, _pluginConfig) {
     LAYERS: { P0: 5, P1: 8, P2: 20 },
   };
   // 惰性构造：logger 在 apply 后面才初始化，这里直接读会 TDZ
+  let __mem_review = null;
+  function __init_review() {
+    return (__mem_review ??= createDeferredReview({ logger, enqueueEvent, makeEvent }));
+  }
+  const deferredReview = {
+    arm: (...a) => __init_review().arm(...a),
+    cancel: (...a) => __init_review().cancel(...a),
+    settle: (...a) => __init_review().settle(...a),
+    shouldReview: (...a) => __init_review().shouldReview(...a),
+    fire: (...a) => __init_review().fire(...a),
+    close: (...a) => __init_review().close(...a),
+  };
+
   let __mem_segments = null;
   function __init_segments() { return (__mem_segments ??= createSessionSegments({ logger })); }
   const segments = {
@@ -473,7 +487,7 @@ export function apply(ctx, _pluginConfig) {
   let __mem_createPromptCore = null;
   function __init_createPromptCore() { return (__mem_createPromptCore ??= createPromptCore({ cfg, formatLenHint, recentOutageNote })); }
   function promptCore(...a) { return __init_createPromptCore().core(...a); }
-  function __init_createChatFeature() { return (__mem_createChatFeature ??= createChatFeature({ LEN_TIER_NAMES, WAKE_KEY, activeHoursOk, activityTimeline, appendMem, audit, bumpWindow, cfg, client, enqueueEvent, eventTarget, flushInbox, flushSeen, followMax, hitWindow, lenTierOf, logger, makeEvent, markRuntimeDirty, markSeen, openWindow, pendingEvents, pendingWhileBooting, processingIds, pushLen, recentIds, renderEventForAgent, promptCore, segments, seenDirty, seenState, sessions, sleep, state, todayKey })); }
+  function __init_createChatFeature() { return (__mem_createChatFeature ??= createChatFeature({ LEN_TIER_NAMES, WAKE_KEY, activeHoursOk, activityTimeline, appendMem, audit, bumpWindow, cfg, client, enqueueEvent, eventTarget, flushInbox, flushSeen, followMax, hitWindow, lenTierOf, logger, makeEvent, markRuntimeDirty, markSeen, openWindow, pendingEvents, pendingWhileBooting, processingIds, pushLen, recentIds, renderEventForAgent, promptCore, segments, deferredReview, seenDirty, seenState, sessions, sleep, state, todayKey })); }
   function deliver(...a) { return __init_createChatFeature().deliver(...a); }
   function wakeNow(...a) { return __init_createChatFeature().wakeNow(...a); }
   function checkQuietGroups(...a) { return __init_createChatFeature().checkQuietGroups(...a); }
@@ -640,6 +654,7 @@ const base = ctx.logger ?? {};
   sessions.isAgentReady = () => state.agentReady;
   const client = new OneBotClient(cfg, logger);
   client.sessions = sessions; // 类拿不到闭包，显式注入
+  client.deferredReview = deferredReview; // 回完后开 60 秒回看
 
   // 群画像/巡查：最早在 412 行就被调用，必须在这里就绪
   const GROUP_META_PATH = join(HOME, ".dsh/onebot-bridge/group-meta.json");
@@ -702,6 +717,8 @@ const base = ctx.logger ?? {};
   const followUps = new Map();
   const { followSecs, followMax, openWindow, hitWindow, activeWindowTarget, bumpWindow, closeWindowFor } =
     createWindows({ cfg, followUps, logger });
+  // 发完群消息后开续聊窗口（client 拿不到闭包，在这里注入）
+  client.windows = { openWindow };
   
   /** 找命中的窗口（先按人，再按群级 "*"）；返回 { rec, who } */
   

@@ -77,9 +77,9 @@ const DEFAULTS = {
   quoteInGroup: true,
   /** 连续对话：她刚回过的群友，在窗口内不 @ 也能接着说 */
   followUpEnabled: true,
-  followUpSeconds: 60,
+  followUpSeconds: 180,
   /** 一次主动搭话最多接几轮，超过就停（等下一次被 @） */
-  followUpMaxTurns: 5,
+  followUpMaxTurns: 0, // 0 = 不限轮数
   /** 发送最小间隔（毫秒）：单线程打字之外的兜底，防跨会话连发 */
   minSendGapMs: 1200,
   /** 群聊合并窗口：同一个人的连发在这个窗口内合成一次回复 */
