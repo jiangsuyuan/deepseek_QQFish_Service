@@ -24,6 +24,16 @@ const MAX_TOOLS = 50;
 const RUN_TIMEOUT_MS = 10_000;
 const NAME_RE = /^x_[a-z][a-z0-9_]{1,30}$/;
 
+/** 去掉 undefined 等非 JSON 值：DSH 对返回值做无损校验，带 undefined 会判 invalid output */
+function cleanJson(v) {
+  if (v === undefined) return { ok: true };
+  try {
+    return JSON.parse(JSON.stringify(v));
+  } catch {
+    return { ok: false, reason: "返回值无法序列化" };
+  }
+}
+
 export function createUserTools(app) {
   const { ctx, logger } = app;
   const loaded = new Map(); // name -> { dispose, file, meta }
@@ -97,12 +107,14 @@ export function createUserTools(app) {
           execute: async (args, exec) => {
             const started = Date.now();
             try {
-              const out = await Promise.race([
-                Promise.resolve(def.execute(args, { ...exec, dataDir })),
-                new Promise((_, rej) =>
-                  setTimeout(() => rej(new Error(`执行超时（${RUN_TIMEOUT_MS}ms）`)), RUN_TIMEOUT_MS + 500).unref?.(),
-                ),
-              ]);
+              const out = cleanJson(
+                await Promise.race([
+                  Promise.resolve(def.execute(args, { ...exec, dataDir })),
+                  new Promise((_, rej) =>
+                    setTimeout(() => rej(new Error(`执行超时（${RUN_TIMEOUT_MS}ms）`)), RUN_TIMEOUT_MS + 500).unref?.(),
+                  ),
+                ]),
+              );
               bump(name, true);
               return out ?? { ok: true };
             } catch (err) {

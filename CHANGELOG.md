@@ -1,5 +1,37 @@
 # 更新日志
 
+## 4.0.15 · 2026-11-08
+
+修「消息已经发出去了，工具却报失败」。
+
+### 问题
+
+```
+Error: tool "qq_send" returned invalid output: value is not lossless JSON
+```
+
+DSH 对工具返回值做**无损 JSON 校验**，`undefined` 不是合法 JSON 值，整个返回值被拒绝——
+**但消息在那之前已经发出去了。**
+
+`qq_send` 的返回里写着 `stickerErr: stickerErr || undefined`，键存在、值是 undefined，
+于是每次调用都被判失败。她以为没发出去，重试 → 重复消息 → 再撤回。
+
+统计：57 次
+```
+qq_send 27 ｜ call_tool 19（转发同一个错误）｜ send_sticker 8 ｜ read_config 1 ｜ explore_heart 1
+```
+
+### 修复
+
+1. **qq_send**：`undefined` 字段改成条件展开，没值就不放这个键
+2. **派发层统一清洗**（`tool-catalog.js`）：所有经 `call_tool` 的返回值先过一遍 JSON 往返，
+   去掉 undefined / 函数等非 JSON 值——一处修好，覆盖所有工具
+3. **自造工具**（`user-tools.js`）：同样清洗，防止她做出来的工具踩同一个坑
+
+### 效果
+
+以后工具不会再因为"返回了个 undefined"被判失败；真失败才报错。
+
 ## 4.0.14 · 2026-11-08
 
 补上"她说完话之后群里接着说的话"——以前她只看得到 @ 她的。

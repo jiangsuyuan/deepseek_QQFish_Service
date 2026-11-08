@@ -220,7 +220,15 @@ export function registerChatTools(app) {
                 }
               }
               audit({ kind: "send_message", target, text: text.slice(0, 120), sticker: stickerSent, stickerErr });
-              return { ok: true, sent: true, target, stickerSent, stickerErr: stickerErr || undefined };
+              // 不要留 undefined 字段：DSH 对工具返回值做无损 JSON 校验，
+              // 带 undefined 会被判 invalid output——而这时消息其实已经发出去了。
+              return {
+                ok: true,
+                sent: true,
+                target,
+                stickerSent,
+                ...(stickerErr ? { stickerErr } : {}),
+              };
             },
           }),
         );

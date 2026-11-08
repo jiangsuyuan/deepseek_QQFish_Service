@@ -4,6 +4,20 @@ import { INTERNAL_TOOLS } from "./tool-table.js";
 
 const MAX_RESULT_CHARS = 2000;
 
+/**
+ * 清洗工具返回值：去掉 undefined、函数等非 JSON 值。
+ * DSH 对返回值做无损 JSON 校验，带 undefined 会判 invalid output——
+ * 而那时操作其实已经执行了（比如消息已经发出去）。这是最坑的一类"假失败"。
+ */
+function sanitize(v) {
+  if (v === undefined) return { ok: true };
+  try {
+    return JSON.parse(JSON.stringify(v));
+  } catch {
+    return { ok: false, reason: "返回值无法序列化" };
+  }
+}
+
 function clip(v) {
   try {
     const s = typeof v === "string" ? v : JSON.stringify(v);
@@ -96,7 +110,7 @@ export function createToolCatalog(app) {
             }
           }
           try {
-            const r = await def.execute(a || {}, exec);
+            const r = sanitize(await def.execute(a || {}, exec));
             const c = clip(r);
             return {
               ok: true,
