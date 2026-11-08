@@ -1,5 +1,5 @@
 // 入站消息：合并缓冲、入队、渲染成给她的 prompt。
-import { readFileSync } from "node:fs";
+import { tailRows } from "../util/msg-tail.js";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
@@ -138,32 +138,11 @@ export function createInbound(ctx) {
       return s.slice(0, lim) + "……（后面还有 " + (s.length - lim) + " 字，超过单条上限被截断）";
     }
 
-  /** 回看用：读这个频道最近几条消息（不走模型，纯读落盘） */
-  function readRecentForReview(e, n = 6) {
-    try {
-      const src = e.source || {};
-      const kind = src.type === "group" ? "group" : "private";
-      const id = kind === "group" ? src.groupId : src.userId;
-      if (!id) return [];
-      const d = new Date();
-      const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-      const f = join(HOME, ".dsh/onebot-bridge/messages", kind, String(id), day + ".jsonl");
-      return readFileSync(f, "utf8")
-        .split("\n")
-        .filter(Boolean)
-        .slice(-n)
-        .map((l) => {
-          try {
-            const o = JSON.parse(l);
-            return { id: String(o.id || ""), who: o.d === "o" ? "你" : o.n || "对方", text: String(o.x || "").slice(0, 60) };
-          } catch {
-            return null;
-          }
-        })
-        .filter(Boolean);
-    } catch {
-      return [];
-    }
+  function channelOfSource(e) {
+    const src = e?.source || {};
+    if (src.type === "group" && src.groupId) return "group:" + src.groupId;
+    if (src.type === "private" && src.userId) return "private:" + src.userId;
+    return "";
   }
 
   function renderEventForAgent(e, idx) {
@@ -228,18 +207,20 @@ export function createInbound(ctx) {
         }
         let last = [];
         try {
-          last = readRecentForReview(e);
+          // 只取"她最后一句之后"的消息；她自己说过的话不再混进来
+          last = tailRows(channelOfSource(e), 8);
         } catch {
-          last = [];
+          last = { rows: [], afterMine: true };
         }
-        if (last.length) {
-          const newest = last[last.length - 1];
+        const rows = last.rows || [];
+        if (rows.length) {
+          const newest = rows[rows.length - 1];
           if (newest?.id) lines.push("messageId: " + newest.id);
           lines.push("");
           lines.push(
             e.reviewMode === "single" ? "你刚才说完话之后，群里来了一条：" : "你刚才说完话之后，群里接着说了这几条：",
           );
-          for (const row of last) lines.push(`· ${row.who}：${row.text}${row.id ? "（id " + row.id + "）" : ""}`);
+          for (const row of rows) lines.push(`· ${row.who}：${row.text}${row.id ? "（id " + row.id + "）" : ""}`);
           lines.push("");
         } else {
           lines.push("");
