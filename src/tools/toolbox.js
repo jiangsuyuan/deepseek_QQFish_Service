@@ -1608,7 +1608,7 @@ export async function registerToolbox(app) {
                   recall: "回忆（整理 + 回忆）",
                   dream: "憧憬未来",
                   study: "研究代码（读源码 / 写代码）",
-                  watch_groups: "看看群（看大家在聊什么，想插话就插）",
+                  watch_groups: "看看群（多数时候看完就走，想接才接一句）",
                 };
                 return {
                   ok: true,

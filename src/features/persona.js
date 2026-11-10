@@ -33,10 +33,22 @@ export function createPersona(app) {
       } catch {
         arch = 0;
       }
+      // 她判断"这事我关不关心"时的依据：从认同层抽最近 5 条，截短
+      let care = "";
+      try {
+        const items = personaStore.list({ layer: "P2" }) || [];
+        const words = items
+          .slice(-5)
+          .map((x) => String(x.text || "").replace(/\s+/g, "").slice(0, 8))
+          .filter(Boolean);
+        if (words.length) care = `你最在意的是：${words.join("、")}。`;
+      } catch {
+        care = "";
+      }
       const tail = arch
         ? `；另有 ${arch} 条已归档，想起来时用 my_core({archived:true}) 查`
         : "";
-      parts.push(`（你的认同层：${desc}，共 ${p2.length} 条${tail}。想看或改：my_core / sediment）`);
+      parts.push(`（你的认同层：${desc}，共 ${p2.length} 条${tail}。${care}想看或改：my_core / sediment）`);
     }
     return parts.join("\n\n");
   }

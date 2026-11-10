@@ -76,7 +76,7 @@ const DEFAULTS = {
   /** 群里回复时引用原消息（人多时更容易对上话） */
   quoteInGroup: true,
   /** 连续对话：她刚回过的群友，在窗口内不 @ 也能接着说 */
-  followUpEnabled: true,
+  followUpEnabled: false,
   followUpSeconds: 180,
   /** 一次主动搭话最多接几轮，超过就停（等下一次被 @） */
   followUpMaxTurns: 0, // 0 = 不限轮数
@@ -107,12 +107,12 @@ const DEFAULTS = {
   /** 说说可见范围：1=所有人 4=好友 16=部分好友 64=仅自己 128=部分好友不可见 */
   qzoneVisibility: 1,
   /** 活跃群主动参与：久没被 @ + 群聊很热时插一句 */
-  activeJoinEnabled: true,
+  activeJoinEnabled: false,
   activeJoinIdleMinutes: 10,
   activeJoinPerMinute: 6,
   activeJoinCooldownMinutes: 30,
   /** 冷群找话题：超过 N 小时没人说话，主动开一次 */
-  quietTopicEnabled: true,
+  quietTopicEnabled: false,
   quietTopicHours: 2,
   /** 运行时状态（自然语言控制） */
   reasoningEffortOverride: "",

@@ -4,7 +4,7 @@ import { checkDeps } from "../util/deps.js";
 export function createEventHandler(app) {
   // 这三个以前是可选链，没传就静默失效；现在启动即报错
   checkDeps("事件处理器", app, ["echo", "deferredReview", "cancelReviews"]);
-  const { activeHoursOk, activeWindowTarget, allowed, audit, cfg, client, closeWindowFor, conversationKey, deferredReview, echo, cancelReviews, dedupe, downloadImage, enqueue, facts, fetchLinkPreview, findMsgInLog, flushSeen, formatLenHint, groupMetaTouch, handleGroupRequest, handleOwnerInviteReply, handleOwnerLeaveGroup, handleOwnerNatural, handleOwnerRelay, handleOwnerRemember, handlePoke, health, hitWindow, imagePayloadFrom, isRefused, judgeSwitchTalk, l1Push, l1TakeText, loadCore, loadGroupMeta, logger, markRuntimeDirty, markSeen, mergeBuf, moodContext, msgLogKeyOf, netWalk, noteMirrorSource, openWindow, otherGroupDigest, parseMessage, pendingWhileBooting, people, recallSearch, recentDigestText, recentOutageNote, recordMessage, renderRecall, seenDirty, seenState, selfModelText, selfViews, sessions, state, stripLoneSurrogates, switchJudgeAt, textOverlaps, timeContext, todayKey, watchHit, webPush, pluginCtx: ctx } = app;
+  const { activeHoursOk, activeWindowTarget, allowed, attention, audit, cfg, client, closeWindowFor, conversationKey, deferredReview, echo, cancelReviews, dedupe, downloadImage, enqueue, facts, fetchLinkPreview, findMsgInLog, flushSeen, formatLenHint, groupMetaTouch, handleGroupRequest, handleOwnerInviteReply, handleOwnerLeaveGroup, handleOwnerNatural, handleOwnerRelay, handleOwnerRemember, handlePoke, health, hitWindow, imagePayloadFrom, isRefused, judgeSwitchTalk, l1Push, l1TakeText, loadCore, loadGroupMeta, logger, markRuntimeDirty, markSeen, mergeBuf, moodContext, msgLogKeyOf, netWalk, noteMirrorSource, openWindow, otherGroupDigest, parseMessage, pendingWhileBooting, people, recallSearch, recentDigestText, recentOutageNote, recordMessage, renderRecall, seenDirty, seenState, selfModelText, selfViews, sessions, state, stripLoneSurrogates, switchJudgeAt, textOverlaps, timeContext, todayKey, watchHit, webPush, pluginCtx: ctx } = app;
   return async (ev) => {
     if (ev?.__fromWebUI) logger.info?.(`[onebot] WebUI 事件进入 onEvent：${ev.message_id} type=${ev.post_type}/${ev.message_type}`);
     const trace = (m) => {
@@ -214,94 +214,12 @@ export function createEventHandler(app) {
       // 忽略
     }
 
-    // 连续对话：她刚回过的这个人，窗口内不 @ 也接话
+    // 群聊只认两种信号：@ 她、引用她。
+    // 续聊窗口 / 换人接话 / 换目标判断 都已删除（4.1 简化）——群里其他人说什么都与她无关。
     const nowTs = Date.now();
-    const hit = cfg.followUpEnabled ? hitWindow(key, ev.user_id) : null;
-    let continuing = !!hit;
-    if (hit) {
-      logger.info?.(
-        `[onebot] 续聊命中 ${key} 用户 ${ev.user_id}（第 ${hit.rec.turns + 1}/${hit.rec.max} 轮，剩余 ${Math.round((hit.rec.until - nowTs) / 1000)}s）`,
-      );
-    }
-
-    // B：窗口里是 A，但现在 B 说的话明显在接她的话 → 也算继续（不用等模型判断）
-    if (!continuing && ev.message_type === "group" && !parsed.hasAt && cfg.followUpEnabled) {
-      try {
-        const otherTarget = activeWindowTarget(key, ev.user_id);
-        if (otherTarget) {
-          const e1 = sessions.entries.get(key);
-          const lastText = String(e1?.lastReplyText ?? "");
-          const related =
-            !!parsed.replyToMe ||
-            /(你|您)/.test(String(parsed.text || "")) ||
-            textOverlaps(parsed.text, lastText);
-          if (related) {
-            continuing = true;
-            switchedFrom = otherTarget;
-            closeWindowFor(key, otherTarget);
-            openWindow(key, ev.user_id);
-            logger.info?.(
-              `[onebot] 窗口内换人接话 ${key}：${otherTarget} → ${ev.user_id}（${related ? "内容相关" : ""}）`,
-            );
-            audit({ kind: "window_handoff", key, from: otherTarget, to: String(ev.user_id) });
-          }
-        }
-      } catch {
-        // 忽略
-      }
-    }
-
-    // 换目标：她刚回完 A 的 10 秒内，B 没 @ 也开口了 → 先让模型判断两步
-    let switchedFrom = null;
-    if (
-      ev.message_type === "group" &&
-      !parsed.hasAt &&
-      !continuing &&
-      cfg.followUpEnabled &&
-      cfg.switchTargetEnabled !== false
-    ) {
-      try {
-        const e0 = await sessions.ensure(key);
-        const lastTo = String(e0.lastReplyTo ?? "");
-        const gap = nowTs - (e0.lastReplyAt ?? 0);
-        const lastJudge = switchJudgeAt.get(key) ?? 0;
-        if (
-          lastTo &&
-          lastTo !== String(ev.user_id) &&
-          gap >= 0 &&
-          gap <= 10000 &&
-          nowTs - lastJudge >= 10000
-        ) {
-          switchJudgeAt.set(key, nowTs);
-          // 规则优先：叫了名字、或在引用谁说话 → 直接认定是冲她说，省一次模型调用
-          const hardCall =
-            /(肥鱼|大鱼|鱼鱼|阿鱼)/.test(String(parsed.text || "")) ||
-            (parsed.replyIds?.length ?? 0) > 0;
-          const v = hardCall
-            ? true
-            : await judgeSwitchTalk(
-            key,
-            lastTo,
-            String(ev.user_id),
-            nickname,
-            parsed.text.slice(0, 120),
-            String(e0.lastReplyText ?? ""),
-          );
-          if (v) {
-            switchedFrom = lastTo;
-            closeWindowFor(key, lastTo);
-            openWindow(key, ev.user_id);
-            continuing = true;
-            logger.info?.(`[onebot] 换目标 ${key}：${lastTo} → ${ev.user_id}（旧目标已停，新目标在跟她说话）`);
-            audit({ kind: "switch_target", key, from: lastTo, to: String(ev.user_id) });
-          } else {
-            logger.info?.(`[onebot] 换目标判断未通过 ${key}（${lastTo} → ${ev.user_id}）`);
-          }
-        }
-      } catch {
-        // 判断失败就当普通旁听
-      }
-    }
+    const continuing = false;
+    const switchedFrom = null;
+    const namedCall = !!parsed.hasAt || !!parsed.replyToMe;
 
     // 复读机：群里有好几个人连发同一句时，她可能跟着发一句（默认关，她自己开）
     try {
@@ -313,7 +231,7 @@ export function createEventHandler(app) {
     }
 
     // 群里没 @ 她、也不是在续聊：只旁观、记录，不回复
-    if (ev.message_type === "group" && !parsed.hasAt && !continuing && !switchedFrom && cfg.groupObserve) {
+    if (ev.message_type === "group" && !namedCall && cfg.groupObserve) {
       const segTypes = (Array.isArray(ev.message) ? ev.message : [])
         .map((x) =>
           x?.type === "at"
@@ -406,45 +324,7 @@ export function createEventHandler(app) {
           // 忽略
         }
 
-        // 热群插话判断（旁听分支才是主要战场）
-        if (cfg.activeJoinEnabled && cfg.autoActionsEnabled !== false) {
-          const lastActive = Math.max(entry.lastMentionAt ?? 0, entry.lastReplyAt ?? 0);
-          // 从没参与过就按 Infinity 处理，避免出现「57 年没说话」这种数字
-          const idleFromActive = lastActive > 0 ? nTs - lastActive : Number.POSITIVE_INFINITY;
-          const cooldownOk =
-            nTs - (entry.lastActiveJoinAt ?? 0) >
-            (Number(cfg.activeJoinCooldownMinutes) || 30) * 60000;
-          if (
-            activeHoursOk() &&
-            entry.msgTimes.length >= (Number(cfg.activeJoinPerMinute) || 6) &&
-            idleFromActive > (Number(cfg.activeJoinIdleMinutes) || 10) * 60000 &&
-            cooldownOk &&
-            !entry.activeJoining
-          ) {
-            entry.activeJoining = true;
-            entry.lastActiveJoinAt = nTs;
-            const idleText =
-              !Number.isFinite(idleFromActive) || idleFromActive > 7 * 24 * 60 * 60 * 1000
-                ? "从未参与"
-                : `${Math.round(idleFromActive / 60000)} 分钟没参与`;
-            logger.info?.(
-              `[onebot] 群很热闹（${entry.msgTimes.length} 条/分钟）且她${idleText}，插一句：${key}`,
-            );
-            audit({ kind: "active_join", key, perMinute: entry.msgTimes.length });
-            void sessions
-              .runProactive(
-                key,
-                "（这个群现在聊得很热闹。如果你想加入，就顺着最近的话题插一句自然的、短的、" +
-                  "不抢戏的话；如果你觉得插不上或者话题不适合你，就什么都不说（只输出一个句号）。）",
-                ev,
-                { quote: true },
-              )
-              .catch(() => {})
-              .finally(() => {
-                entry.activeJoining = false;
-              });
-          }
-        }
+        // 热群插话已删除（4.1：主动只在活动里"看群"，不跟群热度挂钩）
 
         entry.observations = entry.observations ?? [];
         entry.observations.push(nickname + "：" + parsed.text.slice(0, 120));
@@ -1436,10 +1316,8 @@ export function createEventHandler(app) {
       quoteNote = `\n[对方引用的那条消息]（只有摘要）${parsed.replySummary}\n`;
     }
 
-    // 续聊窗口里没 @ 的消息：接不接由她自己判断
-    const followNote = continuing
-      ? "（这条没 @ 或者引用你。是否在回复你的话你可以自己判断，不好确定就按没回你算。当然你可以自由决定怎么处理，就算回你也可以适时结束会话）\n"
-      : "";
+    // 续聊机制已删除：进到这里的一定是 @ 或引用，不需要额外说明
+    const followNote = "";
     const notesOnly =
       vibeNote +
       memoryNote +
@@ -1494,6 +1372,18 @@ export function createEventHandler(app) {
       // 忽略
     }
 
+    // 群里的 @/引用：先等 5~15 秒（看到提示→打开软件→读几条），再叫她
+    if (ev.message_type === "group" && namedCall) {
+      attention?.request?.(key, (extra) => {
+        try {
+          const note = extra ? `（等你的时候又有 ${extra} 条 @ 或引用你）\n` : "";
+          enqueue(key, ev, note + notesOnly, imagePayloads);
+        } catch (err) {
+          logger?.warn?.("[onebot] 注意力入队失败：" + (err?.message ?? err));
+        }
+      });
+      return;
+    }
     enqueue(key, ev, notesOnly, imagePayloads);
   };
 }

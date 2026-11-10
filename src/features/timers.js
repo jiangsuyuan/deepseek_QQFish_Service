@@ -37,12 +37,9 @@ export function startTimers(app) {
     }, 20000).unref?.();
 
   setTimeout(() => {
+      // 4.1：只留主动搭话（它是活动的一部分）
+      // 早晚报 / 早安 / 日记 已删除——主动通道只剩"活动里看群"
       scheduleProactive();
-      scheduleDailyBrief();
-      // scheduleReflect();  ← 停用：不再固定 22:00 反思
-      //   改成她自己调 explore_heart（人格要稳，不该被日历按着改）
-      scheduleMorningCatchup();
-      scheduleDiary();
     }, 20000).unref?.();
 
   setInterval(() => {
@@ -53,17 +50,7 @@ export function startTimers(app) {
       }
     }, 60000).unref?.();
 
-  setTimeout(() => {
-      void checkQuietGroups().catch((err) =>
-        logger.warn?.(`[onebot] 冷群检查失败：${err?.message ?? err}`),
-      );
-    }, 30000).unref?.();
-
-  setInterval(() => {
-      void checkQuietGroups().catch((err) =>
-        logger.warn?.(`[onebot] 冷群检查失败：${err?.message ?? err}`),
-      );
-    }, 10 * 60 * 1000).unref?.();
+  // 4.1：冷场搭话已删除（不再因为群安静就主动冒泡）
 
   setInterval(() => {
       void maybeCompactAll();
@@ -73,13 +60,7 @@ export function startTimers(app) {
       void pollMissedMentions();
     }, Math.max(60, Number(cfg.pollMentionsSeconds) || 120) * 1000).unref?.();
 
-  setTimeout(() => {
-      void hourlyIntrospect();
-    }, 5 * 60 * 1000).unref?.();
-
-  setInterval(() => {
-      void hourlyIntrospect();
-    }, 60 * 60 * 1000).unref?.();
+  // 4.1：每小时回顾已删除（25 次/天、只盯一个最活跃的群、产出极少）
 
   setTimeout(() => {
       void (async () => {

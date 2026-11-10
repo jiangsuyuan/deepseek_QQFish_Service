@@ -36,6 +36,7 @@ import { createPersonaTools } from "./src/tools/persona.js";
 import { createSessionSegments } from "./src/features/session-segments.js";
 import { createDeferredReview } from "./src/features/deferred-review.js";
 import { createEcho } from "./src/features/echo.js";
+import { createAttention } from "./src/features/attention.js";
 import { AUDIT_PATH, auditEnabled, audit, rotateAudit, summarizeDay, renderStats, ymdOffset, setAuditEnabled } from "./src/core/audit.js";
 import { bindConfig } from "./src/store/config.js";
 import { SELF_PLAN_PATH, PLAN_GRACE_MS, readSelfPlan, writeSelfPlan, addSelfPlan, updateSelfPlan, nextSelfPlan, claimDueSelfPlan, ensureSelfPlanPending } from "./src/store/selfplan.js";
@@ -423,6 +424,12 @@ export function apply(ctx, _pluginConfig) {
     LAYERS: { P0: 5, P1: 8, P2: 20 },
   };
   // 惰性构造：logger 在 apply 后面才初始化，这里直接读会 TDZ
+  let __mem_attention = null;
+  function __init_attention() {
+    return (__mem_attention ??= createAttention({ logger }));
+  }
+  const attention = { request: (...a) => __init_attention().request(...a), status: () => __init_attention().status() };
+
   let __mem_echo = null;
   function __init_echo() {
     return (__mem_echo ??= createEcho({ client: () => client, logger, audit }));
@@ -1364,7 +1371,7 @@ const base = ctx.logger ?? {};
   
   // 工具注册统一放在启动前：此时所有依赖都已初始化，避免 TDZ
       void registerToolbox({ savedStickerTimes, ACTIVITY_KINDS, ALLOWED_TOOLS, HOME, appendFileSync, audit, cfg, chmodSync, chownSync, client, conversationKey, copyFileSync, crossGroupScope, downloadImage, execFile, execFileSync, existsSync, facts, followUps, groupLabel, health, imagePayloadFrom, join, lastStickerPreview, listMsgKeys, loadActivities, loadDigests, loadGroupMeta, loadMemLog, loadReminders, loadSelfState, loadStickerLabels, loadWants, logger, markRuntimeDirty, mkdirSync, nextSelfPlan, patchSelfState, people, pickSticker, pickStickerCandidates, proactiveLocationNote, promisify, readFileSync, readMsgLog, readMsgLogPageMulti, readSelfPlan, readdirSync, refusePerson, renderMsgRec, resolveSticker, runThinkingCycle, saveReminders, saveWants, selfViews, sessions, smartCut, statSync, state, stripToText, unlinkSync, webPush, writeFileSync, pluginCtx: ctx });
-  client.onEvent = createEventHandler({ activeHoursOk, activeWindowTarget, allowed, audit, cancelReviews, cfg, client, closeWindowFor, conversationKey, deferredReview, dedupe, echo, downloadImage, enqueue, facts, fetchLinkPreview, findMsgInLog, flushSeen, formatLenHint, groupMetaTouch, handleGroupRequest, handleOwnerInviteReply, handleOwnerLeaveGroup, handleOwnerNatural, handleOwnerRelay, handleOwnerRemember, handlePoke, health, hitWindow, imagePayloadFrom, isRefused, judgeSwitchTalk, l1Push, l1TakeText, loadCore, loadGroupMeta, logger, markRuntimeDirty, markSeen, mergeBuf, moodContext, msgLogKeyOf, netWalk, noteMirrorSource, openWindow, otherGroupDigest, parseMessage, pendingWhileBooting, people, recallSearch, recentDigestText, recentOutageNote, recordMessage, renderRecall, seenDirty, seenState, selfModelText, selfViews, sessions, state, stripLoneSurrogates, switchJudgeAt, textOverlaps, timeContext, todayKey, watchHit, webPush, pluginCtx: ctx });
+  client.onEvent = createEventHandler({ activeHoursOk, attention, activeWindowTarget, allowed, audit, cancelReviews, cfg, client, closeWindowFor, conversationKey, deferredReview, dedupe, echo, downloadImage, enqueue, facts, fetchLinkPreview, findMsgInLog, flushSeen, formatLenHint, groupMetaTouch, handleGroupRequest, handleOwnerInviteReply, handleOwnerLeaveGroup, handleOwnerNatural, handleOwnerRelay, handleOwnerRemember, handlePoke, health, hitWindow, imagePayloadFrom, isRefused, judgeSwitchTalk, l1Push, l1TakeText, loadCore, loadGroupMeta, logger, markRuntimeDirty, markSeen, mergeBuf, moodContext, msgLogKeyOf, netWalk, noteMirrorSource, openWindow, otherGroupDigest, parseMessage, pendingWhileBooting, people, recallSearch, recentDigestText, recentOutageNote, recordMessage, renderRecall, seenDirty, seenState, selfModelText, selfViews, sessions, state, stripLoneSurrogates, switchJudgeAt, textOverlaps, timeContext, todayKey, watchHit, webPush, pluginCtx: ctx });
   client.onReconnected = createOnReconnected({ audit, catchUpPrivate, cfg, client, logger, recentIds, seenState, sessions, sleep, pluginCtx: ctx });
   ctx.on?.("session/event", createSessionEventHandler({ audit, cfg, client, conversationKey, entryLastTopic, logger, sessions, pluginCtx: ctx }));
   ctx.on("tools/post-execute", createToolHooks({ TOOL_LOG_SKIP, audit, logger, sessions, webPush, pluginCtx: ctx }));

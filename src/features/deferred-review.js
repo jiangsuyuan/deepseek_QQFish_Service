@@ -10,6 +10,7 @@
 // 目的：她说完话之后，别人接着说不带 @ 的话，她也能看见；但不会参与无关话题。
 
 import { tailRows } from "../util/msg-tail.js";
+import { isPerfunctory } from "../util/perfunctory.js";
 
 const WAIT_MS = 120 * 1000; // 她说完话后的观察窗（120 秒：群里接话比私聊慢）
 const EXPIRE_MS = 10 * 60 * 1000; // 等"第一条"最多等这么久，超了就关周期
@@ -93,6 +94,12 @@ export function createDeferredReview(app = {}) {
       const t = tailRows(channel, 8);
       if (t.afterMine && (!t.rows || t.rows.length === 0)) {
         logger?.info?.("[onebot] 回看跳过：她说完之后群里没有新消息");
+        return false;
+      }
+      // 对方只是回了个"嗯/哈哈/表情"——这段已经聊完了，不打扰
+      const lastRow = t.rows?.[t.rows.length - 1];
+      if (lastRow && !lastRow.mine && isPerfunctory(lastRow.text)) {
+        logger?.info?.("[onebot] 回看跳过：对方只是应了一声（" + String(lastRow.text).slice(0, 8) + "）");
         return false;
       }
     } catch {
