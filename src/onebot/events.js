@@ -1,5 +1,6 @@
 // QQ 事件入口（原 apply() 内的 client.onEvent 赋值）。
 import { checkDeps } from "../util/deps.js";
+import { REVIEW_PROMPT } from "../util/review-prompt.js";
 
 export function createEventHandler(app) {
   // 这三个以前是可选链，没传就静默失效；现在启动即报错
@@ -1376,7 +1377,7 @@ export function createEventHandler(app) {
     if (ev.message_type === "group" && namedCall) {
       attention?.request?.(key, (extra) => {
         try {
-          const note = extra ? `（等你的时候又有 ${extra} 条 @ 或引用你）\n` : "";
+          const note = extra ? `（这是你看到的 ${extra + 1} 条）\n` + REVIEW_PROMPT + "\n" : "";
           enqueue(key, ev, note + notesOnly, imagePayloads);
         } catch (err) {
           logger?.warn?.("[onebot] 注意力入队失败：" + (err?.message ?? err));

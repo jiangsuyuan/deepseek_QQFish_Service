@@ -1,5 +1,6 @@
 // 入站消息：合并缓冲、入队、渲染成给她的 prompt。
 import { tailRows } from "../util/msg-tail.js";
+import { REVIEW_PROMPT } from "../util/review-prompt.js";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
@@ -227,7 +228,7 @@ export function createInbound(ctx) {
           lines.push("你刚才说完话之后，群里没有新消息。");
           lines.push("");
         }
-        lines.push("判断这条是不是在回复你。不是就什么都不做，是的话你自己判断是否做什么，感觉不好判断就按照没有回复算。不管是否回复，都可以自行决定是否适时结束。");
+        lines.push(REVIEW_PROMPT);
         if (isGroup) lines.push("要回哪条，就用那条的 id 做 messageId；不想引用就 qq_send 直接说。");
       } else if (e.kind === "activity_due") {
         lines.push("你之前排的活动时间到了。");
