@@ -1438,7 +1438,7 @@ export function createEventHandler(app) {
 
     // 续聊窗口里没 @ 的消息：接不接由她自己判断
     const followNote = continuing
-      ? "（这条没 @ 或者引用你。是否在回复你的话你可以自己判断，不好确定就按没回你算，当然你可以自由决定怎么处理。）\n"
+      ? "（这条没 @ 或者引用你。是否在回复你的话你可以自己判断，不好确定就按没回你算。当然你可以自由决定怎么处理，就算回你也可以适时结束会话）\n"
       : "";
     const notesOnly =
       vibeNote +
