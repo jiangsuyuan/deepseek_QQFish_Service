@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 把已有的 QQ 会话一次性接进配套插件（fish-memory / speak-up / feiyu-mood）
+# 把已有的 QQ 会话一次性接进配套插件（fish-memory / feiyu-mood）
 #
 # 适用场景：装完之后、或换了机器/换了 QQ，想批量补配置。
 # 桥在运行时也会自动配置新会话，这个脚本是给"离线状态"用的。
@@ -59,22 +59,7 @@ d["switchMigrated"] = True
 save(fp, d)
 print(f"fish-memory : 新增 {added} 个会话（共 {len([v for v in d['sessions'].values() if v])} 个开启）")
 
-# 2) speak-up：加进目标列表
-sp = os.path.join(base, "speak-up-config.json")
-d = load(sp)
-lst = d.get("目标会话") if isinstance(d.get("目标会话"), list) else []
-added = 0
-for sid in ids:
-    if sid not in lst:
-        lst.append(sid)
-        added += 1
-d["目标会话"] = lst
-d.setdefault("总开关", True)
-d.setdefault("间隔分钟", 30)
-save(sp, d)
-print(f"speak-up    : 新增 {added} 个目标（共 {len(lst)} 个）")
-
-# 3) feiyu-mood：没设过目标就设第一个
+# 2) feiyu-mood：没设过目标就设第一个
 mp = os.path.join(base, "feiyu-mood", "config.json")
 d = load(mp)
 if not d.get("targetSession"):
