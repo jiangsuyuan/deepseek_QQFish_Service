@@ -518,45 +518,7 @@ export function createEventHandler(app) {
         }
         markRuntimeDirty();
 
-        // 一个人连发多条、等了一会儿还没人接 → 搭一句给个台阶
-        if (cfg.soloStreakEnabled !== false && cfg.autoActionsEnabled !== false) {
-          const minMsgs = Number(cfg.soloStreakMin) || 3;
-          const waitMs = (Number(cfg.soloStreakWaitSeconds) || 1800) * 1000;
-          const coolMs = (Number(cfg.soloStreakCooldownMinutes) || 20) * 60000;
-          const waited = nowTs - streak.lastAt;
-          const coolOk = nowTs - (ent.lastSoloJoinAt ?? 0) > coolMs;
-          const soloDay = todayKey();
-          if (ent.soloDay !== soloDay) {
-            ent.soloDay = soloDay;
-            ent.soloDayCount = 0;
-          }
-          const soloDayOk =
-            Number(ent.soloDayCount ?? 0) < (Number(cfg.soloStreakPerDay) || 2);
-          if (
-            streak.count >= minMsgs &&
-            waited >= waitMs &&
-            coolOk &&
-            soloDayOk &&
-            !parsed.hasAt &&
-            !continuing
-          ) {
-            ent.lastSoloJoinAt = nowTs;
-            ent.soloDayCount = Number(ent.soloDayCount ?? 0) + 1;
-            logger.info?.(
-              `[onebot] ${streak.count} 条连发没人接（等了 ${Math.round(waited / 60000)} 分钟），搭一句：${key}`,
-            );
-            audit({ kind: "solo_join", key, count: streak.count });
-            void sessions
-              .runProactive(
-                key,
-                "（群里有人连着发了几条。你要是正好有话说，可以自然接一句，" +
-                  "像「我也在想这个」「你说的那个我见过」这种，" +
-                  "别显得刻意、别说「你继续说」、别 @ 他。接不上就不说（只输出一个句号）。）",
-                ev,
-              )
-              .catch(() => {});
-          }
-        }
+        // 4.1.3：连发搭话已删除（判据是"群安静了"，不是"有人在等人接"）
 
         // 记录完之后再判断要不要"热群插一句"
         if (cfg.activeJoinEnabled && cfg.autoActionsEnabled !== false) {

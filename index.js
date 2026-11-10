@@ -522,7 +522,6 @@ export function apply(ctx, _pluginConfig) {
   function morningCatchup(...a) { return __init_createSchedule().morningCatchup(...a); }
   function dailyReflect(...a) { return __init_createSchedule().dailyReflect(...a); }
   function dailyDiary(...a) { return __init_createSchedule().dailyDiary(...a); }
-  function checkSoloStreak(...a) { return __init_createSchedule().checkSoloStreak(...a); }
   function maybeCompactAll(...a) { return __init_createSchedule().maybeCompactAll(...a); }
   let __mem_createRecall = null;
   function __init_createRecall() { return (__mem_createRecall ??= createRecall({ cfg, humanizePunct, listSessionFiles, logger, readFileSync, textOfEvent, zstdDecompressSync, pluginCtx: ctx })); }
@@ -1382,7 +1381,7 @@ const base = ctx.logger ?? {};
   registerMediaTools({ cfg, client, logger, sessions, state, pluginCtx: ctx });
   registerChatTools({ cfg, client, logger, pushLen, sessions, state, pluginCtx: ctx });
   registerMemoryTools({ cfg, logger, recallSearch, pluginCtx: ctx });
-  startTimers({ ACTIVITY_KINDS, EXPLORE_LOG, HEALTH_PATH, HOME, INBOUND_TEXT_MAX, NET_DECAY, NET_MAX_DEPTH, NET_MIN_W, NET_VISIT_CAP, OUTAGE_PATH, QZONE_PLAN, RUNTIME_PATH, SELF_ACTIVITY_KEY, SELF_HISTORY_PATH, SELF_MODEL_PATH, TOOL_LOG_SKIP, WEBHIST_PATH, activeHoursOk, audit, auditEnabled, cfg, checkQuietGroups, checkReminders, checkSoloStreak, checkTokenBudget, chmodSync, client, copyFileSync, createWebServer, entryLastTopic, existsSync, fireDuePlan, flushInbox, health, hourlyIntrospect, inQuietHours, join, loadActivities, loadSelfModel, loadWebHistory, logger, maybeCompactAll, maybeQzone, memSeen, mkdirSync, myMsgIds, myMsgOrder, net, nextQzoneTick, nextSelfPlan, noteMyMessage, pendingWhileBooting, pickTarget, pollFriendRequests, pollMissedMentions, qzoneLog, readFileSync, recentIds, refreshQqOnline, rotateAudit, runThinkingCycle, saveSelfModel, scheduleDailyBrief, scheduleDiary, scheduleMorningCatchup, scheduleNextSelfActivity, scheduleProactive, seenState, sessions, sleep, snapshotRuntime, statSync, state, unlinkSync, webClients, webHistory, webPush, webStart, pluginCtx: ctx });
+  startTimers({ ACTIVITY_KINDS, EXPLORE_LOG, HEALTH_PATH, HOME, INBOUND_TEXT_MAX, NET_DECAY, NET_MAX_DEPTH, NET_MIN_W, NET_VISIT_CAP, OUTAGE_PATH, QZONE_PLAN, RUNTIME_PATH, SELF_ACTIVITY_KEY, SELF_HISTORY_PATH, SELF_MODEL_PATH, TOOL_LOG_SKIP, WEBHIST_PATH, activeHoursOk, audit, auditEnabled, cfg, checkReminders, checkTokenBudget, chmodSync, client, copyFileSync, createWebServer, entryLastTopic, existsSync, fireDuePlan, flushInbox, health, hourlyIntrospect, inQuietHours, join, loadActivities, loadSelfModel, loadWebHistory, logger, maybeCompactAll, maybeQzone, memSeen, mkdirSync, myMsgIds, myMsgOrder, net, nextQzoneTick, nextSelfPlan, noteMyMessage, pendingWhileBooting, pickTarget, pollFriendRequests, pollMissedMentions, qzoneLog, readFileSync, recentIds, refreshQqOnline, rotateAudit, runThinkingCycle, saveSelfModel, scheduleDailyBrief, scheduleDiary, scheduleMorningCatchup, scheduleNextSelfActivity, scheduleProactive, seenState, sessions, sleep, snapshotRuntime, statSync, state, unlinkSync, webClients, webHistory, webPush, webStart, pluginCtx: ctx });
   // 只读统计：每 5 分钟采一次上下文用量与构成（system / tools / messages）
   const usageStats = createUsageStats({ ctx, sessions, logger });
   sessions.onTurnUsage = (session, key) => usageStats.note(session, key);

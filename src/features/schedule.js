@@ -127,42 +127,7 @@ export function createSchedule(app) {
       logger.info?.(`[onebot] 每日简讯将在 ${next.toLocaleString("zh-CN")} 触发`);
     }
 
-  function checkSoloStreak() {
-      if (cfg.soloStreakEnabled === false || cfg.autoActionsEnabled === false) return;
-      if (!client.connected) return; // 掉线时别搭话，发了也白发
-      if (!activeHoursOk()) return; // 23-9 点不主动搭话
-      const nowTs = Date.now();
-      const minMsgs = Number(cfg.soloStreakMin) || 3;
-      const waitMs = (Number(cfg.soloStreakWaitSeconds) || 1800) * 1000;
-      const coolMs = (Number(cfg.soloStreakCooldownMinutes) || 20) * 60000;
-      for (const [key, ent] of sessions.entries) {
-        if (!key.startsWith("group:")) continue;
-        const st = ent.streak;
-        if (!st || st.count < minMsgs) continue;
-        const waited = nowTs - (st.lastAt ?? 0);
-        if (waited < waitMs || waited > 90 * 60000) continue; // 等太久了就不提了
-        if (nowTs - (ent.lastSoloJoinAt ?? 0) < coolMs) continue;
-        if (ent.soloJoining) continue;
-        ent.soloJoining = true;
-        ent.lastSoloJoinAt = nowTs;
-        const cnt = st.count;
-        st.count = 0;
-        logger.info?.(`[onebot] ${cnt} 条连发等了 ${Math.round(waited / 60000)} 分钟没人接，搭一句：${key}`);
-        audit({ kind: "solo_join", key, count: cnt });
-        void sessions
-          .runProactive(
-            key,
-            "（群里有人刚才连着发了几条。你要是正好有话说，可以自然接一句，" +
-              "像「我也在想这个」「你说的那个我见过」这种，" +
-              "别显得刻意、别说「你继续说」、别 @ 他。接不上就不说（只输出一个句号）。）",
-          )
-          .catch(() => {})
-          .finally(() => {
-            ent.soloJoining = false;
-          });
-      }
-    }
-
+  // 4.1.3：连发搭话已删除
   async function morningCatchup() {
       if (!cfg.morningCatchup) return;
       for (const [key, entry] of sessions.entries) {
@@ -368,7 +333,7 @@ export function createSchedule(app) {
       }
     }
 
-  return { checkReminders, scheduleProactive, scheduleDailyBrief, scheduleMorningCatchup, scheduleDiary, scheduleReflect, fireDuePlan, morningCatchup, dailyReflect, dailyDiary, checkSoloStreak, maybeCompactAll };
+  return { checkReminders, scheduleProactive, scheduleDailyBrief, scheduleMorningCatchup, scheduleDiary, scheduleReflect, fireDuePlan, morningCatchup, dailyReflect, dailyDiary, maybeCompactAll };
 }
 
 export {  };

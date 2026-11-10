@@ -86,8 +86,6 @@ const DEFAULTS = {
   groupMergeWindowMs: 2000,
   mergeGroups: true,
   /** 连发搭话：同一人连发 N 条、等 M 秒没人接 → 搭一句 */
-  soloStreakWaitSeconds: 1800,
-  soloStreakPerDay: 2,
   quietTopicPerDay: 1,
   /** 群聊记忆互通：把其他群最近在聊的话题带一点进来 */
   crossGroupMemory: true,

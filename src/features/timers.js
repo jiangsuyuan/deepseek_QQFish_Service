@@ -1,7 +1,7 @@
 // 常驻定时器：心跳、轮询、清理。
 
 export function startTimers(app) {
-  const { ACTIVITY_KINDS, EXPLORE_LOG, HEALTH_PATH, HOME, INBOUND_TEXT_MAX, NET_DECAY, NET_MAX_DEPTH, NET_MIN_W, NET_VISIT_CAP, OUTAGE_PATH, QZONE_PLAN, RUNTIME_PATH, SELF_ACTIVITY_KEY, SELF_HISTORY_PATH, SELF_MODEL_PATH, TOOL_LOG_SKIP, WEBHIST_PATH, activeHoursOk, audit, auditEnabled, cfg, checkQuietGroups, checkReminders, checkSoloStreak, checkTokenBudget, chmodSync, client, copyFileSync, createWebServer, entryLastTopic, existsSync, fireDuePlan, flushInbox, health, hourlyIntrospect, inQuietHours, join, loadActivities, loadSelfModel, loadWebHistory, logger, maybeCompactAll, maybeQzone, memSeen, mkdirSync, myMsgIds, myMsgOrder, net, nextQzoneTick, nextSelfPlan, noteMyMessage, pendingWhileBooting, pickTarget, pollFriendRequests, pollMissedMentions, qzoneLog, readFileSync, recentIds, refreshQqOnline, rotateAudit, runThinkingCycle, saveSelfModel, scheduleDailyBrief, scheduleDiary, scheduleMorningCatchup, scheduleNextSelfActivity, scheduleProactive, seenState, sessions, sleep, snapshotRuntime, statSync, state, unlinkSync, webClients, webHistory, webPush, webStart, pluginCtx: ctx } = app;
+  const { ACTIVITY_KINDS, EXPLORE_LOG, HEALTH_PATH, HOME, INBOUND_TEXT_MAX, NET_DECAY, NET_MAX_DEPTH, NET_MIN_W, NET_VISIT_CAP, OUTAGE_PATH, QZONE_PLAN, RUNTIME_PATH, SELF_ACTIVITY_KEY, SELF_HISTORY_PATH, SELF_MODEL_PATH, TOOL_LOG_SKIP, WEBHIST_PATH, activeHoursOk, audit, auditEnabled, cfg, checkQuietGroups, checkReminders, checkTokenBudget, chmodSync, client, copyFileSync, createWebServer, entryLastTopic, existsSync, fireDuePlan, flushInbox, health, hourlyIntrospect, inQuietHours, join, loadActivities, loadSelfModel, loadWebHistory, logger, maybeCompactAll, maybeQzone, memSeen, mkdirSync, myMsgIds, myMsgOrder, net, nextQzoneTick, nextSelfPlan, noteMyMessage, pendingWhileBooting, pickTarget, pollFriendRequests, pollMissedMentions, qzoneLog, readFileSync, recentIds, refreshQqOnline, rotateAudit, runThinkingCycle, saveSelfModel, scheduleDailyBrief, scheduleDiary, scheduleMorningCatchup, scheduleNextSelfActivity, scheduleProactive, seenState, sessions, sleep, snapshotRuntime, statSync, state, unlinkSync, webClients, webHistory, webPush, webStart, pluginCtx: ctx } = app;
   setInterval(() => flushInbox(), 30_000).unref?.();
 
   setInterval(() => void refreshQqOnline(), 60_000).unref?.();
@@ -38,14 +38,6 @@ export function startTimers(app) {
 
   // 4.1.2：热点主动分享也删了——主动通道只剩"活动里看群"
 
-
-  setInterval(() => {
-      try {
-        checkSoloStreak();
-      } catch (err) {
-        logger.warn?.(`[onebot] 连发检查失败：${err?.message ?? err}`);
-      }
-    }, 60000).unref?.();
 
   // 4.1：冷场搭话已删除（不再因为群安静就主动冒泡）
 
