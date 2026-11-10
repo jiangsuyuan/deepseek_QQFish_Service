@@ -36,11 +36,8 @@ export function startTimers(app) {
       }
     }, 20000).unref?.();
 
-  setTimeout(() => {
-      // 4.1：只留主动搭话（它是活动的一部分）
-      // 早晚报 / 早安 / 日记 已删除——主动通道只剩"活动里看群"
-      scheduleProactive();
-    }, 20000).unref?.();
+  // 4.1.2：热点主动分享也删了——主动通道只剩"活动里看群"
+
 
   setInterval(() => {
       try {

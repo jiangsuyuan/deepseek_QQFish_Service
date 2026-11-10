@@ -1,5 +1,5 @@
 // 入站消息：合并缓冲、入队、渲染成给她的 prompt。
-import { tailRows } from "../util/msg-tail.js";
+import { tailRows, lastMineText } from "../util/msg-tail.js";
 import { REVIEW_PROMPT } from "../util/review-prompt.js";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -150,6 +150,16 @@ export function createInbound(ctx) {
       const t = new Date(e.at).toLocaleTimeString("zh-CN", { hour12: false, hour: "2-digit", minute: "2-digit" });
       const lines = [];
       lines.push("【" + (idx + 1) + "】" + t);
+      // 她可能在自己不记得的情况下说过话（活动/主动回合在别的会话里）
+      // 加一句"你刚才说过"，免得她被问到时编一个理由
+      try {
+        const mine = lastMineText(channelOfSource(e));
+        if (mine && Date.now() - mine.at < 40 * 60 * 1000) {
+          lines.push(`你刚才在这个群说过：「${mine.text}」`);
+        }
+      } catch {
+        // 忽略
+      }
       const mid = e.payload && e.payload.messageId ? String(e.payload.messageId) : "";
       if (e.kind === "private_message") {
         const isTemp = e.source.subType === "group" || !!e.source.originGroup;

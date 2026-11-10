@@ -20,6 +20,7 @@ const PATH = join(HOME, ".dsh/onebot-bridge/echo.json");
 const WINDOW_MS = 5 * 60 * 1000; // 真实复读是慢的：实测同一句能隔十几分钟还在复读
 const COOLDOWN_MS = 5 * 60 * 1000; // 群级冷却：跟完一句，5 分钟内不再跟
 const ROUND_GAP_MS = 3 * 60 * 1000; // 同一句隔 3 分钟没人再说 = 这一轮复读结束
+const SAME_TEXT_MS = 60 * 60 * 1000; // 同一句 1 小时内只跟一次（复读可能拖很久）
 const MIN_LEN = 2;
 
 const BAD = /(操你|傻逼|妈的|滚|死|杀|裸|约炮|@|http|www\.|\.com)/i;
@@ -100,6 +101,8 @@ export function createEcho(app = {}) {
     }
     g.lastTextAt = now;
     if (g.echoedInRound) return; // 这一轮已经跟过
+    g.echoed = g.echoed && typeof g.echoed === "object" ? g.echoed : {};
+    if (Number(g.echoed[n] || 0) && now - Number(g.echoed[n]) < SAME_TEXT_MS) return; // 同一句已经跟过
     if (now - (g.lastEchoAt || 0) < COOLDOWN_MS) return; // 群级冷却
 
     // 发
@@ -109,6 +112,7 @@ export function createEcho(app = {}) {
       g.lastEchoAt = now;
       g.lastText = n;
       g.echoedInRound = true;
+      g.echoed[n] = now;
       g.recent = [];
       s.pending.push({ at: now, groupId: gid, text: t, people: people.size });
       if (s.pending.length > 20) s.pending = s.pending.slice(-20);

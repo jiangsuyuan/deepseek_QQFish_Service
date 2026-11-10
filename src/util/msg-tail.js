@@ -67,3 +67,24 @@ export function tailRows(channel, n = 8) {
   const after = parsed.slice(lastMine + 1);
   return { rows: after.slice(-n), afterMine: true };
 }
+
+/** 她在这个频道最后说的一句（用于给事件加锚点，防止她把自己的话归错因） */
+export function lastMineText(channel) {
+  const p = channelPath(channel, todayName());
+  if (!p) return null;
+  let lines;
+  try {
+    lines = readFileSync(p, "utf8").split("\n").filter(Boolean).slice(-300);
+  } catch {
+    return null;
+  }
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    try {
+      const o = JSON.parse(lines[i]);
+      if (o.d === "o") return { text: String(o.x || "").slice(0, 80), at: Number(o.t) * 1000 };
+    } catch {
+      // 跳过
+    }
+  }
+  return null;
+}
