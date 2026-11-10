@@ -37,6 +37,7 @@ import { createSessionSegments } from "./src/features/session-segments.js";
 import { createDeferredReview } from "./src/features/deferred-review.js";
 import { createEcho } from "./src/features/echo.js";
 import { createAttention } from "./src/features/attention.js";
+import { createMood } from "./src/features/mood.js";
 import { AUDIT_PATH, auditEnabled, audit, rotateAudit, summarizeDay, renderStats, ymdOffset, setAuditEnabled } from "./src/core/audit.js";
 import { bindConfig } from "./src/store/config.js";
 import { SELF_PLAN_PATH, PLAN_GRACE_MS, readSelfPlan, writeSelfPlan, addSelfPlan, updateSelfPlan, nextSelfPlan, claimDueSelfPlan, ensureSelfPlanPending } from "./src/store/selfplan.js";
@@ -424,6 +425,12 @@ export function apply(ctx, _pluginConfig) {
     LAYERS: { P0: 5, P1: 8, P2: 20 },
   };
   // 惰性构造：logger 在 apply 后面才初始化，这里直接读会 TDZ
+  let __mem_mood = null;
+  function __init_mood() {
+    return (__mem_mood ??= createMood({ logger }));
+  }
+  const mood = { line: () => __init_mood().line(), status: () => __init_mood().status() };
+
   let __mem_attention = null;
   function __init_attention() {
     return (__mem_attention ??= createAttention({ logger }));
@@ -496,6 +503,14 @@ export function apply(ctx, _pluginConfig) {
         return (
           (stat ? stat + "\n\n" : "") +
           (who ? who + "\n\n" : "") +
+          (() => {
+            try {
+              const m = mood.line();
+              return m ? m + "\n\n" : "";
+            } catch {
+              return "";
+            }
+          })() +
           "【工具】（用 call_tool 调用；参数带类型，? 表示可选；不确定就先 describe_tool）\n" +
           table
         );
@@ -1411,6 +1426,21 @@ const base = ctx.logger ?? {};
           }),
         );
         logger?.info?.("[onebot] 复读机工具已注册（echo_mode，默认关）");
+        try {
+          const mdef = __init_mood().register();
+          tools?.register?.(
+            defineTool({
+              name: mdef.name,
+              description: mdef.description,
+              parameters: mdef.parameters,
+              output: { schema: { type: "json" }, render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }] },
+              execute: mdef.execute,
+            }),
+          );
+          logger?.info?.("[onebot] 心情工具已注册（feel）");
+        } catch (err) {
+          logger?.warn?.("[onebot] 心情工具注册失败：" + (err?.message ?? err));
+        }
       } catch (err) {
         logger?.warn?.("[onebot] 复读机注册失败：" + (err?.message ?? err));
       }
