@@ -26,7 +26,18 @@ export function createPersona(app) {
     const desc = Object.entries(byType)
       .map(([k, v]) => `${labels[k] || k} ${v}`)
       .join(" / ");
-    if (p2.length) parts.push(`（你的认同层：${desc}，共 ${p2.length} 条。想看或改：my_core / sediment）`);
+    if (p2.length) {
+      let arch = 0;
+      try {
+        arch = personaStore.archivedCounts?.().P2 || 0;
+      } catch {
+        arch = 0;
+      }
+      const tail = arch
+        ? `；另有 ${arch} 条已归档，想起来时用 my_core({archived:true}) 查`
+        : "";
+      parts.push(`（你的认同层：${desc}，共 ${p2.length} 条${tail}。想看或改：my_core / sediment）`);
+    }
     return parts.join("\n\n");
   }
 

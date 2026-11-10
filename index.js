@@ -731,6 +731,11 @@ const base = ctx.logger ?? {};
     createWindows({ cfg, followUps, logger });
   // 发完群消息后开续聊窗口（client 拿不到闭包，在这里注入）
   client.windows = { openWindow };
+  // 这三样是后挂到 client 上的，漏一个就会静默失效（以前真漏过）
+  for (const k of ["sessions", "windows", "deferredReview"]) {
+    if (!client[k]) throw new Error(`[onebot] client 缺少 ${k}，启动中止`);
+  }
+  logger?.info?.("[onebot] client 钩子就绪：sessions / windows / deferredReview");
   
   /** 找命中的窗口（先按人，再按群级 "*"）；返回 { rec, who } */
   

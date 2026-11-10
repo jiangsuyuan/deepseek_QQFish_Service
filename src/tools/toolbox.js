@@ -541,10 +541,13 @@ export async function registerToolbox(app) {
                 // 全都搜：跨 facts / views / reflections / learnings / notebook / 记忆流水
                 if (type === "all" || type === "search") {
                   const results = [];
-                  const push = (source, text, at) => {
+                  const push = (source, text, at, id) => {
                     if (!text) return;
                     if (q && !String(text).includes(q)) return;
-                    results.push({ source, text: String(text).slice(0, 300), at: at || 0 });
+                    const row = { source, text: String(text).slice(0, 300), at: at || 0 };
+                    // 证据 id：P0/P1 沉淀要贴原文片段，id 形如 mem:<at> / act:<at>
+                    if (id) row.id = id;
+                    results.push(row);
                   };
                   // 事实
                   try {
@@ -555,7 +558,7 @@ export async function registerToolbox(app) {
                   try {
                     selfViews.load?.();
                     for (const v of selfViews.data || []) push("观点", v.text, v.at);
-                    for (const r of selfViews.reflections || []) push("反思", r.text, r.at);
+                    for (const r of selfViews.reflections || []) push("反思", r.text, r.at, "mem:" + r.at);
                   } catch {}
                   // 学到的
                   try {
@@ -1519,6 +1522,8 @@ export async function registerToolbox(app) {
                     : "";
                   return {
                     when,
+                    // 证据 id：P1 沉淀要贴 act:<at> 的原文片段
+                    id: "act:" + r.at,
                     kind: r.kind,
                     kindLabel: KIND_LABEL[r.kind] || r.kind,
                     wanted: cut(plan.intent, 100),

@@ -1,5 +1,9 @@
 // QQ 事件入口（原 apply() 内的 client.onEvent 赋值）。
+import { checkDeps } from "../util/deps.js";
+
 export function createEventHandler(app) {
+  // 这三个以前是可选链，没传就静默失效；现在启动即报错
+  checkDeps("事件处理器", app, ["echo", "deferredReview", "cancelReviews"]);
   const { activeHoursOk, activeWindowTarget, allowed, audit, cfg, client, closeWindowFor, conversationKey, deferredReview, echo, cancelReviews, dedupe, downloadImage, enqueue, facts, fetchLinkPreview, findMsgInLog, flushSeen, formatLenHint, groupMetaTouch, handleGroupRequest, handleOwnerInviteReply, handleOwnerLeaveGroup, handleOwnerNatural, handleOwnerRelay, handleOwnerRemember, handlePoke, health, hitWindow, imagePayloadFrom, isRefused, judgeSwitchTalk, l1Push, l1TakeText, loadCore, loadGroupMeta, logger, markRuntimeDirty, markSeen, mergeBuf, moodContext, msgLogKeyOf, netWalk, noteMirrorSource, openWindow, otherGroupDigest, parseMessage, pendingWhileBooting, people, recallSearch, recentDigestText, recentOutageNote, recordMessage, renderRecall, seenDirty, seenState, selfModelText, selfViews, sessions, state, stripLoneSurrogates, switchJudgeAt, textOverlaps, timeContext, todayKey, watchHit, webPush, pluginCtx: ctx } = app;
   return async (ev) => {
     if (ev?.__fromWebUI) logger.info?.(`[onebot] WebUI 事件进入 onEvent：${ev.message_id} type=${ev.post_type}/${ev.message_type}`);

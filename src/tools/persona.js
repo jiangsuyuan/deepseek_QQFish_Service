@@ -46,6 +46,7 @@ export function createPersonaTools(app) {
           history: { type: "boolean", description: "true = 看变更日志（含 before/after/为什么）" },
           days: { type: "number", description: "history 时只看最近几天" },
           at: { type: "string", description: "看这个时间点的你，如 2026-11-01" },
+          archived: { type: "boolean", description: "true = 看已归档的条目（默认只看现在还生效的）" },
         },
         output: out,
         execute: async (args) => {
@@ -79,11 +80,21 @@ export function createPersonaTools(app) {
                 })),
               };
             }
-            const rows = personaStore.list({ layer: args?.layer, type: args?.type, query: args?.query, limit: args?.limit });
+            const rows = personaStore.list({
+              archived: args?.archived === true,
+              layer: args?.layer,
+              type: args?.type,
+              query: args?.query,
+              limit: args?.limit,
+            });
             const c = personaStore.counts();
             const res = {
               ok: true,
               条数: `${c.P0 || 0} / ${c.P1 || 0} / ${c.P2 || 0}（上限 ${personaStore.LAYERS.P0} / ${personaStore.LAYERS.P1} / ${personaStore.LAYERS.P2}）`,
+              已归档: (() => {
+                const a = personaStore.archivedCounts?.() || {};
+                return `${a.P0 || 0} / ${a.P1 || 0} / ${a.P2 || 0}`;
+              })(),
             };
             const byLayer = { P0: [], P1: [], P2: [] };
             for (const x of rows) (byLayer[x.layer] = byLayer[x.layer] || []).push(x);
@@ -107,7 +118,8 @@ export function createPersonaTools(app) {
           "· P1 底色：我是什么样。要 3 条不同记录的反思（mem:/act:），不能含专名\n" +
           "· P2 认同：我在乎/想要什么。随时可改\n" +
           "证据要贴原文片段，工具会核对。一次调用只改一条。\n" +
-          "底色(P1)要写成平时说话的样子：短、省掉主语和因果，比如「数完了心里踏实」，不要「数东西是我给自己找的能说完了的地方」。",
+          "底色(P1)要写成平时说话的样子：短、省掉主语和因果，比如「数完了心里踏实」，不要「数东西是我给自己找的能说完了的地方」。\n" +
+          "某一层满了：先 my_core 列出来，挑不再成立或重复的 archive 掉（不删，以后能 recall 回来）。",
         parameters: {
           layer: { type: "string", description: "P0 / P1 / P2" },
           type: { type: "string", description: "P0:identity  P1:trait/tension  P2:belief/care/want/change/principle/liked/joy" },
@@ -124,10 +136,26 @@ export function createPersonaTools(app) {
           why: { type: "string", description: "为什么现在改" },
           replaces: { type: "string", description: "要改的条目 id" },
           retract: { type: "string", description: "要撤的条目 id" },
+          archive: {
+            type: "array",
+            description: "要归档的条目 id 列表（不删除，腾地方用；以后 archived:true 能捞回来）",
+            items: { type: "string" },
+          },
+          recall: {
+            type: "array",
+            description: "要从归档里捞回来的条目 id 列表",
+            items: { type: "string" },
+          },
         },
         output: out,
         execute: async (args) => {
           try {
+            if (args?.archive?.length) {
+              return personaStore.archiveItems({ ids: args.archive, why: String(args.why || "") });
+            }
+            if (args?.recall?.length) {
+              return personaStore.recallItems({ ids: args.recall });
+            }
             if (args?.retract) return personaStore.retract({ id: String(args.retract), why: String(args.why || "") });
             if (args?.replaces) {
               return personaStore.revise({

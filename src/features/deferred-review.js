@@ -14,7 +14,10 @@ import { tailRows } from "../util/msg-tail.js";
 const WAIT_MS = 120 * 1000; // 她说完话后的观察窗（120 秒：群里接话比私聊慢）
 const EXPIRE_MS = 10 * 60 * 1000; // 等"第一条"最多等这么久，超了就关周期
 
+import { checkDeps } from "../util/deps.js";
+
 export function createDeferredReview(app = {}) {
+  checkDeps("延迟回看", app, ["enqueueEvent", "makeEvent"]);
   const { logger, enqueueEvent, makeEvent } = app;
   const state = new Map(); // channel -> { stage, timer, cursor, at, expireTimer }
 

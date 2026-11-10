@@ -28,7 +28,10 @@ function norm(t) {
   return String(t || "").replace(/[^\u4e00-\u9fa5A-Za-z0-9]/g, "");
 }
 
+import { checkDeps } from "../util/deps.js";
+
 export function createEcho(app = {}) {
+  checkDeps("复读机", app, ["client", "logger"]);
   const { client, logger, audit } = app;
   let st = null;
 

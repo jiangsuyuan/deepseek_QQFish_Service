@@ -129,9 +129,10 @@ export function createPersonaStore(app = {}) {
     return { migrated: true, counts: { P0: items.filter((x) => x.layer === "P0").length, P1: k, P2: items.filter((x) => x.layer === "P2").length } };
   }
 
-  function list({ layer, type, query, limit } = {}) {
+  function list({ layer, type, query, limit, archived } = {}) {
     const d = load();
-    let rows = d.items;
+    // 默认只看没归档的；archived:true 才看归档
+    let rows = d.items.filter((x) => (archived ? !!x.archived : !x.archived));
     if (layer) rows = rows.filter((x) => x.layer === layer);
     if (type) rows = rows.filter((x) => x.type === type);
     if (query) {
@@ -145,8 +146,56 @@ export function createPersonaStore(app = {}) {
   function counts() {
     const d = load();
     const c = { P0: 0, P1: 0, P2: 0 };
-    for (const x of d.items) c[x.layer] = (c[x.layer] || 0) + 1;
+    for (const x of d.items) if (!x.archived) c[x.layer] = (c[x.layer] || 0) + 1;
     return c;
+  }
+
+  /** 已归档条数（按层） */
+  function archivedCounts() {
+    const d = load();
+    const c = { P0: 0, P1: 0, P2: 0 };
+    for (const x of d.items) if (x.archived) c[x.layer] = (c[x.layer] || 0) + 1;
+    return c;
+  }
+
+  /** 归档：打标记，不删。满的时候用来腾地方；以后 archived:true 还能查回来 */
+  function archiveItems({ ids, why, by }) {
+    const d = load();
+    const want = new Set((Array.isArray(ids) ? ids : [ids]).map((x) => String(x || "")).filter(Boolean));
+    if (!want.size) return { ok: false, reason: "要给她 ids（先 my_core 列出来）" };
+    const done = [];
+    const missing = [];
+    for (const id of want) {
+      const it = d.items.find((x) => x.id === id);
+      if (!it) { missing.push(id); continue; }
+      if (it.archived) { done.push(id); continue; }
+      it.archived = true;
+      it.archivedAt = Date.now();
+      it.archivedWhy = String(why || "").slice(0, 100);
+      hist({ at: Date.now(), op: "archive", layer: it.layer, id, before: it.text, after: "", why: it.archivedWhy, by: by || "self" });
+      done.push(id);
+    }
+    if (done.length) save(d);
+    return { ok: done.length > 0, archived: done, missing, reason: done.length ? "" : "一条都没归档" };
+  }
+
+  /** 从归档里捞回来 */
+  function recallItems({ ids, by }) {
+    const d = load();
+    const want = new Set((Array.isArray(ids) ? ids : [ids]).map((x) => String(x || "")).filter(Boolean));
+    if (!want.size) return { ok: false, reason: "要给 ids" };
+    const done = [];
+    for (const id of want) {
+      const it = d.items.find((x) => x.id === id);
+      if (!it || !it.archived) continue;
+      it.archived = false;
+      delete it.archivedAt;
+      delete it.archivedWhy;
+      hist({ at: Date.now(), op: "recall", layer: it.layer, id, before: "", after: it.text, why: "", by: by || "self" });
+      done.push(id);
+    }
+    if (done.length) save(d);
+    return { ok: done.length > 0, recalled: done, reason: done.length ? "" : "没有可捞的（id 不对，或者本来就没归档）" };
   }
 
   // ── 证据 ────────────────────────────────────────────
@@ -215,7 +264,9 @@ export function createPersonaStore(app = {}) {
     for (const ev of list) {
       const id = String(ev?.id || "");
       const quote = String(ev?.quote || "");
-      if (!id || !quote) return { ok: false, reason: "每条证据都要 id 和 quote（原文片段）" };
+      if (!id || !quote) {
+        return { ok: false, reason: "每条证据都要 id 和 quote（原文片段）。id 形如 mem:<时间戳> / act:<时间戳>，从 my_memory / my_activities 的结果里抄" };
+      }
       const r = resolveEvidence(id);
       if (r.kind === "unknown") return { ok: false, reason: `找不到证据 ${id}` };
       if (!r.text.includes(quote)) return { ok: false, reason: `证据 ${id} 里没有这句原文：${quote.slice(0, 30)}` };
@@ -230,7 +281,9 @@ export function createPersonaStore(app = {}) {
     }
     if (layer === "P1") {
       const refl = kinds.filter((k) => k === "reflection").length;
-      if (ids.size < 3) return { ok: false, reason: `底色层需要 3 条不同记录的反思，现在 ${ids.size} 条。` };
+      if (ids.size < 3) {
+        return { ok: false, reason: `底色层需要 3 条不同记录的反思，现在 ${ids.size} 条。id 从 my_memory（type:reflections）和 my_activities 里抄，形如 mem:<at> / act:<at>` };
+      }
       if (refl < 3) return { ok: false, reason: `底色层的证据要是反思记录（mem:/act:），现在只有 ${refl} 条是。` };
       return { ok: true };
     }
@@ -245,8 +298,16 @@ export function createPersonaStore(app = {}) {
 
   function add({ layer, type, text, evidence, why, by }) {
     const d = load();
-    const cnt = d.items.filter((x) => x.layer === layer).length;
-    if (cnt >= LAYERS[layer]) return { ok: false, reason: `${layer} 已满（上限 ${LAYERS[layer]}），先撤一条` };
+    const cnt = d.items.filter((x) => x.layer === layer && !x.archived).length;
+    if (cnt >= LAYERS[layer]) {
+      return {
+        ok: false,
+        reason:
+          `${layer} 满了（${cnt}/${LAYERS[layer]}）。先看看现在这些：my_core({layer:"${layer}"}) 列出来；` +
+          `哪条不准、或者跟别的重复，就 sediment({archive:["p2-xxx","p2-yyy"], why:"重复"}) 归起来——` +
+          `归档不会删，以后 archived:true 还能捞回来。`,
+      };
+    }
     if (!TYPES[layer].includes(type)) return { ok: false, reason: `${layer} 不接受类型 ${type}，可用：${TYPES[layer].join("/")}` };
     if (layer === "P1" && PROPER.test(text)) return { ok: false, reason: "底色层不能含专名/年份/书名号——那是具体内容，留在 P2" };
     const v = layer === "P2" ? { ok: true } : verifyEvidence(layer, evidence);
@@ -324,5 +385,5 @@ export function createPersonaStore(app = {}) {
     return out;
   }
 
-  return { load, save, migrateIfNeeded, list, counts, add, revise, retract, history, stateAt, verifyEvidence, resolveEvidence, LAYERS, TYPES };
+  return { load, save, migrateIfNeeded, list, counts, archivedCounts, archiveItems, recallItems, add, revise, retract, history, stateAt, verifyEvidence, resolveEvidence, LAYERS, TYPES };
 }
