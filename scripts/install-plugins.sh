@@ -7,14 +7,13 @@ PROFILE="${1:-${DSH_PROFILE:-web}}"
 
 PLUGINS=(
   "github:Yuuyuko-uu/dsh-fish-memory"
-  "github:Yuuyuko-uu/dsh-speak-up"
   "github:Yuuyuko-uu/dsh-tts-bridge"
   "github:Yuuyuko-uu/dsh-bili-subagent"
   "github:Yuuyuko-uu/dsh-feiyu-mood"
 )
 
 echo "==> 安装配套插件到 profile: ${PROFILE}"
-echo "    （这些插件提供记忆、主动搭话、朗读、B 站、心情能力）"
+echo "    （这些插件提供记忆、朗读、B 站、心情能力）"
 echo
 
 fail=0

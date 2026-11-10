@@ -416,15 +416,12 @@ journalctl -u dsh-selfclock -f     # 看它什么时候敲了桥
 
 | 类型 | 频率 |
 |---|---|
-| 热点分享 | 每 1–2 小时看心情说一句 |
-| 每日简讯 | 每天 9:00 **只私聊发给主人**：天气 + AI/科技动态 + 前一天的聊天统计（不进群，所以和群里的主动分享不冲突） |
+| 活动里看群 | 她自己排的时间；看完多数时候不说，感兴趣才插一句 |
 | 说说 | 每 2–4 小时问一次要不要发，0–3 条/天 |
-| 热群插话 | ≥2 条/分、10 分钟没参与、30 分钟没插过 → 可能插一句 |
-| 冷群找话题 | 2 小时没人说话才抛一次（每群每天 1 次） |
-| 早上补回 | 昨晚不在时的消息，统一看一次 |
 | 连发搭话 | 连发 3 条纯文字、等 30 分钟没人接 → 搭一句（每群每天 ≤2） |
 
-> 夜间安静（1–8 点不主动开口）由 `dsh-speak-up` 插件控制，配置在 `~/.dsh/speak-up-config.json`。
+> 夜间安静由本插件的 `activeStartHour` / `activeEndHour` 控制（默认 9–23 点）。
+> **4.1 起群里只认两种信号：@ 她、引用她。** 热点分享、每日简讯、热群插话、冷群找话题、早上补回、每小时回顾都已删除。
 
 > **主动消息不会乱发**：每条主动消息都必须绑定一个明确目标；自主活动、内省这类内部会话产生的文本**不外发**（只写记忆）。
 > 日志里每条自发消息都带 `[src=… targetFrom=…]`，能追出目标是从哪来的。
@@ -549,7 +546,7 @@ journalctl -u dsh-selfclock -f     # 看它什么时候敲了桥
 | 热群插话冷却 | 30 分钟 | ≥2 条/分、10 分钟没参与 |
 | 连发搭话等待 | 30 分钟 | 同一人连发 3 条没人接 |
 
-> 夜间安静（1–8 点不主动开口）由 `dsh-speak-up` 插件控制，配置在 `~/.dsh/speak-up-config.json`。
+> 夜间安静由 `activeStartHour` / `activeEndHour` 控制。
 
 ### 配置
 
@@ -581,9 +578,7 @@ journalctl -u dsh-selfclock -f     # 看它什么时候敲了桥
 | `tokenDailyAlert` | `50000000` | 当日 token 超多少提醒 |
 | `compactThresholdMB` | `5` | 会话文件超过多少 MB 自动压缩 |
 | `searchPerHour` | `0` | 每小时搜索上限，`0` = 不限 |
-| `ratePerMinute` | `6` | ⚠️ **已废弃**：只写日志，不参与判断 |
-| `ratePerUserHour` | `30` | ⚠️ **已废弃**：同上 |
-| `nightStart` / `nightEnd` | `23` / `7` | ⚠️ **已废弃**：安静时段改由 `dsh-speak-up` 控制 |
+| `activeStartHour` / `activeEndHour` | `9` / `23` | 夜间不主动说话 |
 
 **自主活动**：
 
@@ -781,7 +776,6 @@ tar czf qqfish-backup.tgz \
 | 插件 | 作用 | 许可证 |
 |---|---|---|
 | [dsh-fish-memory](https://github.com/Yuuyuko-uu/dsh-fish-memory) | 会淡忘的长期记忆 | MIT |
-| [dsh-speak-up](https://github.com/Yuuyuko-uu/dsh-speak-up) | 主动搭话（含安静时段） | MIT |
 | [dsh-tts-bridge](https://github.com/Yuuyuko-uu/dsh-tts-bridge) | 浏览器端朗读 | MIT |
 | [dsh-bili-subagent](https://github.com/Yuuyuko-uu/dsh-bili-subagent) | B 站内容子 agent | 见仓库 |
 | [dsh-feiyu-mood](https://github.com/Yuuyuko-uu/dsh-feiyu-mood) | 心情（影响语气） | 见仓库 |
