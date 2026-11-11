@@ -1,5 +1,6 @@
 import { searchSource, readSource, listSourceFiles, findInSource } from "../store/source-mirror.js";
 import { createImageLocator, channelKeyOfEntry } from "../util/image-locate.js";
+import { cachedImage } from "../store/img-cache.js";
 // 全部工具注册（原 apply() 内的巨型 IIFE）。
 // 看头像的限频时间戳（原先引用了一个不存在的变量，导致这个工具一调就抛）
 const avatarTimes = [];
@@ -195,6 +196,8 @@ export async function registerToolbox(app) {
                 });
                 if (!located.ok) return { ok: false, reason: located.reason };
                 const raw = located.raw;
+                // 先看本地缓存（QQ 的 URL 几分钟就过期，缓存能撑到三天）
+                const cached = args?.messageId ? cachedImage(args.messageId, Number(args?.which) || 1) : null;
                 const idx = Math.max(0, (located.index || 1) - 1);
                 const url =
                   typeof raw === "string" ? raw : String(raw?.url || raw?.file || "");
@@ -249,6 +252,16 @@ export async function registerToolbox(app) {
                     if (d0 && Buffer.isBuffer(d0) && d0.length) buf = Buffer.from(d0);
                   } catch {
                     // 忽略
+                  }
+                  if (!buf || !buf.length) {
+                    try {
+                      if (cached?.path) {
+                        const b2 = readFileSync(cached.path);
+                        if (b2?.length) buf = b2;
+                      }
+                    } catch {
+                      // 忽略
+                    }
                   }
                   if (!buf || !buf.length) {
                     // 再用 URL / NapCat 的 file 标识取一次

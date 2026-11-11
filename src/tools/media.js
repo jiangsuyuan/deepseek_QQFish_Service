@@ -13,6 +13,7 @@ import { findMsgInLog, readMsgLog } from "../store/msglog.js";
 // 画图/看图/新闻类工具。
 
 import { createImageLocator, channelKeyOfEntry } from "../util/image-locate.js";
+import { cachedImage } from "../store/img-cache.js";
 
 export function registerMediaTools(app) {
   const { cfg, client, logger, sessions, state, pluginCtx: ctx } = app;
@@ -466,7 +467,9 @@ export function registerMediaTools(app) {
                   // 统一的取图坐标系（和 save_sticker 共用）
                   const loc = imageLocator.byMessageId(key, args.messageId, Number(args?.imageIndex) || 1);
                   if (loc.ok) {
-                    img = await grabWithFallback(loc.raw?.url, loc.raw?.file);
+                    // 本地缓存优先（URL 过期也能看）
+                    const c1 = cachedImage(args.messageId, Number(args?.imageIndex) || 1);
+                    img = c1?.path ? await grabWithFallback(c1.path, "") : await grabWithFallback(loc.raw?.url, loc.raw?.file);
                     if (img) {
                       fromNote = `（图来自 ${loc.from}${loc.total > 1 ? `，这条共 ${loc.total} 张，看的是第 ${loc.index} 张` : ""}）`;
                     } else if (loc.total > 1) {

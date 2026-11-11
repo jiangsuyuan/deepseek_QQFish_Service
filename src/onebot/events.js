@@ -1,6 +1,7 @@
 // QQ 事件入口（原 apply() 内的 client.onEvent 赋值）。
 import { checkDeps } from "../util/deps.js";
 import { REVIEW_PROMPT } from "../util/review-prompt.js";
+import { cacheMessageImages } from "../store/img-cache.js";
 
 export function createEventHandler(app) {
   // 这三个以前是可选链，没传就静默失效；现在启动即报错
@@ -640,6 +641,13 @@ export function createEventHandler(app) {
           .slice(0, 4);
         entImg.lastImages = _imgs;
         entImg.lastImagesAt = Date.now();
+        // QQ 的图 URL 几分钟就过期：先落一份本地副本，之后看/存都有得用
+        void cacheMessageImages({
+          messageId: ev.message_id,
+          images: _imgs,
+          imagePayloadFrom,
+          logger,
+        });
         entImg.imgLog = Array.isArray(entImg.imgLog) ? entImg.imgLog : [];
         for (const im of _imgs) {
           entImg.imgLog.push({ ...im, at: Date.now(), from: String(nickname || "") });
