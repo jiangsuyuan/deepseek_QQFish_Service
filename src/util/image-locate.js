@@ -7,6 +7,19 @@
 //
 // 这个模块只做一件事：给一个频道 + 一些线索，返回那张图。
 //   url > messageId > 这一轮她看到的 > 最近一次带图消息
+/**
+ * 会话条目 → 消息日志的键（group:xxx / private:xxx）
+ * 注意：entry.key 是分段会话键（conv:group:1:3），跟消息日志不是一套。
+ * 2026-11-11 存表情失败就是这里用错了键。
+ */
+export function channelKeyOfEntry(entry) {
+  const t = entry?.lastTarget;
+  if (!t) return "";
+  if (String(t.message_type) === "group" && t.group_id) return "group:" + String(t.group_id);
+  if (String(t.message_type) === "private" && t.user_id) return "private:" + String(t.user_id);
+  return "";
+}
+
 export function createImageLocator({ findMsgInLog, logger } = {}) {
   /** 按消息 id 找这条消息里的第 which 张图 */
   function byMessageId(key, messageId, which = 1) {

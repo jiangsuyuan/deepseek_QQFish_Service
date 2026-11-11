@@ -1,5 +1,5 @@
 import { searchSource, readSource, listSourceFiles, findInSource } from "../store/source-mirror.js";
-import { createImageLocator } from "../util/image-locate.js";
+import { createImageLocator, channelKeyOfEntry } from "../util/image-locate.js";
 // 全部工具注册（原 apply() 内的巨型 IIFE）。
 // 看头像的限频时间戳（原先引用了一个不存在的变量，导致这个工具一调就抛）
 const avatarTimes = [];
@@ -187,7 +187,7 @@ export async function registerToolbox(app) {
                 const entry = sid ? sessions.bySessionId(sid) : null;
                 // 统一的取图坐标系：url > messageId > 这一轮 > 最近那条
                 const located = imageLocator.locate({
-                  key: String(entry?.key || ""),
+                  key: channelKeyOfEntry(entry),
                   entry,
                   messageId: args?.messageId,
                   url: args?.url,

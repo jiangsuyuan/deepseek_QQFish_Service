@@ -12,7 +12,7 @@ import { downloadImage, fetchHotNews } from "../net/fetch.js";
 import { findMsgInLog, readMsgLog } from "../store/msglog.js";
 // 画图/看图/新闻类工具。
 
-import { createImageLocator } from "../util/image-locate.js";
+import { createImageLocator, channelKeyOfEntry } from "../util/image-locate.js";
 
 export function registerMediaTools(app) {
   const { cfg, client, logger, sessions, state, pluginCtx: ctx } = app;
@@ -329,13 +329,7 @@ export function registerMediaTools(app) {
           return null;
         };
 
-        const keyOfEntry = (entry) => {
-          const t = entry?.lastTarget;
-          if (!t) return "";
-          if (String(t.message_type) === "group" && t.group_id) return "group:" + String(t.group_id);
-          if (String(t.message_type) === "private" && t.user_id) return "private:" + String(t.user_id);
-          return "";
-        };
+        const keyOfEntry = (entry) => channelKeyOfEntry(entry);
 
         /**
          * 这个会话里哪些位置有图——带前后文，让她按语境挑，而不是瞎猜"最近一张"。

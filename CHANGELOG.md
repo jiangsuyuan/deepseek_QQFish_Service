@@ -1,5 +1,27 @@
 # 更新日志
 
+## 4.2.3 · 2026-11-11
+
+修「找不到 #325550893 这条消息」。
+
+### 原因
+
+`save_sticker` 拿会话条目的 `entry.key` 去查消息日志，但这两个不是一套键：
+
+```
+entry.key        conv:group:613667773:12      ← 分段会话键
+消息日志的键       group:613667773             ← 频道键
+```
+
+`findMsgInLog("conv:group:...:12", id)` 自然找不到。
+
+**4.2.2 把取图逻辑统一了，但没统一"键"——搬了函数，没搬坐标系。**
+
+### 修复
+
+`image-locate.js` 加 `channelKeyOfEntry(entry)`（从 `entry.lastTarget` 推频道键），
+`save_sticker` 和 `look_image` 都用它。
+
 ## 4.2.2 · 2026-11-11
 
 把「图在哪」抽成一套共用坐标系。
