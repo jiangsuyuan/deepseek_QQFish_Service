@@ -1,12 +1,14 @@
 import { searchSource, readSource, listSourceFiles, findInSource } from "../store/source-mirror.js";
+import { createImageLocator } from "../util/image-locate.js";
 // 全部工具注册（原 apply() 内的巨型 IIFE）。
 // 看头像的限频时间戳（原先引用了一个不存在的变量，导致这个工具一调就抛）
 const avatarTimes = [];
 
 export async function registerToolbox(app) {
-  const { ACTIVITY_KINDS, ALLOWED_TOOLS, HOME, appendFileSync, audit, cfg, chmodSync, chownSync, client, conversationKey, copyFileSync, crossGroupScope, downloadImage, execFile, execFileSync, existsSync, facts, followUps, groupLabel, health, imagePayloadFrom, join, lastStickerPreview, listMsgKeys, loadActivities, loadDigests, loadGroupMeta, loadMemLog, loadReminders, loadSelfState, loadStickerLabels, loadWants, logger, markRuntimeDirty, mkdirSync, nextSelfPlan, patchSelfState, people, pickSticker, pickStickerCandidates, proactiveLocationNote, promisify, readFileSync, readMsgLog, readMsgLogPageMulti, readSelfPlan, readdirSync, refusePerson, renderMsgRec, resolveSticker, runThinkingCycle, saveReminders, saveWants, selfViews, sessions, smartCut, statSync, state, stripToText, unlinkSync, webPush, writeFileSync, pluginCtx: ctx, savedStickerTimes } = app;
+  const { ACTIVITY_KINDS, ALLOWED_TOOLS, HOME, appendFileSync, audit, cfg, chmodSync, chownSync, client, conversationKey, copyFileSync, crossGroupScope, downloadImage, execFile, findMsgInLog, execFileSync, existsSync, facts, followUps, groupLabel, health, imagePayloadFrom, join, lastStickerPreview, listMsgKeys, loadActivities, loadDigests, loadGroupMeta, loadMemLog, loadReminders, loadSelfState, loadStickerLabels, loadWants, logger, markRuntimeDirty, mkdirSync, nextSelfPlan, patchSelfState, people, pickSticker, pickStickerCandidates, proactiveLocationNote, promisify, readFileSync, readMsgLog, readMsgLogPageMulti, readSelfPlan, readdirSync, refusePerson, renderMsgRec, resolveSticker, runThinkingCycle, saveReminders, saveWants, selfViews, sessions, smartCut, statSync, state, stripToText, unlinkSync, webPush, writeFileSync, pluginCtx: ctx, savedStickerTimes } = app;
   try {
     const { defineTool } = await import("@deepseek-ai/dsh-tools");
+    const imageLocator = createImageLocator({ findMsgInLog, logger });
             ctx.get?.("tools")?.register?.(
               defineTool({
                 name: "send_sticker",
@@ -173,6 +175,8 @@ export async function registerToolbox(app) {
               parameters: {
                 tags: { type: "string", description: "标签，逗号分隔，2-3 个" },
                 which: { type: "number", description: "第几张图，默认第 1 张" },
+                messageId: { type: "string", description: "存某一条消息里的图（可选；不给就看这一轮的图）" },
+                url: { type: "string", description: "直接给图地址（可选）" },
               },
               output: {
                 schema: { type: "json" },
@@ -181,16 +185,20 @@ export async function registerToolbox(app) {
               execute: async (args, exec) => {
                 const sid = String(exec?.agent?.session?.id ?? "");
                 const entry = sid ? sessions.bySessionId(sid) : null;
-                const seen = Array.isArray(entry?.currentTurnImages) ? entry.currentTurnImages : [];
-                const imgs = seen.length ? seen : (entry?.lastImages ?? []);
-                const idx = Math.max(0, (Number(args?.which) || 1) - 1);
-                const raw = imgs[idx];
+                // 统一的取图坐标系：url > messageId > 这一轮 > 最近那条
+                const located = imageLocator.locate({
+                  key: String(entry?.key || ""),
+                  entry,
+                  messageId: args?.messageId,
+                  url: args?.url,
+                  which: Number(args?.which) || 1,
+                });
+                if (!located.ok) return { ok: false, reason: located.reason };
+                const raw = located.raw;
+                const idx = Math.max(0, (located.index || 1) - 1);
                 const url =
                   typeof raw === "string" ? raw : String(raw?.url || raw?.file || "");
                 if (!url) return { ok: false, reason: "这条消息里没有第 " + (idx + 1) + " 张图" };
-                if (!seen.length && Date.now() - Number(entry?.lastImagesAt || 0) > 5 * 60_000) {
-                  return { ok: false, reason: "那张图我有点记不清了，你再发一次我看看" };
-                }
 
                 // 限频：每小时最多存 3 张
                 const now = Date.now();

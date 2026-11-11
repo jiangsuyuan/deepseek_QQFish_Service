@@ -12,8 +12,12 @@ import { downloadImage, fetchHotNews } from "../net/fetch.js";
 import { findMsgInLog, readMsgLog } from "../store/msglog.js";
 // 画图/看图/新闻类工具。
 
+import { createImageLocator } from "../util/image-locate.js";
+
 export function registerMediaTools(app) {
   const { cfg, client, logger, sessions, state, pluginCtx: ctx } = app;
+  // 取图坐标系：look_image 与 save_sticker 共用同一套
+  const imageLocator = createImageLocator({ findMsgInLog, logger });
   void (async () => {
       try {
         const { defineTool } = await import("@deepseek-ai/dsh-tools");
@@ -465,22 +469,14 @@ export function registerMediaTools(app) {
 
                 // 指定消息：只有它自己有图才看；没图就把附近有图的位置列出来，让她按语境挑
                 if (!img && args?.messageId) {
-                  const rec = key ? findMsgInLog(key, args.messageId) : null;
-                  if (rec && Array.isArray(rec.img) && rec.img.length) {
-                    const imgIdx = Math.min(rec.img.length, Math.max(1, Number(args?.imageIndex) || 1));
-                    const first = rec.img[imgIdx - 1];
-                    img = await grabWithFallback(first?.url, first?.file);
+                  // 统一的取图坐标系（和 save_sticker 共用）
+                  const loc = imageLocator.byMessageId(key, args.messageId, Number(args?.imageIndex) || 1);
+                  if (loc.ok) {
+                    img = await grabWithFallback(loc.raw?.url, loc.raw?.file);
                     if (img) {
-                      fromNote =
-                        `（图来自 #${rec.id}，${rec.n || rec.u} 发的` +
-                        (rec.img.length > 1 ? `，这条共 ${rec.img.length} 张，看的是第 ${imgIdx} 张` : "") +
-                        "）";
-                    } else if (rec.img.length > 1) {
-                      return {
-                        ok: false,
-                        reason: `这条有 ${rec.img.length} 张图，第 ${imgIdx} 张取不到；换 imageIndex 试试`,
-                        images: rec.img.map((x, i) => ({ index: i + 1, url: x?.url || "" })),
-                      };
+                      fromNote = `（图来自 ${loc.from}${loc.total > 1 ? `，这条共 ${loc.total} 张，看的是第 ${loc.index} 张` : ""}）`;
+                    } else if (loc.total > 1) {
+                      return { ok: false, reason: `这条有 ${loc.total} 张图，第 ${loc.index} 张取不到；换 imageIndex 试试` };
                     }
                   } else {
                     const cand = key ? buildImageCandidates(key, { aroundId: args.messageId }) : [];

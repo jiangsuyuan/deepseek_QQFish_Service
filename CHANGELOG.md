@@ -1,5 +1,75 @@
 # 更新日志
 
+## 4.2.2 · 2026-11-11
+
+把「图在哪」抽成一套共用坐标系。
+
+### 之前的毛病
+
+```
+look_image    认 messageId / url / 附近有图的候选
+save_sticker  只认"这一轮"和"5 分钟内的上一条"
+list_recent   自己又一套
+```
+
+**所以她看得到、存不到。**
+
+### 现在
+
+`src/util/image-locate.js`：
+
+```
+createImageLocator({ findMsgInLog, logger })
+  locate({ key, entry, messageId, url, which })
+      → url > messageId > 这一轮 > 最近那条（5 分钟）
+  byMessageId(key, id, which)   #111 · 竹叶，第 2/2 张
+```
+
+`look_image` 和 `save_sticker` 都走它。
+
+### 好处
+
+- 三处对"哪张图"的理解一致
+- 失败时说的是同一句人话（"给我 messageId 或者让我重新看一次"）
+- 以后加新工具（发图、做表情）直接复用
+
+## 4.2.1 · 2026-11-11
+
+修「表情包存不进去」。
+
+### 现场
+
+09:51 群里发了张图，09:51:59 有人跟她说"这个表情不错，可以收着"。
+她先 `list_recent_images` 找到那张（#325550893），又用 `look_image` 看了，
+然后调 `save_sticker` —— **返回"这条消息里没有第 1 张图"**，连试两次都失败。
+
+最后她说：「想存存不进去，表情库只认当场那条。」
+
+### 原因
+
+`save_sticker` 只看两个来源：
+
+```
+entry.currentTurnImages   这一轮她看到的图
+entry.lastImages          最近一次带图消息的图（5 分钟有效）
+```
+
+触发她的是**文字那条**（"你可以收着"），没有图 → `currentTurnImages` 为空；
+`lastImages` 又过了 5 分钟 → 两边都空。
+
+**而她明明刚刚用 `list_recent_images` + `look_image` 看过那张图 —— 只是存的时候不认。**
+
+### 修复
+
+`save_sticker` 加两个参数：
+
+```
+messageId   存某一条消息里的图（按 id 从消息日志里找）
+url         直接给地址
+```
+
+**和她看图的路径对齐：能看的图，就能存。**
+
 ## 4.2.0 · 2026-11-10
 
 换掉情绪插件：**她自己记心情**，不再让另一个模型每轮替她猜。
