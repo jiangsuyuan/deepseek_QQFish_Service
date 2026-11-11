@@ -276,9 +276,11 @@ export async function registerToolbox(app) {
                   }
                   if (buf.length > 2 * 1024 * 1024) return { ok: false, reason: "图太大了（超过 2MB）" };
 
-                  // 静图转 jpg 压缩；动图原样保留（转 jpg 会只剩第一帧）
+                  // 静图和动图都压缩，但动图必须保持多帧
                   let out = buf;
                   let ext = ".jpg";
+                  const MAX_EDGE = 240;          // 长边上限
+                  const MAX_BYTES = 1.2 * 1024 * 1024; // 单张上限，超了再缩
                   try {
                     const sharpMod = await import(
                       "/opt/node-v24.22.1-linux-x64/lib/node_modules/@deepseek-ai/dsh/node_modules/sharp/dist/index.mjs"
@@ -286,20 +288,33 @@ export async function registerToolbox(app) {
                     const sharp = sharpMod.default ?? sharpMod;
                     const meta = await sharp(buf, { animated: true }).metadata();
                     const animated = Number(meta?.pages || 1) > 1;
+
                     if (animated) {
-                      // 动图：保留原始字节，只按格式定扩展名（缩它会掉帧或变大）
+                      // 动图：逐帧缩放后重新编码成 gif（sharp 需要 animated:true 才会保留所有帧）
                       const fmt = String(meta?.format || "").toLowerCase();
-                      ext = fmt === "webp" ? ".webp" : fmt === "png" ? ".png" : ".gif";
-                      out = buf;
+                      ext = fmt === "webp" ? ".webp" : ".gif";
+                      let edge = MAX_EDGE;
+                      for (let i = 0; i < 4; i += 1) {
+                        const cand = await sharp(buf, { animated: true })
+                          .resize({ width: edge, height: edge, fit: "inside", withoutEnlargement: true })
+                          .gif({ effort: 1 })
+                          .toBuffer();
+                        if (cand.length <= MAX_BYTES || edge <= 96) {
+                          out = cand;
+                          break;
+                        }
+                        edge = Math.max(96, Math.round(edge * 0.75));
+                      }
                     } else {
                       out = await sharp(buf)
-                        .resize({ width: 320, height: 320, fit: "inside", withoutEnlargement: true })
+                        .resize({ width: MAX_EDGE, height: MAX_EDGE, fit: "inside", withoutEnlargement: true })
                         .jpeg({ quality: 82 })
                         .toBuffer();
                       ext = ".jpg";
                     }
-                  } catch {
-                    // 转不了就原样存，扩展名靠内容嗅探
+                  } catch (err) {
+                    // 压不了就原样存，至少别丢动图；扩展名按内容嗅探
+                    logger?.warn?.("[onebot] 表情压缩失败，原样存：" + (err?.message ?? err));
                     const b = buf;
                     ext = b[0] === 0x47 && b[1] === 0x49 ? ".gif" : b[0] === 0x52 && b[1] === 0x49 ? ".webp" : ".jpg";
                   }
