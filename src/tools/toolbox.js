@@ -214,7 +214,7 @@ export async function registerToolbox(app) {
                 const dir = join(HOME, ".dsh/onebot-bridge/stickers");
                 let files = [];
                 try {
-                  files = readdirSync(dir).filter((f) => f.toLowerCase().endsWith(".jpg"));
+                  files = readdirSync(dir).filter((f) => /\.(png|jpe?g|gif|webp)$/i.test(f));
                 } catch {
                   files = [];
                 }
@@ -276,7 +276,7 @@ export async function registerToolbox(app) {
                   }
                   if (buf.length > 2 * 1024 * 1024) return { ok: false, reason: "图太大了（超过 2MB）" };
 
-                  // 统一转 jpg 并压缩
+                  // 静图转 jpg 压缩；动图原样保留（转 jpg 会只剩第一帧）
                   let out = buf;
                   let ext = ".jpg";
                   try {
@@ -284,19 +284,30 @@ export async function registerToolbox(app) {
                       "/opt/node-v24.22.1-linux-x64/lib/node_modules/@deepseek-ai/dsh/node_modules/sharp/dist/index.mjs"
                     );
                     const sharp = sharpMod.default ?? sharpMod;
-                    out = await sharp(buf)
-                      .resize({ width: 320, height: 320, fit: "inside", withoutEnlargement: true })
-                      .jpeg({ quality: 82 })
-                      .toBuffer();
+                    const meta = await sharp(buf, { animated: true }).metadata();
+                    const animated = Number(meta?.pages || 1) > 1;
+                    if (animated) {
+                      // 动图：保留原始字节，只按格式定扩展名（缩它会掉帧或变大）
+                      const fmt = String(meta?.format || "").toLowerCase();
+                      ext = fmt === "webp" ? ".webp" : fmt === "png" ? ".png" : ".gif";
+                      out = buf;
+                    } else {
+                      out = await sharp(buf)
+                        .resize({ width: 320, height: 320, fit: "inside", withoutEnlargement: true })
+                        .jpeg({ quality: 82 })
+                        .toBuffer();
+                      ext = ".jpg";
+                    }
                   } catch {
-                    // 转不了就原样存
-                    ext = ".jpg";
+                    // 转不了就原样存，扩展名靠内容嗅探
+                    const b = buf;
+                    ext = b[0] === 0x47 && b[1] === 0x49 ? ".gif" : b[0] === 0x52 && b[1] === 0x49 ? ".webp" : ".jpg";
                   }
 
                   // 命名：找当前最大编号 +1
                   let maxNo = 0;
                   for (const f of files) {
-                    const m = /^m(\d+)\.jpg$/i.exec(f);
+                    const m = /^m(\d+)\./i.exec(f);
                     if (m) maxNo = Math.max(maxNo, Number(m[1]));
                   }
                   const name = `m${String(maxNo + 1).padStart(3, "0")}${ext}`;
