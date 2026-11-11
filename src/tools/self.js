@@ -7,7 +7,7 @@ import { addSelfPlan, readSelfPlan, updateSelfPlan } from "../store/selfplan.js"
 // 自我状态/配置/活动类工具。
 
 export function registerSelfTools(app) {
-  const { SAFE_CONFIG_KEYS, cfg, client, crossGroupScope, dailyReflect, groupPatrolList, isOwner, loadGroupMeta, loadQzonePlan, loadSelfModel, loadSelfState, loadWatch, logger, patchSelfState, pendingFriends, pickTarget, saveQzonePlan, saveWatch, sessions, pluginCtx: ctx } = app;
+  const { SAFE_CONFIG_KEYS, cfg, client, crossGroupScope, dailyReflect, groupPatrolList, isOwner, notifiedFriends, loadGroupMeta, loadQzonePlan, loadSelfModel, loadSelfState, loadWatch, logger, patchSelfState, pendingFriends, pickTarget, saveQzonePlan, saveWatch, sessions, pluginCtx: ctx } = app;
   void (async () => {
       try {
         const { defineTool } = await import("@deepseek-ai/dsh-tools");
@@ -425,6 +425,17 @@ export function registerSelfTools(app) {
                   });
                   pendingFriends.delete(friendUid);
                   pendingFriends.delete(flag);
+                  // 轮询那条路也有自己的去重集合，不清掉它下一轮还会再问一遍
+                  try {
+                    for (const k of [...(notifiedFriends ?? [])]) {
+                      if (String(k) === String(friendUid) || String(k) === String(flag)) notifiedFriends.delete(k);
+                    }
+                    for (const k of [...(notifiedFriends ?? [])]) {
+                      if (target?.name && String(k).startsWith(String(target.name) + ":")) notifiedFriends.delete(k);
+                    }
+                  } catch {
+                    // 忽略
+                  }
                   audit({ kind: "friend_request_handled", action, friendUid });
                   logger.info?.(
                     "[onebot] 好友申请 " + (action === "approve" ? "已同意" : "已拒绝") +

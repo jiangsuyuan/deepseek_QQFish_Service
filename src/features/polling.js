@@ -46,9 +46,30 @@ export function createPolling(ctx) {
         }
       }
 
+      // 事件路径（group-admin）也会转告同一个请求——它写的是 pendingFriends。
+      // 两条路用不同的去重集合，所以同一个请求会被问两次（2026-11-11 她连问两遍）。
+      const alreadyByEvent = (r) => {
+        try {
+          const uid = String(r.uid || "");
+          const name = String(r.name || "");
+          for (const v of pendingFriends?.values?.() ?? []) {
+            if (uid && String(v.userId || "") === uid) return true;
+            if (!uid && name && String(v.name || "") === name) return true;
+          }
+        } catch {
+          // 忽略
+        }
+        return false;
+      };
+
       for (const r of arr) {
         const key = r.flag || r.uid || `${r.name}:${r.message}`;
         if (!key || notifiedFriends.has(key)) continue;
+        if (alreadyByEvent(r)) {
+          notifiedFriends.add(key); // 记下来，别轮到下一轮又问
+          logger.info?.(`[onebot] 好友申请 ${r.name || r.uid} 已在事件里转过告，跳过`);
+          continue;
+        }
         notifiedFriends.add(key);
         pendingFriends.set(key, { ...r, at: Date.now() });
         logger.info?.(`[onebot] 发现好友申请：${r.name || r.uid}（${r.source || "未知来源"}）`);
