@@ -1,5 +1,47 @@
 # 更新日志
 
+## 4.6.0 · 2026-11-13
+
+两件事：把她想要的 B 站字幕修好；看板加「文件」。
+
+### ① B 站 MCP 起不来的真因
+
+```
+服务器 Python = 3.6.8
+bilibili-mcp 要 bilibili-api-python>=17.4.1 → 要求 Python >= 3.9
+→ 创建 venv 时装依赖直接失败（install.log: No solution found）
+→ MCP 进程从来没起来
+```
+
+而且插件的 pythonPath 回退只找 Windows 路径（`.venv/Scripts/python.exe`），
+Linux 上永远找不到，所以一直退回到系统那个 3.6。
+
+修法：
+
+```
+uv python install 3.11          → /root/.dsh/bili-duty/pythons/cpython-3.11
+重建 .venv（3.11）并装依赖       → bilibili-api / mcp<2 全部就位
+bili-duty/config.json 写 pythonPath = .venv/bin/python
+```
+
+验证：
+
+```
+initialize 握手 → {"serverInfo":{"name":"bilibili-mcp","version":"1.30.0"}}
+```
+
+### ② 看板加「文件」（对应她清单里的 18/19）
+
+```
+记录 → 文件
+  桌面    她写下的文件（desk/），图直接看、其它可下载
+  她画的  draw.jpg / svg.png
+  她做的页面 workspace/pages/*.html
+```
+
+- 新接口 `/api/files`
+- 新只读路由 `/file/<desk|root|page>/<名字>`，路径白名单，越权返回 404
+
 ## 4.5.2 · 2026-11-13
 
 删掉活动权重和加权抽签函数。

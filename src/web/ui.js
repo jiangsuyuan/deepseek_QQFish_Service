@@ -225,7 +225,7 @@ async function renderHer(){
 
 let recTab = 'facts';
 async function renderRecords(){
-  const chips = [['facts','事实'],['people','人物'],['views','想法'],['wants','想做的'],['plans','日程'],['explore','探索'],['stickers','表情包'],['digest','日记']];
+  const chips = [['facts','事实'],['people','人物'],['views','想法'],['wants','想做的'],['plans','日程'],['explore','探索'],['stickers','表情包'],['files','文件'],['digest','日记']];
   const d = await api('/api/records?part=' + recTab);
   const items = d.items || [];
   let body = '';
@@ -256,6 +256,20 @@ async function renderRecords(){
       + '<div style="margin-bottom:8px">' + Object.entries(d.tags||{}).sort((x,y)=>y[1]-x[1]).slice(0,10).map(([k,n]) => '<span class="chip">'+esc(k)+' '+n+'</span>').join('') + '</div>'
       + '<div class="gridimg">' + items.map(x => '<figure><img loading="lazy" src="/sticker/'+encodeURIComponent(x.file)+'?token='+encodeURIComponent(TOKEN)+'" alt=""><figcaption>'+esc((x.tags||[]).join('/')||x.file)+'</figcaption></figure>').join('') + '</div>'
       + '</div>';
+  } else if (recTab === 'files') {
+    const group = (title, arr, hint) => {
+      if (!arr || !arr.length) return '<div class="card"><h3>'+title+'</h3><div class="empty">'+(hint||'空')+'</div></div>';
+      return '<div class="card"><h3>'+title+' · '+arr.length+'</h3>'
+        + '<div class="gridimg">' + arr.filter(x=>x.kind==='img').map(x =>
+            '<figure><a href="/file/'+esc(x.path)+'?token='+encodeURIComponent(TOKEN)+'" target="_blank"><img loading="lazy" src="/file/'+esc(x.path)+'?token='+encodeURIComponent(TOKEN)+'" alt=""></a><figcaption>'+esc(x.name)+'</figcaption></figure>').join('') + '</div>'
+        + '<table style="margin-top:8px">' + arr.filter(x=>x.kind!=='img').map(x =>
+            '<tr><td><a class="acc" href="/file/'+esc(x.path)+'?token='+encodeURIComponent(TOKEN)+'" target="_blank">'+esc(x.name)+'</a></td>'
+            + '<td class="dim" style="text-align:right;white-space:nowrap">'+Math.round(x.size/1024)+' KB · '+ago(x.at)+'</td></tr>').join('')
+        + '</table></div>';
+    };
+    body = group('桌面（她写下的文件）', d.desk, '她还什么都没往桌上放')
+      + group('她画的', d.art, '还没画过')
+      + group('她做的页面', d.pages, '还没做过');
   } else if (recTab === 'digest') {
     body = items.length ? items.map(x => '<div class="card"><h3>'+esc(hm(x.to))+'</h3><div class="small">'+esc(x.text)+'</div></div>').join('') : '<div class="empty">还没有日记</div>';
   }

@@ -264,6 +264,34 @@ export function createWebServer(ctx) {
           }
           return;
         }
+        if (u.pathname.startsWith("/file/")) {
+          const rest = decodeURIComponent(u.pathname.slice(6));
+          const m2 = /^(desk|root|page)\/([a-zA-Z0-9._-]+)$/.exec(rest);
+          if (!m2) {
+            res.writeHead(400).end("bad path");
+            return;
+          }
+          const ROOT3 = join(HOME, ".dsh/onebot-bridge");
+          const dirMap = { desk: join(ROOT3, "desk"), root: ROOT3, page: join(ROOT3, "workspace/pages") };
+          const file = join(dirMap[m2[1]], m2[2]);
+          try {
+            const buf = readFileSync(file);
+            const ext = (m2[2].split(".").pop() || "").toLowerCase();
+            const mime =
+              ext === "png" ? "image/png"
+                : ext === "jpg" || ext === "jpeg" ? "image/jpeg"
+                  : ext === "gif" ? "image/gif"
+                    : ext === "webp" ? "image/webp"
+                    : ext === "html" ? "text/html; charset=utf-8"
+                      : ext === "md" ? "text/plain; charset=utf-8"
+                        : "application/octet-stream";
+            res.writeHead(200, { "content-type": mime, "cache-control": "no-store" });
+            res.end(buf);
+          } catch {
+            res.writeHead(404).end("no file");
+          }
+          return;
+        }
         if (u.pathname.startsWith("/sticker/")) {
           const name = decodeURIComponent(u.pathname.slice(9)).replace(/[^a-zA-Z0-9._-]/g, "");
           const file = join(HOME, ".dsh/onebot-bridge/stickers", name);
@@ -519,6 +547,43 @@ export function createWebServer(ctx) {
                   text: String(r.x || "").slice(0, 200),
                 })),
               });
+            }
+            if (u.pathname === "/api/files") {
+              const ROOT2 = join(HOME, ".dsh/onebot-bridge");
+              const listDir = (dir, prefix) => {
+                try {
+                  return readdirSync(dir)
+                    .filter((f) => !f.startsWith("."))
+                    .map((f) => {
+                      const st = statSync(join(dir, f));
+                      if (!st.isFile()) return null;
+                      const ext = (f.split(".").pop() || "").toLowerCase();
+                      return {
+                        name: f,
+                        path: prefix + "/" + f,
+                        size: st.size,
+                        at: st.mtimeMs,
+                        kind: /^(png|jpg|jpeg|gif|webp)$/.test(ext) ? "img" : ext === "html" ? "html" : ext === "md" ? "md" : "other",
+                      };
+                    })
+                    .filter(Boolean)
+                    .sort((a, b) => b.at - a.at);
+                } catch {
+                  return [];
+                }
+              };
+              const desk = listDir(join(ROOT2, "desk"), "desk");
+              const art = [];
+              for (const f of ["draw.jpg", "svg.png"]) {
+                try {
+                  const st = statSync(join(ROOT2, f));
+                  art.push({ name: f, path: "root/" + f, size: st.size, at: st.mtimeMs, kind: "img" });
+                } catch {
+                  // 没有就不列
+                }
+              }
+              const pages = listDir(join(ROOT2, "workspace/pages"), "page");
+              return json({ desk, art, pages });
             }
             if (u.pathname === "/api/records") {
               const part = String(u.searchParams.get("part") || "facts");
