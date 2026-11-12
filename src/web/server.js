@@ -100,7 +100,7 @@ export function createWebServer(ctx) {
           })();
           return;
         }
-        const tk = u.searchParams.get("token") || "";
+        const tk = u.searchParams.get("token") || String(req.headers["x-webui-token"] || "");
         // 简单防爆破
         if (Date.now() < state.webLockedUntil) {
           res.writeHead(429).end("too many attempts");

@@ -53,7 +53,9 @@ const main = document.getElementById('main');
 const hdr = document.getElementById('hdr');
 let tab = 'home';
 async function api(p){
-  const r = await fetch(p, { headers: { 'x-webui-token': TOKEN } });
+  const url = p + (p.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(TOKEN);
+  const r = await fetch(url, { headers: { 'x-webui-token': TOKEN } });
+  if(r.status === 429) throw new Error('被锁了：等一小时，或者重启服务（限流是内存里的）');
   if(!r.ok) throw new Error(p + ' ' + r.status);
   return r.json();
 }
