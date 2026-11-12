@@ -13,14 +13,11 @@ export function webHtml(token) {
 :root{--bg:#0b0d10;--card:#151a20;--card2:#1b222b;--line:#242c36;--fg:#e6edf3;--dim:#8b96a5;--acc:#4da3ff;--ok:#3fb950;--warn:#d29922;--bad:#f85149;--pink:#db61a2}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.55 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;padding:0 0 72px}
-header{position:sticky;top:0;background:rgba(11,13,16,.94);backdrop-filter:blur(10px);border-bottom:1px solid var(--line);padding:12px 14px;display:flex;align-items:center;gap:8px;z-index:9}
-header .t{font-weight:600;font-size:16px}
-header .s{font-size:12px;margin-left:auto;padding:3px 8px;border-radius:20px;background:var(--card2)}
 nav{position:fixed;left:0;right:0;bottom:0;display:flex;background:#0f1319;border-top:1px solid var(--line);padding:6px 0 calc(6px + env(safe-area-inset-bottom));z-index:9}
 nav button{flex:1;background:none;border:0;color:var(--dim);font-size:12px;padding:6px 0;display:flex;flex-direction:column;gap:2px;align-items:center}
 nav button .ic{font-size:16px;line-height:1}
 nav button.on{color:var(--acc)}
-main{padding:12px;display:flex;flex-direction:column;gap:10px}
+main{padding:10px 12px 12px;display:flex;flex-direction:column;gap:10px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px}
 .card h3{margin:0 0 8px;font-size:13px;font-weight:500;color:var(--dim);display:flex;align-items:center;gap:6px}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
@@ -50,6 +47,8 @@ pre{white-space:pre-wrap;word-break:break-all;font-family:ui-monospace,Menlo,mon
 .spark{width:100%;height:56px;display:block}
 .hr{height:1px;background:var(--line);margin:10px 0}
 .small{font-size:12px}
+.dot{width:7px;height:7px;border-radius:50%;display:inline-block;background:var(--dim)}
+.dot.ok{background:var(--ok)}.dot.bad{background:var(--bad)}
 .rowline{display:flex;align-items:center;gap:10px}
 .rowline .fill{flex:1}
 .chips{display:flex;gap:6px;overflow-x:auto;padding:2px 0 6px}
@@ -66,7 +65,6 @@ pre{white-space:pre-wrap;word-break:break-all;font-family:ui-monospace,Menlo,mon
 .gridimg figcaption{font-size:10px;color:var(--dim);padding:3px 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 </style></head>
 <body>
-<header><span class="t">肥鱼</span><span class="s" id="hdr">…</span></header>
 <main id="main"></main>
 <nav>
   <button data-tab="home" class="on"><span class="ic">◎</span>概览</button>
@@ -78,7 +76,6 @@ pre{white-space:pre-wrap;word-break:break-all;font-family:ui-monospace,Menlo,mon
 <script>
 const TOKEN = ${JSON.stringify(t)};
 const main = document.getElementById('main');
-const hdr = document.getElementById('hdr');
 let tab = 'home';
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const fmt = (n) => { n = Number(n) || 0; if (n >= 1e8) return (n/1e8).toFixed(2)+'亿'; if (n >= 1e6) return (n/1e6).toFixed(1)+'M'; if (n >= 1e3) return (n/1e3).toFixed(1)+'k'; return String(n); };
@@ -112,17 +109,19 @@ async function renderHome(){
   const m = s.mood || { mood: 70, why: '', updatedAt: 0 };
   const t = s.today || { in: 0, out: 0, groups: 0, hourly: [] };
   const y = s.yesterday || { in: 0, out: 0 };
-  hdr.textContent = s.online ? '在线' : '离线';
-  hdr.className = 's ' + (s.online ? 'ok' : 'bad');
   const moodColor = m.mood >= 70 ? 'var(--ok)' : m.mood >= 45 ? 'var(--warn)' : 'var(--bad)';
   main.innerHTML = ''
+    + '<div class="rowline" style="padding:0 2px 2px"><span class="dot '+(s.online?'ok':'bad')+'"></span>'
+    +   '<span class="small '+(s.online?'ok':'bad')+'">'+(s.online?'在线':'离线')+'</span>'
+    +   '<span class="fill small dim" style="text-align:right">'+(t.groups||0)+' 个群今天有动静</span></div>'
     + '<div class="grid3">'
     +   '<div class="kpi"><div class="k">今日收到</div><div class="v">'+fmt(t.in)+delta(t.in, y.in)+'</div></div>'
     +   '<div class="kpi"><div class="k">她说了</div><div class="v">'+fmt(t.out)+delta(t.out, y.out)+'</div></div>'
     +   '<div class="kpi"><div class="k">活跃群</div><div class="v">'+fmt(t.groups)+'</div></div>'
     + '</div>'
-    + '<div class="card"><h3>今天的消息</h3><div id="sp1"></div>'
-    +   '<div class="small dim" style="margin-top:4px">每小时收到的条数（0–23 点）</div></div>'
+    + '<div class="card"><h3>消息走势</h3>'
+    +   '<div class="chips" id="rchips"><b data-r="day" class="on">今天</b><b data-r="week">一周</b><b data-r="month">一月</b></div>'
+    +   '<div id="sp1"></div><div class="small dim" id="sphint" style="margin-top:4px">每小时收到的条数</div></div>'
     + '<div class="grid2">'
     +   '<div class="kpi"><div class="k">上下文合计</div><div class="v">'+fmt(c.total)+'<span class="u"> · '+c.sessions+' 会话</span></div></div>'
     +   '<div class="kpi"><div class="k">心情</div><div class="v" style="color:'+moodColor+'">'+Math.round(m.mood)+'<span class="u"> /100</span></div></div>'
@@ -144,6 +143,19 @@ async function renderHome(){
     + '</div>';
   const sp = document.getElementById('sp1');
   if (sp) spark(sp, (t.hourly||[]).map(x => x.in), '#4da3ff');
+  let ovRange = 'day';
+  const paint = async (r) => {
+    ovRange = r;
+    document.querySelectorAll('#rchips b').forEach(b => b.classList.toggle('on', b.dataset.r === r));
+    const o = await api('/api/overview?range=' + r);
+    const el = document.getElementById('sp1');
+    if (!el) return;
+    spark(el, o.series.map(x => x.in), '#4da3ff');
+    const hint = document.getElementById('sphint');
+    if (hint) hint.textContent = (r === 'day' ? '每小时' : r === 'week' ? '每天（7 天）' : '每天（30 天）')
+      + '｜合计收到 ' + o.totals.in + ' 条 · 她说了 ' + o.totals.out + ' 条';
+  };
+  document.querySelectorAll('#rchips b').forEach(b => b.onclick = () => paint(b.dataset.r));
 }
 
 async function renderGroups(){
@@ -225,7 +237,7 @@ async function renderHer(){
 
 let recTab = 'facts';
 async function renderRecords(){
-  const chips = [['facts','事实'],['people','人物'],['views','想法'],['wants','想做的'],['plans','日程'],['explore','探索'],['stickers','表情包'],['files','文件'],['digest','日记']];
+  const chips = [['facts','事实'],['people','人物'],['views','想法'],['wants','想做的'],['plans','日程'],['explore','探索'],['stickers','表情包'],['files','文件'],['assistant','助手'],['proposals','改动'],['digest','日记']];
   const d = await api('/api/records?part=' + recTab);
   const items = d.items || [];
   let body = '';
@@ -269,13 +281,62 @@ async function renderRecords(){
     };
     body = group('桌面（她写下的文件）', d.desk, '她还什么都没往桌上放')
       + group('她画的', d.art, '还没画过')
+      + group('她写的代码', d.code, '还没写过代码')
       + group('她做的页面', d.pages, '还没做过');
+  } else if (recTab === 'assistant') {
+    const a2 = await api('/api/assistant');
+    const row = (m, mine) => '<div class="msg '+(mine?'me':'')+'"><div class="who">'+esc(m.from||'她')+'<br><span class="dim" style="font-size:10px">'+ago(m.at)+'</span></div><div class="tx">'+esc(m.text)+'</div></div>';
+    body = '<div class="card"><h3>她收到的（创造者 → 她）</h3>'
+      + ((a2.inbox||[]).length ? a2.inbox.slice().reverse().map(m => row(m,false)).join('') : '<div class="empty">还没有留言</div>')
+      + '</div><div class="card"><h3>她回的（她 → 创造者）</h3>'
+      + ((a2.outbox||[]).length ? a2.outbox.slice().reverse().map(m => row(m,true)).join('') : '<div class="empty">她还没回过</div>')
+      + '</div>';
+  } else if (recTab === 'proposals') {
+    const p2 = await api('/api/proposals');
+    body = '<div class="card"><h3>改动申请 · '+(p2.total||0)+' 份</h3>'
+      + ((p2.items||[]).length ? p2.items.map(x =>
+          '<div class="msg"><div class="tx"><div>'+esc(x.title||x.id)+'</div>'
+          + '<div class="small dim">'+ago(x.at)+' · '+Math.round((x.size||0)/1024)+' KB</div>'
+          + '<pre style="margin-top:6px;max-height:160px;overflow:auto">'+esc(x.head||'')+'</pre></div></div>').join('')
+        : '<div class="empty">她还没提过改动</div>')
+      + '</div>';
   } else if (recTab === 'digest') {
     body = items.length ? items.map(x => '<div class="card"><h3>'+esc(hm(x.to))+'</h3><div class="small">'+esc(x.text)+'</div></div>').join('') : '<div class="empty">还没有日记</div>';
   }
   main.innerHTML = '<div class="chips">' + chips.map(([k,t]) =>
     '<b data-rec="'+k+'" class="'+(recTab===k?'on':'')+'">'+t+'</b>').join('') + '</div>' + body;
   document.querySelectorAll('[data-rec]').forEach(el => el.onclick = () => { recTab = el.dataset.rec; renderRecords(); });
+}
+
+async function capsBlock(){
+  const c = await api('/api/caps');
+  const acts = (c.activities||[]).filter(x => x.total > 0);
+  return '<div class="card"><h3>她能做的活动</h3><table><tr><th>活动</th><th>今天</th><th>7天</th><th>总</th></tr>'
+    + acts.map(x => '<tr><td>'+esc(x.kind)+'</td><td>'+x.today+'</td><td>'+x.week+'</td><td class="dim">'+x.total+'</td></tr>').join('')
+    + '</table></div>'
+    + '<div class="card"><h3>工具（'+((c.tools||[]).length)+' 个）</h3>'
+    + (c.tools||[]).map(t => '<span class="chip">'+esc(t)+'</span>').join('')
+    + '</div>';
+}
+async function usageBlock(){
+  let bal = null;
+  try { bal = await api('/api/balance'); } catch {}
+  let tok = null, tok7 = null;
+  try { tok = await api('/api/tokens?days=1'); tok7 = await api('/api/tokens?days=7'); } catch {}
+  const t1 = (tok && tok.totals) || { input:0, cache:0, output:0, calls:0 };
+  const t7 = (tok7 && tok7.totals) || { input:0, cache:0, output:0, calls:0 };
+  const money = bal && bal.ok
+    ? '<div class="grid2"><div class="kpi"><div class="k">余额</div><div class="v">¥'+Number(bal.balance).toFixed(2)+'</div><div class="k">充值 '+bal.toppedUp+' / 赠送 '+bal.granted+'</div></div>'
+      + '<div class="kpi"><div class="k">状态</div><div class="v '+(bal.available?'ok':'bad')+'">'+(bal.available?'可用':'不可用')+'</div></div></div>'
+    : '<div class="empty">'+(bal?esc(bal.reason||'查不到余额'):'余额接口不可用')+'</div>';
+  return '<div class="card"><h3>用量与余额</h3>' + money
+    + '<div class="hr"></div><table>'
+    + '<tr><th></th><th>今天</th><th>7 天</th></tr>'
+    + '<tr><td>输入</td><td>'+fmt(t1.input)+'</td><td>'+fmt(t7.input)+'</td></tr>'
+    + '<tr><td>缓存读</td><td>'+fmt(t1.cache)+'</td><td>'+fmt(t7.cache)+'</td></tr>'
+    + '<tr><td>输出</td><td>'+fmt(t1.output)+'</td><td>'+fmt(t7.output)+'</td></tr>'
+    + '<tr><td>调用次数</td><td>'+t1.calls+'</td><td>'+t7.calls+'</td></tr>'
+    + '</table><div class="small dim" style="margin-top:4px">数字来自每次回复的用量记录，按天累加</div></div>';
 }
 
 async function renderSys(){
@@ -290,7 +351,9 @@ async function renderSys(){
     + '<tr><td>会话</td><td style="text-align:right">'+s.sessions+'</td></tr>'
     + '<tr><td>排队</td><td style="text-align:right">'+s.pending+'</td></tr>'
     + '</table></div>'
-    + '<div class="card"><h3>能力</h3><table>'
+    + await capsBlock()
+    + usageBlock()
+    + '<div class="card"><h3>能力开关</h3><table>'
     + Object.entries(s.caps || {}).map(([k,v]) => '<tr><td>'+esc(k)+'</td><td style="text-align:right" class="'+(v?'ok':'dim')+'">'+(v?'开':'关')+'</td></tr>').join('')
     + '</table></div>'
     + '<div class="card"><h3>审计类型</h3>'

@@ -1,5 +1,7 @@
 // 记忆沉淀：印象、蒸馏、记忆网络。
 
+import { unreadInbox } from "./assistant-channel.js";
+
 export function createMemoryLoop(ctx) {
   const { MEMLOG_PATH, NET_DECAY, NET_MAX_DEPTH, NET_MAX_LINKS, NET_MIN_W, NET_VISIT_CAP, SELF_ACTIVITY_KEY, audit, cfg, loadActivities, loadCore, loadDigests, loadMemLog, logger, memSeen, memoryLayersIndex, net, netAddNode, recentDigestText, saveCore, saveDigests, selfModelText, sessions, writeFileSync } = ctx;
   async function maybeMakeDigest() {
@@ -149,7 +151,19 @@ export function createMemoryLoop(ctx) {
       } catch {
         sameKindNote = "";
       }
+      // 创造者通过助手通道留的话：优先看
+      let ownerNote = "";
+      try {
+        const un = unreadInbox();
+        if (un.length) {
+          ownerNote = "[创造者给你留了话]\n" + un.map((m) => `· ${m.from}：${String(m.text || "").slice(0, 300)}`).join("\n")
+            + "\n（这些还没处理。想回就用 assistant_channel 的 reply，处理完可以顺手 check 一下确认。）\n\n";
+        }
+      } catch {
+        ownerNote = "";
+      }
       const prompt =
+        ownerNote +
         "（这是你自己的时间。先想清楚，再决定做什么。这一轮**只思考，不动手**。）\n\n" +
         "[你能看到的东西]\n" +
         memoryLayersIndex() +

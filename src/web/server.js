@@ -5,6 +5,8 @@ import { homedir } from "node:os";
 import { webHtml } from "./ui.js";
 import { downloadImage } from "../net/fetch.js";
 import { execFileSync } from "node:child_process";
+import { zstdDecompressSync } from "node:zlib";
+import { ALLOWED_TOOLS } from "../core/constants.js";
 
 const HOME = process.env.HOME || homedir();
 /** 插件自己所在的目录（发布版不再写死绝对路径） */
@@ -272,7 +274,7 @@ export function createWebServer(ctx) {
             return;
           }
           const ROOT3 = join(HOME, ".dsh/onebot-bridge");
-          const dirMap = { desk: join(ROOT3, "desk"), root: ROOT3, page: join(ROOT3, "workspace/pages") };
+          const dirMap = { desk: join(ROOT3, "desk"), root: ROOT3, page: join(ROOT3, "workspace/pages"), ws: join(ROOT3, "workspace") };
           const file = join(dirMap[m2[1]], m2[2]);
           try {
             const buf = readFileSync(file);
@@ -548,6 +550,199 @@ export function createWebServer(ctx) {
                 })),
               });
             }
+            if (u.pathname === "/api/overview") {
+              const range = String(u.searchParams.get("range") || "day");
+              const ROOT4 = join(HOME, ".dsh/onebot-bridge");
+              const dayStr = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+              const series = [];
+              if (range === "day") {
+                const day = dayStr(new Date());
+                const hourly = Array.from({ length: 24 }, () => ({ in: 0, out: 0 }));
+                for (const gid of groupDirs()) {
+                  for (const r of readDay(gid, day)) {
+                    const h = new Date(Number(r.t) * 1000).getHours();
+                    if (r.d === "o") hourly[h].out += 1;
+                    else hourly[h].in += 1;
+                  }
+                }
+                hourly.forEach((v, i) => series.push({ label: String(i), in: v.in, out: v.out }));
+              } else {
+                const n = range === "month" ? 30 : 7;
+                const days = [];
+                for (let i = n - 1; i >= 0; i -= 1) days.push(dayStr(new Date(Date.now() - i * 86400000)));
+                for (const d of days) {
+                  let inN = 0;
+                  let outN = 0;
+                  for (const gid of groupDirs()) {
+                    for (const r of readDay(gid, d)) {
+                      if (r.d === "o") outN += 1;
+                      else inN += 1;
+                    }
+                  }
+                  series.push({ label: d.slice(5), in: inN, out: outN });
+                }
+              }
+              const totals = series.reduce((a, x) => ({ in: a.in + x.in, out: a.out + x.out }), { in: 0, out: 0 });
+              return json({ range, series, totals });
+            }
+            if (u.pathname === "/api/caps") {
+              const now = Date.now();
+              const startToday = new Date();
+              startToday.setHours(0, 0, 0, 0);
+              const acts = (() => {
+                try {
+                  return loadActivities(2000) || [];
+                } catch {
+                  return [];
+                }
+              })();
+              const counts = {};
+              for (const a of acts) {
+                const k = String(a.kind || "");
+                if (!k) continue;
+                counts[k] = counts[k] || { today: 0, week: 0, total: 0 };
+                counts[k].total += 1;
+                if (a.at >= now - 7 * 86400000) counts[k].week += 1;
+                if (a.at >= startToday.getTime()) counts[k].today += 1;
+              }
+              const kinds = ["explore", "read", "think", "write", "play", "recall", "dream", "study", "watch_groups"];
+              const activities = kinds.map((k) => ({ kind: k, ...(counts[k] || { today: 0, week: 0, total: 0 }) }));
+              const extra = Object.keys(counts).filter((k) => !kinds.includes(k)).map((k) => ({ kind: k, ...counts[k] }));
+              const toolNames = ALLOWED_TOOLS instanceof Set ? [...ALLOWED_TOOLS] : Array.isArray(ALLOWED_TOOLS) ? ALLOWED_TOOLS : Object.keys(ALLOWED_TOOLS || {});
+              return json({ tools: toolNames, activities: activities.concat(extra) });
+            }
+            if (u.pathname === "/api/proposals") {
+              const dir = join(HOME, ".dsh/onebot-bridge/patch-proposals");
+              let files2 = [];
+              try {
+                files2 = readdirSync(dir).filter((f) => f.endsWith(".md"));
+              } catch {
+                files2 = [];
+              }
+              const items = files2.map((f) => {
+                let st = { mtimeMs: 0, size: 0 };
+                try {
+                  st = statSync(join(dir, f));
+                } catch {
+                  // 忽略
+                }
+                let head = "";
+                try {
+                  head = readFileSync(join(dir, f), "utf8").slice(0, 400);
+                } catch {
+                  head = "";
+                }
+                const title = (head.split("\n").find((l) => l.trim().startsWith("#")) || f).replace(/^#+\s*/, "").trim();
+                return { id: f.replace(/\.md$/, ""), title, at: st.mtimeMs, size: st.size, head };
+              }).sort((a, b) => b.at - a.at);
+              return json({ total: items.length, items });
+            }
+            if (u.pathname === "/api/tokens") {
+              const days = Math.max(1, Math.min(30, Number(u.searchParams.get("days") || 1)));
+              const since = Date.now() - days * 86400000;
+              const D = join(HOME, ".dsh/sessions/--root-.dsh-onebot-bridge-workspace--");
+              const out = TTL.get("tokens:" + days, 300000, () => {
+                const buckets = {};
+                let calls = 0;
+                let input = 0;
+                let cache = 0;
+                let output = 0;
+                let write2 = 0;
+                let files3 = [];
+                try {
+                  files3 = readdirSync(D);
+                } catch {
+                  files3 = [];
+                }
+                for (const id of files3) {
+                  const f = join(D, id, "session.v4.jsonl.zstd");
+                  let st;
+                  try {
+                    st = statSync(f);
+                  } catch {
+                    continue;
+                  }
+                  if (st.mtimeMs < since) continue;
+                  let text = "";
+                  try {
+                    text = zstdDecompressSync(readFileSync(f)).toString("utf8");
+                  } catch {
+                    continue;
+                  }
+                  for (const line of text.split("\n")) {
+                    if (!line || line.indexOf("usage") < 0) continue;
+                    let o;
+                    try {
+                      o = JSON.parse(line);
+                    } catch {
+                      continue;
+                    }
+                    if (o.type !== "assistant/message") continue;
+                    const u2 = o.data?.message?.usage || o.data?.usage;
+                    if (!u2) continue;
+                    const at = Number(o.time || 0);
+                    if (at < since) continue;
+                    const k = new Date(at).toISOString().slice(0, 10);
+                    buckets[k] = buckets[k] || { date: k, input: 0, cache: 0, output: 0, write: 0, calls: 0 };
+                    buckets[k].input += Number(u2.inputTokens || 0);
+                    buckets[k].cache += Number(u2.cacheReadTokens || 0);
+                    buckets[k].output += Number(u2.outputTokens || 0);
+                    buckets[k].write += Number(u2.cacheWriteTokens || 0);
+                    buckets[k].calls += 1;
+                    calls += 1;
+                    input += Number(u2.inputTokens || 0);
+                    cache += Number(u2.cacheReadTokens || 0);
+                    output += Number(u2.outputTokens || 0);
+                    write2 += Number(u2.cacheWriteTokens || 0);
+                  }
+                }
+                return {
+                  days,
+                  series: Object.values(buckets).sort((a, b) => (a.date < b.date ? -1 : 1)),
+                  totals: { calls, input, cache, output, write: write2 },
+                };
+              });
+              return json(out);
+            }
+            if (u.pathname === "/api/balance") {
+              const key = String(process.env.DEEPSEEK_API_KEY || "").trim();
+              if (!key) return json({ ok: false, reason: "没配 DEEPSEEK_API_KEY" });
+              const cached = TTL.get("balance", 120000, () => null);
+              if (cached) return json(cached);
+              fetch("https://api.deepseek.com/user/balance", { headers: { Authorization: "Bearer " + key } })
+                .then((r2) => r2.json())
+                .then((data) => {
+                  const infos = Array.isArray(data?.balance_infos) ? data.balance_infos : [];
+                  const cn = infos.find((x) => x?.currency === "CNY") || infos[0] || {};
+                  json({
+                    ok: true,
+                    available: data?.is_available !== false,
+                    balance: Number(cn?.total_balance ?? 0),
+                    toppedUp: String(cn?.topped_up_balance ?? "?"),
+                    granted: String(cn?.granted_balance ?? "?"),
+                    currency: cn?.currency || "CNY",
+                  });
+                })
+                .catch((err) => json({ ok: false, reason: String(err?.message ?? err) }));
+              return;
+            }
+            if (u.pathname === "/api/assistant") {
+              const dir = join(HOME, ".dsh/onebot-bridge/assistant");
+              const read = (f) => {
+                try {
+                  return readFileSync(join(dir, f), "utf8").split("\n").filter(Boolean).slice(-60).map((l) => {
+                    try {
+                      return JSON.parse(l);
+                    } catch {
+                      return null;
+                    }
+                  }).filter(Boolean);
+                } catch {
+                  return [];
+                }
+              };
+              return json({ inbox: read("inbox.jsonl"), outbox: read("outbox.jsonl") });
+            }
             if (u.pathname === "/api/files") {
               const ROOT2 = join(HOME, ".dsh/onebot-bridge");
               const listDir = (dir, prefix) => {
@@ -583,7 +778,20 @@ export function createWebServer(ctx) {
                 }
               }
               const pages = listDir(join(ROOT2, "workspace/pages"), "page");
-              return json({ desk, art, pages });
+              // 她写的代码（workspace 下的 .js/.py/.sh）
+              let code = [];
+              try {
+                code = readdirSync(join(ROOT2, "workspace"))
+                  .filter((f) => /\.(js|mjs|py|sh|css|json)$/i.test(f))
+                  .map((f) => {
+                    const st = statSync(join(ROOT2, "workspace", f));
+                    return { name: f, path: "ws/" + f, size: st.size, at: st.mtimeMs, kind: "code" };
+                  })
+                  .sort((a, b) => b.at - a.at);
+              } catch {
+                code = [];
+              }
+              return json({ desk, art, pages, code });
             }
             if (u.pathname === "/api/records") {
               const part = String(u.searchParams.get("part") || "facts");
@@ -610,8 +818,11 @@ export function createWebServer(ctx) {
               }
               if (part === "wants") {
                 const w = rd("wants.json", []);
-                const list = (Array.isArray(w) ? w : []).slice(-40).reverse().map((x) => ({ what: String(x.what || "").slice(0, 160), why: String(x.why || "").slice(0, 160), kind: String(x.kind || ""), at: Number(x.at || 0) }));
-                return json({ part, total: Array.isArray(w) ? w.length : 0, items: list });
+                const all = Array.isArray(w) ? w : [];
+                // 划掉的（resolved / dropped）不展示
+                const pending = all.filter((x) => (x.status || "pending") === "pending");
+                const list = pending.slice(-40).reverse().map((x) => ({ what: String(x.what || "").slice(0, 160), why: String(x.why || "").slice(0, 160), kind: String(x.kind || ""), at: Number(x.at || 0) }));
+                return json({ part, total: pending.length, done: all.length - pending.length, items: list });
               }
               if (part === "plans") {
                 let rows = [];

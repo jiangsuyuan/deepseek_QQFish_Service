@@ -1,6 +1,7 @@
 import { searchSource, readSource, listSourceFiles, findInSource } from "../store/source-mirror.js";
 import { createImageLocator, channelKeyOfEntry } from "../util/image-locate.js";
 import { cachedImage } from "../store/img-cache.js";
+import { readInbox, unreadInbox, markSeen, reply as assistantReply } from "../features/assistant-channel.js";
 // 全部工具注册（原 apply() 内的巨型 IIFE）。
 // 看头像的限频时间戳（原先引用了一个不存在的变量，导致这个工具一调就抛）
 const avatarTimes = [];
@@ -2603,6 +2604,42 @@ export async function registerToolbox(app) {
           );
 
           logger.info?.("[onebot] 改动申请工具已注册（propose_patch/my_patch_proposals）");
+
+          // 助手通道：创造者（或替他跑活的 agent）和她的专用来回
+          ctx.get?.("tools")?.register?.(
+            defineTool({
+              name: "assistant_channel",
+              description:
+                "你和创造者（以及替他跑活的助手）之间的专用通道，不走 QQ、不进群。\n\n" +
+                "action=check：看有没有新留言（没看过的不重复给）。\n" +
+                "action=reply：回一句（text 填内容）。\n" +
+                "创造者用它给你交代事、问你问题；你也可以主动回。",
+              parameters: {
+                action: { type: "string", enum: ["check", "reply"], description: "check 或 reply" },
+                text: { type: "string", description: "回复内容（action=reply 时必填）" },
+              },
+              output: { schema: { type: "json" }, render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }] },
+              execute: async (args) => {
+                const act = String(args?.action || "check");
+                if (act === "reply") {
+                  const t = String(args?.text || "").trim();
+                  if (!t) return { ok: false, reason: "text 是空的" };
+                  const rec = assistantReply(t);
+                  return { ok: true, sent: true, at: rec.at };
+                }
+                const list = unreadInbox();
+                if (!list.length) return { ok: true, unread: 0, messages: [] };
+                markSeen(list.map((m) => m.id));
+                return {
+                  ok: true,
+                  unread: list.length,
+                  messages: list.map((m) => ({ from: m.from, text: String(m.text || "").slice(0, 1500), at: m.at })),
+                };
+              },
+            }),
+          );
+          logger.info?.("[onebot] 助手通道工具已注册（assistant_channel）");
+
 
           // 改动申请的写法指南（她想不起格式时随时查）
           ctx.get?.("tools")?.register?.(
