@@ -371,6 +371,9 @@ export function createWebServer(ctx) {
                 online: !!client.connected,
                 today: { in: inN, out: outN },
                 context: { total: Number(last?.total || 0), sessions: Number(last?.sessions || 0) },
+                // 兼容旧页面：4.3.0 之前的 ui.js 还在读 tokens.input
+                // 只要它拿到这个字段就不会抛错，等用户下次刷新自然换成新页面
+                tokens: { input: Number(last?.total || 0), cache: 0, output: 0 },
                 sessions: (last?.top || []).map((x) => ({ key: String(x.key || ""), total: Number(x.total || 0) })),
                 mood,
                 activities: acts,
