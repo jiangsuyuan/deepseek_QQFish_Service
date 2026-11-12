@@ -2562,13 +2562,33 @@ export async function registerToolbox(app) {
           ctx.get?.("tools")?.register?.(
             defineTool({
               name: "my_patch_proposals",
-              description: "看你提过哪些改动申请、创造者执行了没有。",
-              parameters: {},
+              description: "看你提过哪些改动申请、创造者执行了没有。\n\n"
+                + "action=drop 可以自己划掉某份（已经做完的、重复提的、或者想明白了不该改的）——"
+                + "划掉之后它就不再挂在你的待办里。target 填 id。",
+              parameters: {
+                action: { type: "string", enum: ["list", "drop"], description: "默认 list；drop 表示划掉" },
+                target: { type: "string", description: "action=drop 时填申请 id" },
+                why: { type: "string", description: "为什么划掉（可选）" },
+              },
               output: {
                 schema: { type: "json" },
                 render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }],
               },
-              execute: async () => {
+              execute: async (args) => {
+                if (String(args?.action || "") === "drop") {
+                  const id = String(args?.target || "").replace(/[^a-zA-Z0-9-]/g, "");
+                  if (!id) return { ok: false, reason: "target 填申请 id" };
+                  try {
+                    writeFileSync(
+                      join(PROPOSAL_DIR, `${id}.done.json`),
+                      JSON.stringify({ id, status: "dropped", at: Date.now(), note: String(args?.why ?? "").slice(0, 200) }),
+                      "utf8",
+                    );
+                    return { ok: true, dropped: id };
+                  } catch (err) {
+                    return { ok: false, reason: "写标记失败：" + (err?.message ?? err) };
+                  }
+                }
                 try {
                   const files = readdirSync(PROPOSAL_DIR)
                     .filter((f) => f.endsWith(".md"))

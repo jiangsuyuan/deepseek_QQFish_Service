@@ -82,7 +82,7 @@ export function createWebServer(ctx) {
         logger.warn?.("[onebot] webuiToken 太短或没设置，WebUI 不启动");
         return;
       }
-      state.webServer = http.createServer((req, res) => {
+      state.webServer = http.createServer(async (req, res) => {
         const u = new URL(req.url, "http://x");
         // 内部唤醒端点：给独立的 dsh-selfclock 用（只绑 127.0.0.1 + 文件 token）
         if (u.pathname === "/internal/wake") {
@@ -503,6 +503,22 @@ export function createWebServer(ctx) {
                 }
                 return days;
               })();
+              // 群名来自 NapCat（缓存 10 分钟）
+              let names = {};
+              try {
+                names = await TTL.get("grouplist", 600000, async () => {
+                  const list = await client.call("get_group_list", {}, 8000);
+                  const arr = Array.isArray(list) ? list : (list?.data ?? []);
+                  const map = {};
+                  for (const g of arr) {
+                    const id = String(g?.group_id ?? "");
+                    if (id) map[id] = { name: String(g?.group_name ?? ""), members: Number(g?.member_count || 0) };
+                  }
+                  return map;
+                }) || {};
+              } catch {
+                names = {};
+              }
               const out = groupDirs().map((gid) => {
                 const rows = readDay(gid, day);
                 let i2 = 0;
@@ -520,8 +536,36 @@ export function createWebServer(ctx) {
                 } catch {
                   name = "";
                 }
+                name = name || String(names[gid]?.name || "");
                 const week = TTL.get("week:" + gid, 60000, () => sevenDays.reduce((a, dd) => a + readDay(gid, dd).length, 0));
-                return { gid, name, in: i2, out: o2, week, last: lastText };
+                // 今天的每小时分布（本地数据）
+                const hours = new Array(24).fill(0);
+                let lastAt = 0;
+                for (const r of rows) {
+                  const t2 = Number(r.t) * 1000;
+                  if (t2) hours[new Date(t2).getHours()] += 1;
+                  if (t2 > lastAt) lastAt = t2;
+                }
+                let profile = null;
+                try {
+                  const gj = readJson(join(ROOT, "groups", gid + ".json"), null);
+                  if (gj && gj.profile) profile = gj.profile;
+                } catch {
+                  profile = null;
+                }
+                const meta = names[gid] || {};
+                return {
+                  gid,
+                  name: name || meta.name || "",
+                  members: meta.members || 0,
+                  in: i2,
+                  out: o2,
+                  week,
+                  last: lastText,
+                  lastAt,
+                  hours,
+                  profile,
+                };
               });
               out.sort((a, b) => b.in - a.in);
               return json(out);
@@ -633,9 +677,19 @@ export function createWebServer(ctx) {
                   head = "";
                 }
                 const title = (head.split("\n").find((l) => l.trim().startsWith("#")) || f).replace(/^#+\s*/, "").trim();
-                return { id: f.replace(/\.md$/, ""), title, at: st.mtimeMs, size: st.size, head };
-              }).sort((a, b) => b.at - a.at);
-              return json({ total: items.length, items });
+                const id2 = f.replace(/\.md$/, "");
+                let status = "pending";
+                let note = "";
+                try {
+                  const dj = JSON.parse(readFileSync(join(dir, id2 + ".done.json"), "utf8"));
+                  status = String(dj?.status || "done");
+                  note = String(dj?.note || "");
+                } catch {
+                  status = "pending";
+                }
+                return { id: id2, title, at: st.mtimeMs, size: st.size, head, status, note };
+              }).sort((a, b) => (a.status === "pending" ? -1 : 1) || b.at - a.at);
+              return json({ total: items.length, pending: items.filter((x) => x.status === "pending").length, items });
             }
             if (u.pathname === "/api/tokens") {
               const days = Math.max(1, Math.min(30, Number(u.searchParams.get("days") || 1)));

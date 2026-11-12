@@ -165,20 +165,38 @@ async function renderHome(){
 async function renderGroups(){
   const list = await api('/api/groups');
   const total = list.reduce((a,b)=>a+b.in,0) || 1;
-  main.innerHTML = '<div class="card"><h3>群 · 今天</h3>'
-    + (list.length ? '<table><tr><th>群</th><th>今日</th><th>7日</th><th>她</th></tr>' + list.map(g =>
-        '<tr data-gid="'+esc(g.gid)+'" class="grow"><td>'
-        + '<div>'+esc(g.name || ('群 ' + g.gid))+'</div>'
-        + '<div class="small dim" style="margin-top:3px">'+esc(g.last||'')+'</div></td>'
-        + '<td style="width:84px"><div class="small">'+g.in+'</div>'
-        + '<div class="bar" style="margin-top:4px"><i style="width:'+Math.round(g.in/total*100)+'%;background:#4da3ff"></i></div></td>'
-        + '<td style="width:52px" class="dim">'+fmt(g.week||0)+'</td>'
-        + '<td style="width:40px" class="'+(g.out?'ok':'dim')+'">'+g.out+'</td></tr>').join('') + '</table>'
-      : '<div class="empty">今天还没有群消息</div>')
-    + '</div><div id="gdetail"></div>';
-  document.querySelectorAll('.grow').forEach(tr => tr.onclick = () => openGroup(tr.dataset.gid));
+  const card = (g) => {
+    const pf = g.profile || {};
+    const bits = [pf.purpose, pf.topics, pf.style].filter(Boolean);
+    const hours = g.hours || [];
+    const maxH = Math.max(1, ...hours);
+    return '<div class="card grow" data-gid="'+esc(g.gid)+'" style="margin:0">'
+      + '<div class="rowline"><div class="fill"><div style="font-weight:600">'+esc(g.name || ('群 '+g.gid))+'</div>'
+      +   '<div class="small dim">'+esc(g.gid)+(g.members?' · '+g.members+' 人':'')+' · '+ago(g.lastAt)+'</div></div>'
+      +   '<div style="text-align:right"><div class="v" style="font-size:18px">'+g.in+'</div><div class="small dim">今天</div></div>'
+      + '</div>'
+      + '<div class="bar" style="margin:8px 0 6px"><i style="width:'+Math.round(g.in/total*100)+'%;background:#4da3ff"></i></div>'
+      + '<div class="rowline small dim"><span>7 天 '+fmt(g.week||0)+'</span><span class="fill"></span><span class="'+(g.out?'ok':'')+'">她 '+g.out+' 条</span></div>'
+      + (bits.length ? '<div class="small" style="margin-top:6px">'+esc(bits.join(' · '))+'</div>' : '<div class="small dim" style="margin-top:6px">还没有印象</div>')
+      + (pf.people ? '<div class="small dim">常出现的人：'+esc(pf.people)+'</div>' : '')
+      + '<div style="display:flex;gap:1px;align-items:flex-end;height:22px;margin-top:8px">'
+      +   hours.map((n)=>'<i style="flex:1;height:'+Math.max(2, Math.round(n/maxH*22))+'px;background:#2d6cb5;border-radius:1px"></i>').join('')
+      + '</div>'
+      + '<div class="small dim" style="font-size:10px">0 ────────── 23 点</div>'
+      + '</div>';
+  };
+  main.innerHTML = '<div class="chips"><b class="on">今天 '+list.length+' 个群</b></div>'
+    + '<div style="display:flex;flex-direction:column;gap:10px">' + list.map(card).join('') + '</div>'
+    + '<div id="gdetail"></div>';
+  document.querySelectorAll('.grow').forEach(el => el.onclick = () => {
+    try { history.pushState({ grp: el.dataset.gid }, ''); } catch {}
+    openGroup(el.dataset.gid);
+  });
 }
+
+let groupOpen = false;
 async function openGroup(gid){
+  groupOpen = true;
   const box = document.getElementById('gdetail');
   box.innerHTML = '<div class="card"><div class="empty">读取 ' + esc(gid) + ' …</div></div>';
   const d = await api('/api/group?id=' + encodeURIComponent(gid));
@@ -314,19 +332,21 @@ async function renderRecords(){
   } else if (recTab === 'assistant') {
     const a2 = await api('/api/assistant');
     const row = (m, mine) => '<div class="msg '+(mine?'me':'')+'"><div class="who">'+esc(m.from||'她')+'<br><span class="dim" style="font-size:10px">'+ago(m.at)+'</span></div><div class="tx">'+esc(m.text)+'</div></div>';
-    body = '<div class="card"><h3>这是什么</h3><div class="small dim">你和她的专用通道：不走 QQ、不进群。'
-      + '你写一句，她 5 秒内会看到并回一句；她的回话落在这里。</div></div>'
-      + '<div class="card"><h3>她收到的（你 → 她）</h3>'
+    body = '<div class="card"><h3>这是什么</h3><div class="small dim">'
+      + '这是<b>执行助手</b>（跑活的 agent）和她的专用通道：不走 QQ、不进群。'
+      + '创造者跟她说话仍走 QQ，这里只放助手交代的事和她的回话。</div></div>'
+      + '<div class="card"><h3>助手发给她的</h3>'
       + ((a2.inbox||[]).length ? a2.inbox.slice().reverse().map(m => row(m,false)).join('') : '<div class="empty">还没有留言</div>')
-      + '</div><div class="card"><h3>她回的（她 → 创造者）</h3>'
+      + '</div><div class="card"><h3>她回的</h3>'
       + ((a2.outbox||[]).length ? a2.outbox.slice().reverse().map(m => row(m,true)).join('') : '<div class="empty">她还没回过</div>')
       + '</div>';
   } else if (recTab === 'proposals') {
     const p2 = await api('/api/proposals');
     body = '<div class="card"><h3>改动申请 · '+(p2.total||0)+' 份</h3>'
+      + '<div class="small dim" style="margin-bottom:6px">待执行 '+(p2.pending||0)+' 份</div>'
       + ((p2.items||[]).length ? p2.items.map(x =>
-          '<div class="msg"><div class="tx"><div>'+esc(x.title||x.id)+'</div>'
-          + '<div class="small dim">'+ago(x.at)+' · '+Math.round((x.size||0)/1024)+' KB</div>'
+          '<div class="msg"><div class="tx"><div>'+esc(x.title||x.id)+' <span class="tag">'+esc(x.status)+'</span></div>'
+          + '<div class="small dim">'+ago(x.at)+' · '+Math.round((x.size||0)/1024)+' KB'+(x.note?' · '+esc(x.note):'')+'</div>'
           + '<pre style="margin-top:6px;max-height:160px;overflow:auto">'+esc(x.head||'')+'</pre></div></div>').join('')
         : '<div class="empty">她还没提过改动</div>')
       + '</div>';
@@ -343,13 +363,18 @@ async function renderRecords(){
     };
     main.innerHTML = '<div class="grid2">' + REC_GROUPS.map(([k,t]) =>
       '<div class="tile" data-rec="'+k+'"><div class="tn">'+t+'</div><div class="tc">'+(counts[k]||0)+'</div></div>').join('') + '</div>';
-    document.querySelectorAll('[data-rec]').forEach(el => el.onclick = () => { recTab = el.dataset.rec; recOpen = true; renderRecords(); });
+    document.querySelectorAll('[data-rec]').forEach(el => el.onclick = () => {
+      recTab = el.dataset.rec;
+      recOpen = true;
+      try { history.pushState({ rec: recTab }, ''); } catch {}
+      renderRecords();
+    });
     return;
   }
   main.innerHTML = '<div class="rowline" style="margin-bottom:2px"><b class="back" id="recback">‹ 返回</b>'
     + '<span class="fill"></span><b class="small dim">'+ (REC_GROUPS.find(x=>x[0]===recTab)||['',''])[1] +'</b></div>' + body;
   const bk = document.getElementById('recback');
-  if (bk) bk.onclick = () => { recOpen = false; recTab = 'facts'; renderRecords(); };
+  if (bk) bk.onclick = () => { try { history.back(); } catch { recOpen = false; renderRecords(); } };
   return;
 document.querySelectorAll('[data-rec]').forEach(el => el.onclick = () => { recTab = el.dataset.rec; renderRecords(); });
 }
@@ -417,11 +442,18 @@ async function renderSys(){
 const render = { home: renderHome, groups: renderGroups, her: renderHer, records: renderRecords, sys: renderSys };
 async function go(t){
   tab = t;
+  recOpen = false; groupOpen = false;
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === t));
   main.innerHTML = '<div class="empty">加载中…</div>';
   try { await render[t](); }
   catch (e) { main.innerHTML = '<div class="card"><div class="bad">'+esc(e.message)+'</div></div>'; }
 }
+// 左滑返回 / 系统返回键：先回上一层（详情 → 列表），再退到首页
+window.addEventListener('popstate', () => {
+  if (recOpen) { recOpen = false; recTab = 'facts'; renderRecords(); return; }
+  if (groupOpen) { groupOpen = false; renderGroups(); return; }
+});
+
 document.querySelectorAll('nav button').forEach(b => b.onclick = () => go(b.dataset.tab));
 go('home');
 setInterval(() => { if (tab === 'home') go('home'); }, 30000);
