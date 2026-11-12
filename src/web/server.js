@@ -264,6 +264,20 @@ export function createWebServer(ctx) {
           }
           return;
         }
+        if (u.pathname.startsWith("/sticker/")) {
+          const name = decodeURIComponent(u.pathname.slice(9)).replace(/[^a-zA-Z0-9._-]/g, "");
+          const file = join(HOME, ".dsh/onebot-bridge/stickers", name);
+          try {
+            const buf = readFileSync(file);
+            const ext = (name.split(".").pop() || "jpg").toLowerCase();
+            const mime = ext === "png" ? "image/png" : ext === "gif" ? "image/gif" : ext === "webp" ? "image/webp" : "image/jpeg";
+            res.writeHead(200, { "content-type": mime, "cache-control": "public, max-age=600" });
+            res.end(buf);
+          } catch {
+            res.writeHead(404).end("no sticker");
+          }
+          return;
+        }
         if (u.pathname.startsWith("/img/")) {
           const name = u.pathname.slice(5).replace(/[^a-zA-Z0-9._-]/g, "");
           const file = join(HOME, ".dsh/onebot-bridge/workspace/pages", name);
@@ -505,6 +519,100 @@ export function createWebServer(ctx) {
                   text: String(r.x || "").slice(0, 200),
                 })),
               });
+            }
+            if (u.pathname === "/api/records") {
+              const part = String(u.searchParams.get("part") || "facts");
+              const rd = (f, d) => readJson(join(ROOT, f), d);
+              if (part === "facts") {
+                const f = rd("facts.json", { facts: [] });
+                const list = (f.facts || []).slice(-80).reverse().map((x) => ({ text: String(x.text || "").slice(0, 200), at: Number(x.at || 0), source: String(x.source || "") }));
+                return json({ part, total: (f.facts || []).length, items: list });
+              }
+              if (part === "people") {
+                const u2 = rd("users.json", {});
+                const list = Object.entries(u2).map(([uid, v]) => ({
+                  uid,
+                  name: String(v?.name || ""),
+                  notes: (v?.notes || []).map((n) => String(n).slice(0, 200)),
+                  lastSeen: Number(v?.lastSeen || 0),
+                })).sort((a, b) => b.lastSeen - a.lastSeen).slice(0, 40);
+                return json({ part, total: Object.keys(u2).length, items: list });
+              }
+              if (part === "views") {
+                const v = rd("self.json", { views: [] });
+                const list = (v.views || []).slice(-60).reverse().map((x) => ({ text: String(x.text || "").slice(0, 220), at: Number(x.at || 0) }));
+                return json({ part, total: (v.views || []).length, items: list });
+              }
+              if (part === "wants") {
+                const w = rd("wants.json", []);
+                const list = (Array.isArray(w) ? w : []).slice(-40).reverse().map((x) => ({ what: String(x.what || "").slice(0, 160), why: String(x.why || "").slice(0, 160), kind: String(x.kind || ""), at: Number(x.at || 0) }));
+                return json({ part, total: Array.isArray(w) ? w.length : 0, items: list });
+              }
+              if (part === "plans") {
+                let rows = [];
+                try {
+                  rows = readFileSync(join(ROOT, "self-plan.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+                } catch {
+                  rows = [];
+                }
+                const list = rows.slice(-40).reverse().map((x) => ({ at: Number(x.at || 0), kind: String(x.kind || ""), note: String(x.note || "").slice(0, 200), status: String(x.status || "") }));
+                return json({ part, total: rows.length, items: list });
+              }
+              if (part === "explore") {
+                let rows = [];
+                try {
+                  rows = readFileSync(join(ROOT, "explore-log.jsonl"), "utf8").trim().split("\n").slice(-40).map((l) => JSON.parse(l));
+                } catch {
+                  rows = [];
+                }
+                const list = rows.reverse().map((x) => ({
+                  at: Number(x.at || 0),
+                  topic: String(x.topic || "").slice(0, 160),
+                  stops: (x.stops || []).slice(0, 6).map((y) => ({ stop: String(y.stop || "").slice(0, 80), why: String(y.why || "").slice(0, 80) })),
+                }));
+                return json({ part, total: rows.length, items: list });
+              }
+              if (part === "stickers") {
+                const dir = join(ROOT, "stickers");
+                const labels = rd("stickers/labels.json", {});
+                let files = [];
+                try {
+                  files = readdirSync(dir).filter((f) => /\.(jpg|jpeg|png|gif|webp)$/i.test(f)).sort();
+                } catch {
+                  files = [];
+                }
+                const items = files.slice(-60).reverse().map((f) => ({ file: f, tags: labels[f] || [] }));
+                const byTag = {};
+                for (const f of files) for (const tg of labels[f] || []) byTag[tg] = (byTag[tg] || 0) + 1;
+                return json({ part, total: files.length, items, tags: byTag });
+              }
+              if (part === "digest") {
+                const d = rd("digest.json", []);
+                const list = (Array.isArray(d) ? d : []).slice(-20).reverse().map((x) => ({ from: Number(x.from || 0), to: Number(x.to || 0), text: String(x.text || "").slice(0, 800) }));
+                return json({ part, total: Array.isArray(d) ? d.length : 0, items: list });
+              }
+              return json({ part, items: [] });
+            }
+            if (u.pathname === "/api/acts") {
+              let rows = [];
+              try {
+                rows = loadActivities(80) || [];
+              } catch {
+                rows = [];
+              }
+              const items = rows.slice(-20).reverse().map((r) => {
+                const th = r.think || {};
+                return {
+                  at: Number(r.at || 0),
+                  kind: String(r.kind || ""),
+                  intent: String(th.intent || "").slice(0, 200),
+                  why: String(th.why || "").slice(0, 200),
+                  looked: (Array.isArray(th.looked) ? th.looked : []).map((x) => String(x).slice(0, 40)),
+                  did: String(r.content || "").slice(0, 400),
+                  reflect: String(r.reflect || "").slice(0, 300),
+                };
+              });
+              return json({ part: "acts", total: rows.length, items });
             }
             if (u.pathname === "/api/logs") {
               let audit = [];
