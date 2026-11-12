@@ -137,6 +137,18 @@ export function createMemoryLoop(ctx) {
         ? core.map((c) => `· [${c.type || "belief"}] ${c.text}`).join("\n")
         : "（还没有）";
       const digest = recentDigestText(3) || "（还没有）";
+      // 连续三次同一类活动 → 提一句，让她自己决定要不要换（不强制）
+      let sameKindNote = "";
+      try {
+        const recent = (loadActivities(8) || []).slice(-3);
+        const kinds = recent.map((a) => String(a.kind || ""));
+        if (kinds.length === 3 && kinds.every((k) => k && k === kinds[0])) {
+          const label = { read: "读书", explore: "探索", think: "思考", play: "玩", write: "写东西", recall: "回忆", dream: "憧憬", study: "研究", watch_groups: "看群" }[kinds[0]] || kinds[0];
+          sameKindNote = `（你最近连着 3 次都在「${label}」。要不要换点别的？接着做也行，你定。）\n`;
+        }
+      } catch {
+        sameKindNote = "";
+      }
       const prompt =
         "（这是你自己的时间。先想清楚，再决定做什么。这一轮**只思考，不动手**。）\n\n" +
         "[你能看到的东西]\n" +
@@ -155,6 +167,7 @@ export function createMemoryLoop(ctx) {
         "今天这段是你自己的时间，不是交作业。挑一件你**想做**的，\n" +
         "不是为了「有用」，也不是为了「显得勤奋」。\n" +
         "做完了要是觉得没意思，下次换别的；要是做着做着觉得好玩，那就多玩一会儿。\n" +
+        sameKindNote +
         (forceAction
           ? `（这次外面指定了要做：${forceAction}。你想想具体想做什么，action 就填 ${forceAction}。）\n`
           : "可选：探险（出门看看）/ 读书 / 玩（造个小游戏）/ 思考（想事）/ 写点什么 / 回忆 / 憧憬未来 / **看看群**（去群里看看大家在聊什么，想插话就插）\n") +
