@@ -657,6 +657,7 @@ export function createWebServer(ctx) {
             }
             if (u.pathname === "/api/proposals") {
               const dir = join(HOME, ".dsh/onebot-bridge/patch-proposals");
+              const showAll = u.searchParams.get("all") === "1";
               let files2 = [];
               try {
                 files2 = readdirSync(dir).filter((f) => f.endsWith(".md"));
@@ -689,7 +690,13 @@ export function createWebServer(ctx) {
                 }
                 return { id: id2, title, at: st.mtimeMs, size: st.size, head, status, note };
               }).sort((a, b) => (a.status === "pending" ? -1 : 1) || b.at - a.at);
-              return json({ total: items.length, pending: items.filter((x) => x.status === "pending").length, items });
+              const pendingItems = items.filter((x) => x.status === "pending");
+              return json({
+                total: items.length,
+                hidden: items.length - pendingItems.length,
+                pending: pendingItems.length,
+                items: showAll ? items : pendingItems,
+              });
             }
             if (u.pathname === "/api/tokens") {
               const days = Math.max(1, Math.min(30, Number(u.searchParams.get("days") || 1)));
@@ -795,7 +802,13 @@ export function createWebServer(ctx) {
                   return [];
                 }
               };
-              return json({ inbox: read("inbox.jsonl"), outbox: read("outbox.jsonl") });
+              const inbox = read("inbox.jsonl");
+              const outbox = read("outbox.jsonl");
+              const thread = inbox.map((m) => ({ ...m, dir: "to" }))
+                .concat(outbox.map((m) => ({ ...m, dir: "from" })))
+                .sort((a, b) => Number(a.at || 0) - Number(b.at || 0))
+                .slice(-80);
+              return json({ inbox, outbox, thread });
             }
             if (u.pathname === "/api/files") {
               const ROOT2 = join(HOME, ".dsh/onebot-bridge");
@@ -850,6 +863,95 @@ export function createWebServer(ctx) {
             if (u.pathname === "/api/records") {
               const part = String(u.searchParams.get("part") || "facts");
               const rd = (f, d) => readJson(join(ROOT, f), d);
+              const countLines = (f) => {
+                try {
+                  return readFileSync(join(ROOT, f), "utf8").trim().split("\n").filter(Boolean).length;
+                } catch {
+                  return 0;
+                }
+              };
+              if (part === "counts") {
+                const factsJ = rd("facts.json", { facts: [] });
+                const peopleJ = rd("users.json", {});
+                const viewsJ = rd("self.json", { views: [] });
+                const wantsJ = rd("wants.json", []);
+                const digestJ = rd("digest.json", []);
+                const labelsJ = rd("stickers/labels.json", {});
+                let stickerN = 0;
+                try {
+                  stickerN = readdirSync(join(ROOT, "stickers")).filter((f) => /\.(jpg|jpeg|png|gif|webp)$/i.test(f)).length;
+                } catch {
+                  stickerN = 0;
+                }
+                let pagesN = 0;
+                let codeN = 0;
+                try {
+                  pagesN = readdirSync(join(ROOT, "workspace/pages")).filter((f) => f.endsWith(".html")).length;
+                } catch {
+                  pagesN = 0;
+                }
+                try {
+                  codeN = readdirSync(join(ROOT, "workspace")).filter((f) => /\.(js|mjs|py|sh|css)$/i.test(f)).length;
+                } catch {
+                  codeN = 0;
+                }
+                let deskN = 0;
+                try {
+                  deskN = readdirSync(join(ROOT, "desk")).filter((f) => !f.startsWith(".")).length;
+                } catch {
+                  deskN = 0;
+                }
+                let artN = 0;
+                for (const f of ["draw.jpg", "svg.png"]) {
+                  try {
+                    statSync(join(ROOT, f));
+                    artN += 1;
+                  } catch {
+                    // 没有
+                  }
+                }
+                let propAll = 0;
+                let propPending = 0;
+                try {
+                  for (const f of readdirSync(join(ROOT, "patch-proposals")).filter((x) => x.endsWith(".md"))) {
+                    propAll += 1;
+                    try {
+                      readFileSync(join(ROOT, "patch-proposals", f.replace(/\.md$/, ".done.json")), "utf8");
+                    } catch {
+                      propPending += 1;
+                    }
+                  }
+                } catch {
+                  propAll = 0;
+                }
+                let asIn = 0;
+                let asOut = 0;
+                try {
+                  asIn = readFileSync(join(ROOT, "assistant/inbox.jsonl"), "utf8").trim().split("\n").filter(Boolean).length;
+                  asOut = readFileSync(join(ROOT, "assistant/outbox.jsonl"), "utf8").trim().split("\n").filter(Boolean).length;
+                } catch {
+                  asIn = 0;
+                }
+                void labelsJ;
+                return json({
+                  part,
+                  counts: {
+                    facts: (factsJ.facts || []).length,
+                    people: Object.keys(peopleJ || {}).length,
+                    views: (viewsJ.views || []).length,
+                    wants: (Array.isArray(wantsJ) ? wantsJ : []).filter((x) => (x.status || "pending") === "pending").length,
+                    wantsHidden: (Array.isArray(wantsJ) ? wantsJ : []).filter((x) => (x.status || "pending") !== "pending").length,
+                    plans: countLines("self-plan.jsonl"),
+                    explore: countLines("explore-log.jsonl"),
+                    stickers: stickerN,
+                    files: deskN + artN + codeN + pagesN,
+                    assistant: asIn + asOut,
+                    proposals: propPending,
+                    proposalsHidden: propAll - propPending,
+                    digest: (Array.isArray(digestJ) ? digestJ : []).length,
+                  },
+                });
+              }
               if (part === "facts") {
                 const f = rd("facts.json", { facts: [] });
                 const list = (f.facts || []).slice(-80).reverse().map((x) => ({ text: String(x.text || "").slice(0, 200), at: Number(x.at || 0), source: String(x.source || "") }));

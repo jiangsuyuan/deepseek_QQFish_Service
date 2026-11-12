@@ -59,6 +59,12 @@ pre{white-space:pre-wrap;word-break:break-all;font-family:ui-monospace,Menlo,mon
 .step3 .n{font-size:11px;color:var(--dim);text-align:center;padding-top:3px}
 .step3 .b{background:var(--card2);border-radius:10px;padding:8px;white-space:pre-wrap;word-break:break-word}
 .step3 .lbl{font-size:10px;color:var(--dim);margin-bottom:2px}
+.turn{display:flex;flex-direction:column;margin:8px 0}
+.turn.me{align-items:flex-end}
+.turn.her{align-items:flex-start}
+.bub{max-width:82%;padding:8px 11px;border-radius:14px;background:var(--card2);white-space:pre-wrap;word-break:break-word}
+.turn.me .bub{background:#1e3a5f}
+.turn .twho{font-size:10px;color:var(--dim);margin-top:3px}
 .tile{background:var(--card2);border-radius:12px;padding:14px 12px;display:flex;align-items:baseline;justify-content:space-between}
 .tile .tn{font-size:14px}
 .tile .tc{font-size:20px;font-weight:600;color:var(--acc);font-variant-numeric:tabular-nums}
@@ -280,6 +286,7 @@ const REC_GROUPS = [
   ['assistant','助手'],['proposals','改动'],['digest','日记'],
 ];
 let recTab = 'facts';
+let showOldProposals = false;
 let recOpen = false;
 async function renderRecords(){
   const d = await api('/api/records?part=' + recTab);
@@ -331,19 +338,24 @@ async function renderRecords(){
       + group('她做的页面', d.pages, '还没做过');
   } else if (recTab === 'assistant') {
     const a2 = await api('/api/assistant');
-    const row = (m, mine) => '<div class="msg '+(mine?'me':'')+'"><div class="who">'+esc(m.from||'她')+'<br><span class="dim" style="font-size:10px">'+ago(m.at)+'</span></div><div class="tx">'+esc(m.text)+'</div></div>';
+    const thread = a2.thread || [];
+    const bubble = (m) => {
+      const mine = m.dir === 'to';  // 助手发出
+      return '<div class="turn '+(mine?'me':'her')+'">'
+        + '<div class="bub">'+esc(m.text)+'</div>'
+        + '<div class="twho">'+esc(mine?'助手':'她')+' · '+esc(ago(m.at))+'</div></div>';
+    };
     body = '<div class="card"><h3>这是什么</h3><div class="small dim">'
       + '这是<b>执行助手</b>（跑活的 agent）和她的专用通道：不走 QQ、不进群。'
-      + '创造者跟她说话仍走 QQ，这里只放助手交代的事和她的回话。</div></div>'
-      + '<div class="card"><h3>助手发给她的</h3>'
-      + ((a2.inbox||[]).length ? a2.inbox.slice().reverse().map(m => row(m,false)).join('') : '<div class="empty">还没有留言</div>')
-      + '</div><div class="card"><h3>她回的</h3>'
-      + ((a2.outbox||[]).length ? a2.outbox.slice().reverse().map(m => row(m,true)).join('') : '<div class="empty">她还没回过</div>')
+      + '创造者跟她说话仍走 QQ。</div></div>'
+      + '<div class="card"><h3>对话</h3>'
+      + (thread.length ? thread.map(bubble).join('') : '<div class="empty">还没有来往</div>')
       + '</div>';
   } else if (recTab === 'proposals') {
-    const p2 = await api('/api/proposals');
+    const p2 = await api('/api/proposals' + (showOldProposals ? '?all=1' : ''));
     body = '<div class="card"><h3>改动申请 · '+(p2.total||0)+' 份</h3>'
-      + '<div class="small dim" style="margin-bottom:6px">待执行 '+(p2.pending||0)+' 份</div>'
+      + '<div class="small dim" style="margin-bottom:6px">待执行 '+(p2.pending||0)+' 份'
+      + ((p2.hidden||0) ? ' · <b class="back" id="oldu">'+(showOldProposals?'收起':'看已处理 '+(p2.hidden||0)+' 份')+'</b>' : '')+'</div>'
       + ((p2.items||[]).length ? p2.items.map(x =>
           '<div class="msg"><div class="tx"><div>'+esc(x.title||x.id)+' <span class="tag">'+esc(x.status)+'</span></div>'
           + '<div class="small dim">'+ago(x.at)+' · '+Math.round((x.size||0)/1024)+' KB'+(x.note?' · '+esc(x.note):'')+'</div>'
@@ -355,15 +367,17 @@ async function renderRecords(){
   }
   // 入口网格：先看有哪几类，点一个进来看内容（不再横向滑动）
   if (!recOpen) {
+    const cc = (await api('/api/records?part=counts').catch(() => ({ counts: {} }))).counts || {};
     const counts = {
-      facts: d.total || 0, people: d.total || 0, views: d.total || 0, wants: d.total || 0,
-      plans: d.total || 0, explore: d.total || 0, stickers: d.total || 0,
-      files: (d.desk||[]).length + (d.art||[]).length + (d.code||[]).length + (d.pages||[]).length,
-      assistant: ((d2.inbox||[]).length + (d2.outbox||[]).length), proposals: d3.total || 0, digest: d.total || 0,
+      facts: cc.facts || 0, people: cc.people || 0, views: cc.views || 0, wants: cc.wants || 0,
+      plans: cc.plans || 0, explore: cc.explore || 0, stickers: cc.stickers || 0,
+      files: cc.files || 0, assistant: cc.assistant || 0, proposals: cc.proposals || 0, digest: cc.digest || 0,
     };
     main.innerHTML = '<div class="grid2">' + REC_GROUPS.map(([k,t]) =>
       '<div class="tile" data-rec="'+k+'"><div class="tn">'+t+'</div><div class="tc">'+(counts[k]||0)+'</div></div>').join('') + '</div>';
-    document.querySelectorAll('[data-rec]').forEach(el => el.onclick = () => {
+    const ou = document.getElementById('oldu');
+  if (ou) ou.onclick = () => { showOldProposals = !showOldProposals; renderRecords(); };
+  document.querySelectorAll('[data-rec]').forEach(el => el.onclick = () => {
       recTab = el.dataset.rec;
       recOpen = true;
       try { history.pushState({ rec: recTab }, ''); } catch {}
