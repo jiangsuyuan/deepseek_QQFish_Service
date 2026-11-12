@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { webHtml } from "./ui.js";
 import { downloadImage } from "../net/fetch.js";
+import { execFileSync } from "node:child_process";
 
 const HOME = process.env.HOME || homedir();
 /** 插件自己所在的目录（发布版不再写死绝对路径） */
@@ -296,6 +297,214 @@ export function createWebServer(ctx) {
           }
           return;
         }
+        // ── 只读看板接口（4.3）──────────────────────────────
+        if (u.pathname.startsWith("/api/")) {
+          const json = (obj) => {
+            res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }).end(JSON.stringify(obj));
+          };
+          const ROOT = join(HOME, ".dsh/onebot-bridge");
+          const readJson = (p, dflt) => {
+            try {
+              return JSON.parse(readFileSync(p, "utf8"));
+            } catch {
+              return dflt;
+            }
+          };
+          const todayYmd = () => {
+            const d = new Date();
+            return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+          };
+          const groupDirs = () => {
+            try {
+              return readdirSync(join(ROOT, "messages/group")).filter((g) => statSync(join(ROOT, "messages/group", g)).isDirectory());
+            } catch {
+              return [];
+            }
+          };
+          const readDay = (gid, day) => {
+            try {
+              return readFileSync(join(ROOT, "messages/group", gid, day + ".jsonl"), "utf8")
+                .split("\n")
+                .filter(Boolean)
+                .map((l) => {
+                  try {
+                    return JSON.parse(l);
+                  } catch {
+                    return null;
+                  }
+                })
+                .filter(Boolean);
+            } catch {
+              return [];
+            }
+          };
+          try {
+            if (u.pathname === "/api/stats") {
+              const day = todayYmd();
+              let inN = 0;
+              let outN = 0;
+              for (const gid of groupDirs()) {
+                for (const r of readDay(gid, day)) {
+                  if (r.d === "o") outN += 1;
+                  else inN += 1;
+                }
+              }
+              let last = null;
+              try {
+                const lines = readFileSync(join(ROOT, "usage.jsonl"), "utf8").trim().split("\n");
+                last = JSON.parse(lines[lines.length - 1]);
+              } catch {
+                last = null;
+              }
+              const mood = readJson(join(ROOT, "mood.json"), { mood: 70, why: "", updatedAt: 0, history: [] });
+              let acts = [];
+              try {
+                acts = loadActivities(20).slice(-5).reverse().map((r) => ({
+                  time: new Date(r.at).toLocaleTimeString("zh-CN", { hour12: false }).slice(0, 5),
+                  kind: r.kind,
+                  intent: String((r.think || {}).intent || "").slice(0, 80),
+                }));
+              } catch {
+                acts = [];
+              }
+              return json({
+                online: !!client.connected,
+                today: { in: inN, out: outN },
+                context: { total: Number(last?.total || 0), sessions: Number(last?.sessions || 0) },
+                sessions: (last?.top || []).map((x) => ({ key: String(x.key || ""), total: Number(x.total || 0) })),
+                mood,
+                activities: acts,
+              });
+            }
+            if (u.pathname === "/api/groups") {
+              const day = todayYmd();
+              const out = groupDirs().map((gid) => {
+                const rows = readDay(gid, day);
+                let i2 = 0;
+                let o2 = 0;
+                let lastText = "";
+                for (const r of rows) {
+                  if (r.d === "o") o2 += 1;
+                  else i2 += 1;
+                  lastText = String(r.x || "").slice(0, 30);
+                }
+                let name = "";
+                try {
+                  const meta = readJson(join(ROOT, "group-meta.json"), {});
+                  name = String(meta?.[gid]?.name || meta?.[gid]?.groupName || "");
+                } catch {
+                  name = "";
+                }
+                return { gid, name, in: i2, out: o2, last: lastText };
+              });
+              out.sort((a, b) => b.in - a.in);
+              return json(out);
+            }
+            if (u.pathname === "/api/group") {
+              const gid = String(u.searchParams.get("id") || "").replace(/[^0-9]/g, "");
+              if (!gid) return json({ ok: false, error: "缺 id" });
+              const day = todayYmd();
+              const rows = readDay(gid, day).slice(-50);
+              let name = "";
+              try {
+                const meta = readJson(join(ROOT, "group-meta.json"), {});
+                name = String(meta?.[gid]?.name || meta?.[gid]?.groupName || "");
+              } catch {
+                name = "";
+              }
+              return json({
+                gid,
+                name,
+                messages: rows.map((r) => ({
+                  time: new Date(Number(r.t) * 1000).toLocaleTimeString("zh-CN", { hour12: false }).slice(0, 5),
+                  who: r.d === "o" ? "她" : String(r.n || r.u || ""),
+                  me: r.d === "o",
+                  at: !!r.atMe,
+                  text: String(r.x || "").slice(0, 200),
+                })),
+              });
+            }
+            if (u.pathname === "/api/logs") {
+              let audit = [];
+              try {
+                audit = readFileSync(join(ROOT, "audit.log"), "utf8").trim().split("\n").slice(-12).reverse();
+              } catch {
+                audit = [];
+              }
+              let tail = [];
+              try {
+                tail = execFileSync("journalctl", ["-u", "dsh-web", "-n", "60", "--no-pager", "-o", "cat"], { encoding: "utf8", timeout: 4000 })
+                  .split("\n")
+                  .filter(Boolean)
+                  .slice(-60);
+              } catch {
+                tail = ["（读不到 journalctl，可能是权限问题）"];
+              }
+              const errors = tail.filter((l) => /ReferenceError|TypeError|超时|失败|错误/i.test(l)).slice(-10);
+              return json({ audit, tail, errors });
+            }
+            if (u.pathname === "/api/her") {
+              const pdata = readJson(join(ROOT, "persona.json"), { items: [] });
+              const items = Array.isArray(pdata.items) ? pdata.items : [];
+              const cnt = { P0: 0, P1: 0, P2: 0 };
+              for (const it of items) if (!it.archived) cnt[it.layer] = (cnt[it.layer] || 0) + 1;
+              const mood = readJson(join(ROOT, "mood.json"), { mood: 70, history: [] });
+              let acts = [];
+              try {
+                acts = loadActivities(20).slice(-8).reverse().map((r) => ({
+                  time: new Date(r.at).toLocaleString("zh-CN", { hour12: false }).slice(5, 16),
+                  kind: r.kind,
+                  did: String(r.content || "").slice(0, 160),
+                }));
+              } catch {
+                acts = [];
+              }
+              return json({
+                persona: cnt,
+                items: items.filter((x) => !x.archived).map((x) => ({ layer: x.layer, text: String(x.text || "").slice(0, 200), archived: !!x.archived })),
+                mood,
+                acts,
+              });
+            }
+            if (u.pathname === "/api/sys") {
+              let version = "";
+              try {
+                version = String(readJson(join(HOME, ".dsh/profiles/web/package.json"), {}).dependencies?.["dsh-onebot-bridge"] || "");
+              } catch {
+                version = "";
+              }
+              let pending = 0;
+              try {
+                pending = Array.isArray(state.inbox) ? state.inbox.filter((x) => x.status === "unread").length : 0;
+              } catch {
+                pending = 0;
+              }
+              const keys = ["activeStartHour", "activeEndHour", "followUpSeconds", "followUpMaxTurns", "quoteInGroup", "groupObserve", "stickerMaxCount", "compactThresholdMB", "styleHint"];
+              const cfgView = {};
+              for (const k of keys) cfgView[k] = cfg?.[k];
+              return json({
+                online: !!client.connected,
+                uptime: typeof process.uptime === "function" ? Math.round(process.uptime() / 60) + " 分钟" : "—",
+                version: version || "—",
+                sessions: (() => {
+                  try {
+                    const lines = readFileSync(join(ROOT, "usage.jsonl"), "utf8").trim().split("\n");
+                    return JSON.parse(lines[lines.length - 1]).sessions || 0;
+                  } catch {
+                    return 0;
+                  }
+                })(),
+                pending,
+                cfg: cfgView,
+              });
+            }
+          } catch (err) {
+            return json({ ok: false, error: String(err?.message ?? err) });
+          }
+          res.writeHead(404, { "content-type": "application/json" }).end('{"ok":false}');
+          return;
+        }
+
         if (u.pathname === "/activities") {
           let items = [];
           try {
@@ -431,136 +640,8 @@ export function createWebServer(ctx) {
           return;
         }
 
-        if (u.pathname === "/send" && req.method === "POST") {
-          let body = "";
-          req.on("data", (c) => {
-            body += c;
-            // 放宽到 12MB：发图时 base64 会让 body 变大
-            if (body.length > 12_000_000) req.destroy();
-          });
-          // 注意：要 async —— 图片转码（webp/avif → png）里用了 await import(sharp)
-          req.on("end", async () => {
-            try {
-              const parsedBody = JSON.parse(body || "{}");
-              const t = String(parsedBody.text || "").trim();
-              const from = String(parsedBody.from || "").slice(0, 40);
-
-              // 创造者发来的图片：base64（可带 data:image/png;base64, 前缀）
-              const rawImg = String(parsedBody.image || "");
-              const segs = [];
-              let savedName = "";
-              if (rawImg) {
-                try {
-                  const mm = rawImg.match(/^data:(image\/[a-z0-9.+-]+);base64,(.*)$/i);
-                  const mediaType = mm ? mm[1].toLowerCase() : "image/png";
-                  const b64 = mm ? mm[2] : rawImg;
-                  let buf = Buffer.from(b64, "base64");
-                  if (!buf.length) throw new Error("图片是空的");
-                  if (buf.length > 8 * 1024 * 1024) throw new Error("图片超过 8MB");
-
-                  // webp / avif / bmp：.NET Framework 的 GDI+ 不认，桌面客户端显示不出来。
-                  // 统一转成 png 再存（gif 保留原格式，免得把动图弄没了）。
-                  let ext = mediaType.includes("jpeg") || mediaType.includes("jpg")
-                    ? "jpg"
-                    : mediaType.includes("gif")
-                      ? "gif"
-                      : mediaType.includes("webp")
-                        ? "webp"
-                        : mediaType.includes("avif")
-                          ? "avif"
-                          : mediaType.includes("bmp")
-                            ? "bmp"
-                            : "png";
-                  if (ext === "webp" || ext === "avif" || ext === "bmp") {
-                    try {
-                      const sharpMod = await import(
-                        "/opt/node-v24.22.1-linux-x64/lib/node_modules/@deepseek-ai/dsh/node_modules/sharp/dist/index.mjs"
-                      );
-                      const sharp = sharpMod.default ?? sharpMod;
-                      const pngBuf = await sharp(buf).png().toBuffer();
-                      if (pngBuf && pngBuf.length) {
-                        logger.info?.(
-                          `[onebot] 图片转码 ${ext} → png（${Math.round(buf.length / 1024)} KB → ${Math.round(pngBuf.length / 1024)} KB）`,
-                        );
-                        buf = pngBuf;
-                        ext = "png";
-                      }
-                    } catch (ce) {
-                      logger.warn?.(`[onebot] 图片转码失败（保持原格式）：${ce?.message ?? ce}`);
-                    }
-                  }
-
-                  const dir = join(HOME, ".dsh/onebot-bridge/uploads");
-                  mkdirSync(dir, { recursive: true });
-                  savedName = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
-                  writeFileSync(join(dir, savedName), buf);
-                  // 用本地 HTTP 地址，桥自己的 downloadImage 能拉（它只认 http）
-                  const base = `http://127.0.0.1:${Number(cfg.webuiPort) || 3081}`;
-                  segs.push({
-                    type: "image",
-                    data: {
-                      url: `${base}/uploads/${savedName}?token=${encodeURIComponent(String(cfg.webuiToken || ""))}`,
-                      file: savedName,
-                      summary: String(parsedBody.imageName || "创造者发来的图").slice(0, 60),
-                    },
-                  });
-                  logger.info?.(`[onebot] WebUI 收到图片 ${savedName}（${Math.round(buf.length / 1024)} KB）`);
-                } catch (err) {
-                  res.writeHead(400, { "content-type": "application/json" })
-                    .end(JSON.stringify({ ok: false, reason: `图片存不下：${String(err?.message ?? err).slice(0, 80)}` }));
-                  return;
-                }
-              }
-
-              if (!t && !savedName) {
-                res.writeHead(400).end("empty");
-                return;
-              }
-
-              // 文本段（有字才加）
-              if (t) segs.unshift({ type: "text", data: { text: t } });
-
-              // 走跟 QQ 私聊同一条管道
-              const fakeEv = {
-                post_type: "message",
-                message_type: "private",
-                user_id: Number(cfg.ownerId) || 0,
-                message_id: `webui-${Date.now()}`,
-                time: Math.floor(Date.now() / 1000),
-                sender: { user_id: Number(cfg.ownerId) || 0, nickname: "创造者" },
-                message: segs,
-                raw_message: t || "[图片]",
-                __fromWebUI: true,
-                __fromButton: from || "",
-                // via: "assistant" 表示这条是 AI 助手代创造者发的，不是创造者本人打的
-                __viaAssistant: /^assistant$/i.test(String(parsedBody.via || "")),
-              };
-              // 先把「你发的」记进网页聊天历史。
-              // ⚠️ 必须合并成一条：之前是 webPush(text) + webPush(image) 两次，
-              // 两次的 at 在同一毫秒，客户端的去重逻辑只认第一条，图就被丢了，
-              // 界面上只剩一个空蓝条。
-              try {
-                const isAssistant = /^assistant$/i.test(String(parsedBody.via || ""));
-                webPush({
-                  role: "me",
-                  text: t.slice(0, 500),
-                  ...(savedName ? { image: `/uploads/${savedName}` } : {}),
-                  // via=assistant 时前端/客户端要在气泡上标「助手」——
-                  // 图片消息同样要标，不然分不出是创造者发的还是助手代发的
-                  ...(isAssistant ? { via: "assistant" } : {}),
-                });
-              } catch (err) {
-                logger.warn?.(`[onebot] WebUI 消息未记入历史：${err?.message ?? err}`);
-              }
-              res.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}');
-              setTimeout(() => void client.onEvent(fakeEv).catch(() => {}), 10);
-            } catch {
-              res.writeHead(400).end("bad json");
-            }
-          });
-          return;
-        }
-        res.writeHead(404).end("not found");
+        // 4.3：/send 已删除——看板只读，不再从网页替她说话
+res.writeHead(404).end("not found");
       });
       state.webServer.listen(Number(cfg.webuiPort) || 3081, String(cfg.webuiBind || "127.0.0.1"), () => {
         logger.info?.(

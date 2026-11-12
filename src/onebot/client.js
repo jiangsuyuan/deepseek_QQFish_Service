@@ -481,17 +481,8 @@ class OneBotClient {
         " user=" + uid + " owner=" + owner + " 推=" + (!isPrivateToOther) +
         " fromWebUI=" + !!ev?.__fromWebUI,
       );
-      if (!isPrivateToOther) {
-        // 带上「这条是发到哪儿」：群聊和私聊混在同一条流里，面板上分不出她在跟谁说话
-        const isGroupEv = ev?.message_type === "group";
-        const ch = isGroupEv ? "group" : "private";
-        const peer = String(isGroupEv ? (ev?.group_id ?? "") : (ev?.user_id ?? ""));
-        const rawText = String(text ?? "");
-        for (const p of rawText.split(/\[split\]/i).map((x) => x.trim()).filter(Boolean)) {
-          this.logger?.info?.("[onebot] sendText 推 WebUI：" + p.slice(0, 40));
-          this.onWebReply?.(p, ch, peer);
-        }
-      }
+      // 4.3：不再把她的 QQ 发言镜像到 WebUI —— 看板只读，聊天记录去 /groups 看
+      void isPrivateToOther;
     } catch (err) {
       this.logger?.warn?.("[onebot] sendText 推送异常：" + (err?.message ?? err));
     }
