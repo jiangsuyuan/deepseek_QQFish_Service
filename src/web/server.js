@@ -298,6 +298,20 @@ export function createWebServer(ctx) {
           return;
         }
         // ── 只读看板接口（4.3）──────────────────────────────
+        // 简单 TTL 缓存：看板每 30 秒刷一次，别每次都扫盘
+        const TTL = (() => {
+          const m = new Map();
+          return {
+            get(k, ms, fn) {
+              const hit = m.get(k);
+              if (hit && Date.now() - hit.at < ms) return hit.v;
+              const v = fn();
+              m.set(k, { at: Date.now(), v });
+              return v;
+            },
+          };
+        })();
+
         if (u.pathname.startsWith("/api/")) {
           const json = (obj) => {
             res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }).end(JSON.stringify(obj));
@@ -366,6 +380,37 @@ export function createWebServer(ctx) {
               } catch {
                 last = null;
               }
+              // 昨日同一时段（用于对比）
+              const yday = (() => {
+                const d = new Date(Date.now() - 86400000);
+                const ymd = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+                const hourNow = new Date().getHours();
+                let i3 = 0;
+                let o3 = 0;
+                for (const gid of groupDirs()) {
+                  for (const r of readDay(gid, ymd)) {
+                    const h = new Date(Number(r.t) * 1000).getHours();
+                    if (h > hourNow) continue;
+                    if (r.d === "o") o3 += 1;
+                    else i3 += 1;
+                  }
+                }
+                return { in: i3, out: o3 };
+              })();
+              // 她今天最后说话的时间和群
+              let lastHer = null;
+              const herByGroup = [];
+              for (const gid of groupDirs()) {
+                let n = 0;
+                for (const r of readDay(gid, day)) {
+                  if (r.d !== "o") continue;
+                  n += 1;
+                  const ts = Number(r.t) * 1000;
+                  if (!lastHer || ts > lastHer.at) lastHer = { at: ts, gid };
+                }
+                if (n) herByGroup.push({ gid, n });
+              }
+              herByGroup.sort((a, b) => b.n - a.n);
               const mood = readJson(join(ROOT, "mood.json"), { mood: 70, why: "", updatedAt: 0, history: [] });
               let acts = [];
               try {
@@ -377,9 +422,24 @@ export function createWebServer(ctx) {
               } catch {
                 acts = [];
               }
+              const caps = {
+                "被动回复（@/引用）": true,
+                "群看板观察": cfg.groupObserve !== false,
+                "复读机": true,
+                "活动": cfg.autoActionsEnabled !== false,
+                "说说": cfg.qzoneEnabled !== false,
+                "每小时回顾": cfg.hourlyIntrospect === true,
+                "冷场搭话": cfg.quietTopicEnabled === true,
+                "热群插话": cfg.activeJoinEnabled === true,
+                "连发搭话": false,
+              };
               return json({
+                caps,
                 online: !!client.connected,
                 today: { in: inN, out: outN, groups: activeGroups, hourly },
+                yesterday: yday,
+                lastHer,
+                herByGroup: herByGroup.slice(0, 6),
                 context: { total: Number(last?.total || 0), sessions: Number(last?.sessions || 0) },
                 // 兼容旧页面：4.3.0 之前的 ui.js 还在读 tokens.input
                 // 只要它拿到这个字段就不会抛错，等用户下次刷新自然换成新页面
@@ -391,6 +451,14 @@ export function createWebServer(ctx) {
             }
             if (u.pathname === "/api/groups") {
               const day = todayYmd();
+              const sevenDays = (() => {
+                const days = [];
+                for (let i = 0; i < 7; i += 1) {
+                  const d = new Date(Date.now() - i * 86400000);
+                  days.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`);
+                }
+                return days;
+              })();
               const out = groupDirs().map((gid) => {
                 const rows = readDay(gid, day);
                 let i2 = 0;
@@ -408,7 +476,8 @@ export function createWebServer(ctx) {
                 } catch {
                   name = "";
                 }
-                return { gid, name, in: i2, out: o2, last: lastText };
+                const week = TTL.get("week:" + gid, 60000, () => sevenDays.reduce((a, dd) => a + readDay(gid, dd).length, 0));
+                return { gid, name, in: i2, out: o2, week, last: lastText };
               });
               out.sort((a, b) => b.in - a.in);
               return json(out);
@@ -454,7 +523,22 @@ export function createWebServer(ctx) {
                 tail = ["（读不到 journalctl，可能是权限问题）"];
               }
               const errors = tail.filter((l) => /ReferenceError|TypeError|超时|失败|错误/i.test(l)).slice(-10);
-              return json({ audit, tail, errors });
+              const kinds = {};
+              try {
+                const all = readFileSync(join(ROOT, "audit.log"), "utf8").trim().split("\n").slice(-400);
+                for (const line of all) {
+                  try {
+                    const o = JSON.parse(line);
+                    const k = String(o.kind || "?");
+                    kinds[k] = (kinds[k] || 0) + 1;
+                  } catch {
+                    // 忽略坏行
+                  }
+                }
+              } catch {
+                // 没有审计文件
+              }
+              return json({ audit, tail, errors, kinds });
             }
             if (u.pathname === "/api/her") {
               const pdata = readJson(join(ROOT, "persona.json"), { items: [] });
@@ -474,7 +558,13 @@ export function createWebServer(ctx) {
               }
               const arch = { P0: 0, P1: 0, P2: 0 };
               for (const it of items) if (it.archived) arch[it.layer] = (arch[it.layer] || 0) + 1;
+              const types = {};
+              for (const it of items) if (!it.archived && it.layer === "P2") types[it.type] = (types[it.type] || 0) + 1;
+              const hist = Array.isArray(mood.history) ? mood.history : [];
+              const week = hist.filter((x) => Date.now() - Number(x.at || 0) < 7 * 86400000).map((x) => Number(x.mood) || 0);
               return json({
+                types,
+                moodWeek: week.length ? { n: week.length, min: Math.min(...week), max: Math.max(...week), avg: Math.round(week.reduce((a, b) => a + b, 0) / week.length) } : null,
                 persona: cnt,
                 archived: arch,
                 items: items.filter((x) => !x.archived).map((x) => ({ id: x.id, layer: x.layer, type: x.type, text: String(x.text || "").slice(0, 240) })),
@@ -498,7 +588,18 @@ export function createWebServer(ctx) {
               const keys = ["activeStartHour", "activeEndHour", "followUpSeconds", "followUpMaxTurns", "quoteInGroup", "groupObserve", "stickerMaxCount", "compactThresholdMB", "styleHint"];
               const cfgView = {};
               for (const k of keys) cfgView[k] = cfg?.[k];
+              const caps = {
+                "被动回复（@/引用）": true,
+                "群观察（只记录）": cfg.groupObserve !== false,
+                "复读机": true,
+                "活动": cfg.autoActionsEnabled !== false,
+                "说说": cfg.qzoneEnabled !== false,
+                "每小时回顾（已删）": cfg.hourlyIntrospect === true,
+                "冷场搭话（已删）": cfg.quietTopicEnabled === true,
+                "热群插话（已删）": cfg.activeJoinEnabled === true,
+              };
               return json({
+                caps,
                 online: !!client.connected,
                 uptime: typeof process.uptime === "function" ? Math.round(process.uptime() / 60) + " 分钟" : "—",
                 version: version || "—",

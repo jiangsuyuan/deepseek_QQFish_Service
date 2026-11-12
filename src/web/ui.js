@@ -93,14 +93,22 @@ async function renderHome(){
   const c = s.context || { total: 0, sessions: 0 };
   const m = s.mood || { mood: 70, why: '', updatedAt: 0 };
   const t = s.today || { in: 0, out: 0, groups: 0, hourly: [] };
+  const y = s.yesterday || { in: 0, out: 0 };
+  const delta = (nowV, oldV) => {
+    if (!oldV) return '';
+    const pct = Math.round((nowV - oldV) / oldV * 100);
+    if (!pct) return '';
+    const up = pct > 0;
+    return '<span class="u" style="color:' + (up ? 'var(--ok)' : 'var(--dim)') + '"> ' + (up ? '↑' : '↓') + Math.abs(pct) + '%</span>';
+  };
   hdr.textContent = s.online ? '在线' : '离线';
   hdr.className = 's ' + (s.online ? 'ok' : 'bad');
   const hourly = (t.hourly || []).map(x => x.in);
   const moodColor = m.mood >= 70 ? 'var(--ok)' : m.mood >= 45 ? 'var(--warn)' : 'var(--bad)';
   main.innerHTML = ''
     + '<div class="grid3">'
-    +   '<div class="kpi"><div class="k">今日收到</div><div class="v">'+fmt(t.in)+'</div></div>'
-    +   '<div class="kpi"><div class="k">她说了</div><div class="v">'+fmt(t.out)+'</div></div>'
+    +   '<div class="kpi"><div class="k">今日收到</div><div class="v">'+fmt(t.in)+delta(t.in, y.in)+'</div></div>'
+    +   '<div class="kpi"><div class="k">她说了</div><div class="v">'+fmt(t.out)+delta(t.out, y.out)+'</div></div>'
     +   '<div class="kpi"><div class="k">活跃群</div><div class="v">'+fmt(t.groups)+'</div></div>'
     + '</div>'
     + '<div class="card"><h3>今天的消息</h3><div id="sp1"></div>'
@@ -113,6 +121,11 @@ async function renderHome(){
     +   (s.sessions && s.sessions.length ? '<table>' + s.sessions.map(x =>
           '<tr><td class="mono">'+esc(x.key)+'</td><td class="dim" style="white-space:nowrap">'+fmt(x.total)+'</td></tr>').join('') + '</table>'
         : '<div class="empty">暂无</div>')
+    + '</div>'
+    + '<div class="card"><h3>她今天在哪说话</h3>'
+    +   (s.lastHer ? '<div class="small dim" style="margin-bottom:6px">最后一句：'+esc(ago(s.lastHer.at))+'（群 '+esc(s.lastHer.gid)+'）</div>' : '<div class="empty">今天还没说话</div>')
+    +   ((s.herByGroup||[]).length ? '<table>' + s.herByGroup.map(g =>
+          '<tr><td class="mono">'+esc(g.gid)+'</td><td style="text-align:right" class="ok">'+g.n+' 条</td></tr>').join('') + '</table>' : '')
     + '</div>'
     + '<div class="card"><h3>最近活动</h3>'
     +   (s.activities && s.activities.length ? s.activities.map(a =>
@@ -133,6 +146,7 @@ async function renderGroups(){
         + '<div class="small dim" style="margin-top:3px">'+esc(g.last||'')+'</div></td>'
         + '<td style="width:88px"><div class="small">'+g.in+'</div>'
         + '<div class="bar" style="margin-top:4px"><i style="width:'+Math.round(g.in/total*100)+'%;background:#4da3ff"></i></div></td>'
+        + '<td style="width:52px" class="dim">'+fmt(g.week||0)+'</td>'
         + '<td style="width:44px" class="'+(g.out?'ok':'dim')+'">'+g.out+'</td></tr>').join('') + '</table>'
       : '<div class="empty">今天还没有群消息</div>')
     + '</div><div id="gdetail"></div>';
@@ -153,7 +167,10 @@ async function openGroup(gid){
 
 async function renderLogs(){
   const l = await api('/api/logs');
-  main.innerHTML = '<div class="card"><h3>错误</h3>'
+  const kinds = Object.entries(l.kinds || {}).sort((a,b)=>b[1]-a[1]).slice(0,12);
+  main.innerHTML = '<div class="card"><h3>审计类型（最近 400 条）</h3>'
+    + (kinds.length ? kinds.map(([k,n]) => '<span class="chip">'+esc(k)+' '+n+'</span>').join('') : '<div class="empty">空</div>')
+    + '</div><div class="card"><h3>错误</h3>'
     + (l.errors && l.errors.length ? l.errors.map(x => '<pre class="bad" style="margin-bottom:6px">'+esc(x)+'</pre>').join('') : '<div class="empty">没有错误</div>')
     + '</div>'
     + '<div class="card"><h3>审计</h3>'
@@ -181,6 +198,10 @@ async function renderHer(){
     +   '<div class="fill small dim">'+esc(m.why || '没记为什么')+'<br>'+ago(m.updatedAt)+'</div></div>'
     +   (hist.length ? '<div id="spm"></div>' : '')
     + '</div>'
+    + '<div class="card"><h3>认同层的构成</h3>'
+    +   (h.types ? Object.entries(h.types).sort((a,b)=>b[1]-a[1]).map(([k,n]) => '<span class="chip">'+esc(k)+' '+n+'</span>').join('') : '<div class="empty">空</div>')
+    +   (h.moodWeek ? '<div class="hr"></div><div class="small dim">最近 7 天心情：'+h.moodWeek.n+' 次记录，最低 '+h.moodWeek.min+'、最高 '+h.moodWeek.max+'、平均 '+h.moodWeek.avg+'</div>' : '')
+    + '</div>'
     + layer('P0', 'P0 身份')
     + layer('P1', 'P1 底色')
     + layer('P2', 'P2 认同')
@@ -202,6 +223,9 @@ async function renderSys(){
     + '<tr><td>版本</td><td style="text-align:right" class="mono">'+esc(s.version)+'</td></tr>'
     + '<tr><td>会话</td><td style="text-align:right">'+s.sessions+'</td></tr>'
     + '<tr><td>排队</td><td style="text-align:right">'+s.pending+'</td></tr>'
+    + '</table></div>'
+    + '<div class="card"><h3>能力</h3><table>'
+    + Object.entries(s.caps || {}).map(([k,v]) => '<tr><td>'+esc(k)+'</td><td style="text-align:right" class="'+(v?'ok':'dim')+'">'+(v?'开':'关')+'</td></tr>').join('')
     + '</table></div>'
     + '<div class="card"><h3>配置（只读）</h3><table>'
     + Object.keys(cfg).map(k => '<tr><td class="mono">'+esc(k)+'</td><td class="mono dim" style="text-align:right;word-break:break-all">'+esc(String(cfg[k]).slice(0,90))+'</td></tr>').join('')
