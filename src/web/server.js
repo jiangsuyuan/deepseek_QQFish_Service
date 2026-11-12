@@ -343,10 +343,20 @@ export function createWebServer(ctx) {
               const day = todayYmd();
               let inN = 0;
               let outN = 0;
+              const hourly = Array.from({ length: 24 }, () => ({ in: 0, out: 0 }));
+              let activeGroups = 0;
               for (const gid of groupDirs()) {
-                for (const r of readDay(gid, day)) {
-                  if (r.d === "o") outN += 1;
-                  else inN += 1;
+                const rows = readDay(gid, day);
+                if (rows.length) activeGroups += 1;
+                for (const r of rows) {
+                  const h = new Date(Number(r.t) * 1000).getHours();
+                  if (r.d === "o") {
+                    outN += 1;
+                    if (hourly[h]) hourly[h].out += 1;
+                  } else {
+                    inN += 1;
+                    if (hourly[h]) hourly[h].in += 1;
+                  }
                 }
               }
               let last = null;
@@ -369,7 +379,7 @@ export function createWebServer(ctx) {
               }
               return json({
                 online: !!client.connected,
-                today: { in: inN, out: outN },
+                today: { in: inN, out: outN, groups: activeGroups, hourly },
                 context: { total: Number(last?.total || 0), sessions: Number(last?.sessions || 0) },
                 // 兼容旧页面：4.3.0 之前的 ui.js 还在读 tokens.input
                 // 只要它拿到这个字段就不会抛错，等用户下次刷新自然换成新页面
@@ -462,10 +472,13 @@ export function createWebServer(ctx) {
               } catch {
                 acts = [];
               }
+              const arch = { P0: 0, P1: 0, P2: 0 };
+              for (const it of items) if (it.archived) arch[it.layer] = (arch[it.layer] || 0) + 1;
               return json({
                 persona: cnt,
-                items: items.filter((x) => !x.archived).map((x) => ({ layer: x.layer, text: String(x.text || "").slice(0, 200), archived: !!x.archived })),
-                mood,
+                archived: arch,
+                items: items.filter((x) => !x.archived).map((x) => ({ id: x.id, layer: x.layer, type: x.type, text: String(x.text || "").slice(0, 240) })),
+                mood: { mood: Number(mood.mood || 70), why: String(mood.why || ""), updatedAt: Number(mood.updatedAt || 0), history: (mood.history || []).slice(-48) },
                 acts,
               });
             }
