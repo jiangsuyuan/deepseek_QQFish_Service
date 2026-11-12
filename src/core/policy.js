@@ -99,17 +99,10 @@ export function createPolicy(ctx) {
       audit({ kind: "token_alert", tokens: st.totalTokens });
     }
 
-  function pickActivityKind() {
-      const total = ACTIVITY_KINDS.reduce((a, b) => a + b.w, 0);
-      let r = Math.random() * total;
-      for (const k of ACTIVITY_KINDS) {
-        r -= k.w;
-        if (r <= 0) return k.id;
-      }
-      return "think";
-    }
+  // 4.5.2：pickActivityKind（加权抽签）已删——从来没人调用，活动类型由她自己定
 
-  return { isOwner, allowRate, checkTokenBudget, activeHoursOk, selfActivityHoursOk, searchRateOk, pickActivityKind, moodContext };
+
+  return { isOwner, allowRate, checkTokenBudget, activeHoursOk, selfActivityHoursOk, searchRateOk, moodContext };
 }
 
 export {  };

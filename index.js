@@ -367,7 +367,6 @@ export function apply(ctx, _pluginConfig) {
   function activeHoursOk(...a) { return __init_createPolicy().activeHoursOk(...a); }
   function selfActivityHoursOk(...a) { return __init_createPolicy().selfActivityHoursOk(...a); }
   function searchRateOk(...a) { return __init_createPolicy().searchRateOk(...a); }
-  function pickActivityKind(...a) { return __init_createPolicy().pickActivityKind(...a); }
   function moodContext(...a) { return __init_createPolicy().moodContext(...a); }
   let __mem_createMiscFeature = null;
   function __init_createMiscFeature() { return (__mem_createMiscFeature ??= createMiscFeature({ HOME, audit, cfg, client, downloadImage, existsSync, join, logger, mkdirSync, people, readFileSync, runThinkingCycleInner, sessions, state, writeFileSync, pluginCtx: ctx })); }
@@ -1309,15 +1308,15 @@ const base = ctx.logger ?? {};
   // 五种活动各自沉淀到不同地方，长期下来塑造核心记忆和性格
   
   const ACTIVITY_KINDS = [
-    { id: "explore", w: 20 },
-    { id: "think", w: 14 },
-    { id: "write", w: 12 },
-    { id: "recall", w: 11 },
-    { id: "dream", w: 7 },
-    { id: "play", w: 8 },
-    { id: "read", w: 11 },
-    { id: "study", w: 7 },
-    { id: "watch_groups", w: 10 },   // 看看群——看完想说什么就说
+    { id: "explore" },
+    { id: "think" },
+    { id: "write" },
+    { id: "recall" },
+    { id: "dream" },
+    { id: "play" },
+    { id: "read" },
+    { id: "study" },
+    { id: "watch_groups" },   // 看看群——看完想说什么就说
   ];
 
   // ── 思考 → 行动 → 反思：三段式 ──

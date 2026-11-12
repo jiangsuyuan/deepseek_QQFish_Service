@@ -1662,7 +1662,6 @@ export async function registerToolbox(app) {
                   activities: ACTIVITY_KINDS.map((k) => ({
                     id: k.id,
                     what: actNames[k.id] || k.id,
-                    weight: `${k.w}%`,
                   })),
                   tools: registered.sort(),
                   can: [
