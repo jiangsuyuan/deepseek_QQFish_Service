@@ -676,10 +676,16 @@ export function createEventHandler(app) {
     }
 
     const who = people.describe(ev.user_id);
-    // 只 @ 没说话：把前面几条聊天记录带上，别空着回
+    // @ 了但几乎没说话（空、或者「在吗」「这个呢」这种两三个字）：
+    // 把前面几条聊天记录带上，别空着回。
+    // 判据用去掉空白和标点后的长度——「@你 在吗」和「@你」在语义上是一回事，
+    // 信息量都落在看不到的上下文里。（她提的 patch-20261106-010329）
+    const atBare = String(parsed.text || "").replace(/[\s\p{P}\p{S}]/gu, "");
     let emptyAtNote = "";
-    if (!String(parsed.text || "").trim() && parsed.hasAt) {
-      emptyAtNote = "[对方只 @ 了你，没打字。]\n";
+    if (atBare.length <= 3 && parsed.hasAt) {
+      emptyAtNote = atBare
+        ? `[对方 @ 了你，只说了「${String(parsed.text || "").trim().slice(0, 20)}」，下文在聊天记录里。]\n`
+        : "[对方只 @ 了你，没打字。]\n";
       if (ev.message_type === "group") {
         try {
           const hist = await client.call(
