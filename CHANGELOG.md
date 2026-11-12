@@ -1,5 +1,22 @@
 # 更新日志
 
+## 4.3.2 · 2026-11-12
+
+修看板白屏：`Cannot read properties of undefined (reading 'input')`。
+
+### 原因
+
+4.3.0 把 `/api/stats` 的 `tokens` 字段换成了 `context`，
+但 `ui.js` 里那张"今天 token"卡片没换掉——它还在读 `s.tokens.input`，
+`s.tokens` 已经是 undefined，整页就停在报错。
+
+### 修复
+
+```
+卡片改成「当前上下文合计」，读 s.context.total / s.context.sessions
+再加一层兜底：context / mood 缺失时给默认值，不让整页崩
+```
+
 ## 4.3.0 · 2026-11-12
 
 WebUI 从"第二个聊天窗"改成**只读看板**。

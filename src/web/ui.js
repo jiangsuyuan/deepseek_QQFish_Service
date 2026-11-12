@@ -65,6 +65,8 @@ function ago(ts){ if(!ts) return '—'; const d=(Date.now()-ts)/1000; if(d<60) r
 
 async function renderHome(){
   const s = await api('/api/stats');
+  if(!s.context) s.context = { total: 0, sessions: 0 };
+  if(!s.mood) s.mood = { mood: 70, why: '', updatedAt: 0 };
   hdr.textContent = s.online ? '在线' : '离线';
   hdr.className = 's ' + (s.online ? 'ok' : 'bad');
   main.innerHTML = \`
@@ -73,9 +75,9 @@ async function renderHome(){
       <div class="card"><div class="k">她说了</div><div class="v">\${fmt(s.today.out)}</div></div>
     </div>
     <div class="card" style="margin-top:10px">
-      <div class="k">今天 token（估算）</div>
-      <div class="v">\${fmt(s.tokens.input + s.tokens.cache + s.tokens.output)}</div>
-      <div class="dim" style="font-size:12px">输入 \${fmt(s.tokens.input)} ｜ 缓存 \${fmt(s.tokens.cache)} ｜ 输出 \${fmt(s.tokens.output)}</div>
+      <div class="k">当前上下文合计</div>
+      <div class="v">\${fmt(s.context.total)}</div>
+      <div class="dim" style="font-size:12px">\${s.context.sessions} 个会话 · 每轮都要重读这么多</div>
     </div>
     <div class="card">
       <div class="k">会话上下文</div>
