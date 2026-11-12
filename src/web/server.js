@@ -482,6 +482,15 @@ export function createWebServer(ctx) {
                 online: !!client.connected,
                 today: { in: inN, out: outN, groups: activeGroups, hourly },
                 yesterday: yday,
+                nextActivity: (() => {
+                  try {
+                    const st2 = JSON.parse(readFileSync(join(ROOT, "self-state.json"), "utf8"));
+                    const at = Number(st2?.selfActivityNextAt || 0);
+                    return at ? { at, kind: String(st2?.selfActivityKind || ""), note: String(st2?.selfActivityNote || "").slice(0, 60) } : null;
+                  } catch {
+                    return null;
+                  }
+                })(),
                 lastHer,
                 herByGroup: herByGroup.slice(0, 6),
                 context: { total: Number(last?.total || 0), sessions: Number(last?.sessions || 0) },

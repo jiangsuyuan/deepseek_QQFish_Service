@@ -115,6 +115,7 @@ function delta(nowV, oldV){
 
 async function renderHome(){
   const s = await api('/api/stats');
+  const bal = await api('/api/balance').catch(() => null);
   const c = s.context || { total: 0, sessions: 0 };
   const m = s.mood || { mood: 70, why: '', updatedAt: 0 };
   const t = s.today || { in: 0, out: 0, groups: 0, hourly: [] };
@@ -132,6 +133,12 @@ async function renderHome(){
     + '<div class="card"><h3>消息走势</h3>'
     +   '<div class="chips" id="rchips"><b data-r="day" class="on">今天</b><b data-r="week">一周</b><b data-r="month">一月</b></div>'
     +   '<div id="sp1"></div><div class="small dim" id="sphint" style="margin-top:4px">每小时收到的条数</div></div>'
+    + '<div class="grid2">'
+    +   '<div class="kpi"><div class="k">余额</div><div class="v">'+(bal && bal.ok ? '¥'+Number(bal.balance).toFixed(2) : '—')+'</div>'
+    +     '<div class="k">'+(bal && bal.ok ? (bal.balance > 10 ? '够用' : '快见底') : '查不到')+'</div></div>'
+    +   '<div class="kpi"><div class="k">下次活动</div><div class="v">'+(s.nextActivity && s.nextActivity.at ? hm(s.nextActivity.at).slice(6) : '—')+'</div>'
+    +     '<div class="k">'+(s.nextActivity && s.nextActivity.at ? (Date.now() >= s.nextActivity.at ? '已到点，等触发' : '还有 '+Math.max(1, Math.round((s.nextActivity.at - Date.now())/60000))+' 分钟') : '没排')+'</div></div>'
+    + '</div>'
     + '<div class="grid2">'
     +   '<div class="kpi"><div class="k">上下文合计</div><div class="v">'+fmt(c.total)+'<span class="u"> · '+c.sessions+' 会话</span></div></div>'
     +   '<div class="kpi"><div class="k">心情</div><div class="v" style="color:'+moodColor+'">'+Math.round(m.mood)+'<span class="u"> /100</span></div></div>'
