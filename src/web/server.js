@@ -978,9 +978,6 @@ export function createWebServer(ctx) {
                 "复读机": true,
                 "活动": cfg.autoActionsEnabled !== false,
                 "说说": cfg.qzoneEnabled !== false,
-                "每小时回顾（已删）": cfg.hourlyIntrospect === true,
-                "冷场搭话（已删）": cfg.quietTopicEnabled === true,
-                "热群插话（已删）": cfg.activeJoinEnabled === true,
               };
               return json({
                 caps,

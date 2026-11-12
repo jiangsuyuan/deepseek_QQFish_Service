@@ -59,6 +59,10 @@ pre{white-space:pre-wrap;word-break:break-all;font-family:ui-monospace,Menlo,mon
 .step3 .n{font-size:11px;color:var(--dim);text-align:center;padding-top:3px}
 .step3 .b{background:var(--card2);border-radius:10px;padding:8px;white-space:pre-wrap;word-break:break-word}
 .step3 .lbl{font-size:10px;color:var(--dim);margin-bottom:2px}
+.tile{background:var(--card2);border-radius:12px;padding:14px 12px;display:flex;align-items:baseline;justify-content:space-between}
+.tile .tn{font-size:14px}
+.tile .tc{font-size:20px;font-weight:600;color:var(--acc);font-variant-numeric:tabular-nums}
+.back{color:var(--acc);font-weight:500;padding:4px 2px}
 .gridimg{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
 .gridimg figure{margin:0;background:var(--card2);border-radius:10px;overflow:hidden}
 .gridimg img{width:100%;aspect-ratio:1;object-fit:cover;display:block}
@@ -235,10 +239,34 @@ async function renderHer(){
   }
 }
 
+const ACT_ZH = { explore:'探索', read:'读书', think:'思考', write:'写东西', play:'玩', recall:'回忆', dream:'憧憬', study:'研究', watch_groups:'看群' };
+const TOOL_ZH = {
+  qq_send:'发消息', reply_to:'回复', at_person:'@人', look_image:'看图', draw_image:'画图', draw_svg:'画矢量图',
+  save_sticker:'存表情', send_sticker:'发表情', list_stickers:'看表情库', search_messages:'搜聊天记录',
+  read_context:'看上下文', read_person:'看某人', read_chat_with:'看和某人的对话', read_pdf:'读 PDF', read_page:'读网页',
+  web_search:'上网搜', hot_news:'看热榜', zhihu_daily:'看知乎日报', remember:'记东西', memory:'查记忆', recall:'回忆',
+  remember_fact:'记事实', remember_self:'记自我', revise_self:'改自我', forget_self:'忘掉', my_memory:'看我的记忆',
+  my_digest:'看日记', my_wants:'看想做的', note_want:'记想做', resolve_want:'划掉想做', drop_want:'删想做',
+  write_notebook:'写本子', read_notebook:'翻本子', list_notes:'看文件区', files:'管文件', note_file:'建文件',
+  my_status:'看状态', my_balance:'看余额', my_activities:'看活动', my_adventures:'看走过的路', my_thoughts:'看想法',
+  my_schedule:'看日程', my_source:'看源码', read_source:'读源码', propose_patch:'提改动申请', my_patch_proposals:'看改动申请',
+  patch_guide:'看申请写法', exec_sandbox:'跑沙箱', my_capabilities:'看能力', my_changelog:'看更新日志', my_context:'看上下文用量',
+  my_outages:'看掉线', group_activity:'看群活跃', group_patrol:'巡群', group_recap:'群小结', group_impressions:'看群印象',
+  handle_request:'处理申请', manage_group:'管群', notify_owner:'提醒主人', set_reminder:'设提醒', run_activity:'开始活动',
+  assistant_channel:'助手通道', feel:'记心情', my_watchlist:'看关注', watch_topic:'关注话题', unwatch_topic:'取消关注',
+  list_requests:'看申请', add_webui_button:'加按钮', render_page:'做网页', list_requests:'看申请', search_web:'上网搜',
+};
+const REC_GROUPS = [
+  ['facts','事实'],['people','人物'],['views','想法'],['wants','想做的'],
+  ['plans','日程'],['explore','探索'],['stickers','表情包'],['files','文件'],
+  ['assistant','助手'],['proposals','改动'],['digest','日记'],
+];
 let recTab = 'facts';
+let recOpen = false;
 async function renderRecords(){
-  const chips = [['facts','事实'],['people','人物'],['views','想法'],['wants','想做的'],['plans','日程'],['explore','探索'],['stickers','表情包'],['files','文件'],['assistant','助手'],['proposals','改动'],['digest','日记']];
   const d = await api('/api/records?part=' + recTab);
+  const d2 = recOpen ? { inbox: [], outbox: [] } : await api('/api/assistant').catch(() => ({ inbox: [], outbox: [] }));
+  const d3 = recOpen ? { total: 0 } : await api('/api/proposals').catch(() => ({ total: 0 }));
   const items = d.items || [];
   let body = '';
   if (recTab === 'facts') {
@@ -286,7 +314,9 @@ async function renderRecords(){
   } else if (recTab === 'assistant') {
     const a2 = await api('/api/assistant');
     const row = (m, mine) => '<div class="msg '+(mine?'me':'')+'"><div class="who">'+esc(m.from||'她')+'<br><span class="dim" style="font-size:10px">'+ago(m.at)+'</span></div><div class="tx">'+esc(m.text)+'</div></div>';
-    body = '<div class="card"><h3>她收到的（创造者 → 她）</h3>'
+    body = '<div class="card"><h3>这是什么</h3><div class="small dim">你和她的专用通道：不走 QQ、不进群。'
+      + '你写一句，她 5 秒内会看到并回一句；她的回话落在这里。</div></div>'
+      + '<div class="card"><h3>她收到的（你 → 她）</h3>'
       + ((a2.inbox||[]).length ? a2.inbox.slice().reverse().map(m => row(m,false)).join('') : '<div class="empty">还没有留言</div>')
       + '</div><div class="card"><h3>她回的（她 → 创造者）</h3>'
       + ((a2.outbox||[]).length ? a2.outbox.slice().reverse().map(m => row(m,true)).join('') : '<div class="empty">她还没回过</div>')
@@ -303,19 +333,35 @@ async function renderRecords(){
   } else if (recTab === 'digest') {
     body = items.length ? items.map(x => '<div class="card"><h3>'+esc(hm(x.to))+'</h3><div class="small">'+esc(x.text)+'</div></div>').join('') : '<div class="empty">还没有日记</div>';
   }
-  main.innerHTML = '<div class="chips">' + chips.map(([k,t]) =>
-    '<b data-rec="'+k+'" class="'+(recTab===k?'on':'')+'">'+t+'</b>').join('') + '</div>' + body;
-  document.querySelectorAll('[data-rec]').forEach(el => el.onclick = () => { recTab = el.dataset.rec; renderRecords(); });
+  // 入口网格：先看有哪几类，点一个进来看内容（不再横向滑动）
+  if (!recOpen) {
+    const counts = {
+      facts: d.total || 0, people: d.total || 0, views: d.total || 0, wants: d.total || 0,
+      plans: d.total || 0, explore: d.total || 0, stickers: d.total || 0,
+      files: (d.desk||[]).length + (d.art||[]).length + (d.code||[]).length + (d.pages||[]).length,
+      assistant: ((d2.inbox||[]).length + (d2.outbox||[]).length), proposals: d3.total || 0, digest: d.total || 0,
+    };
+    main.innerHTML = '<div class="grid2">' + REC_GROUPS.map(([k,t]) =>
+      '<div class="tile" data-rec="'+k+'"><div class="tn">'+t+'</div><div class="tc">'+(counts[k]||0)+'</div></div>').join('') + '</div>';
+    document.querySelectorAll('[data-rec]').forEach(el => el.onclick = () => { recTab = el.dataset.rec; recOpen = true; renderRecords(); });
+    return;
+  }
+  main.innerHTML = '<div class="rowline" style="margin-bottom:2px"><b class="back" id="recback">‹ 返回</b>'
+    + '<span class="fill"></span><b class="small dim">'+ (REC_GROUPS.find(x=>x[0]===recTab)||['',''])[1] +'</b></div>' + body;
+  const bk = document.getElementById('recback');
+  if (bk) bk.onclick = () => { recOpen = false; recTab = 'facts'; renderRecords(); };
+  return;
+document.querySelectorAll('[data-rec]').forEach(el => el.onclick = () => { recTab = el.dataset.rec; renderRecords(); });
 }
 
 async function capsBlock(){
   const c = await api('/api/caps');
   const acts = (c.activities||[]).filter(x => x.total > 0);
   return '<div class="card"><h3>她能做的活动</h3><table><tr><th>活动</th><th>今天</th><th>7天</th><th>总</th></tr>'
-    + acts.map(x => '<tr><td>'+esc(x.kind)+'</td><td>'+x.today+'</td><td>'+x.week+'</td><td class="dim">'+x.total+'</td></tr>').join('')
+    + acts.map(x => '<tr><td>'+esc(ACT_ZH[x.kind]||x.kind)+'<span class="dim" style="font-size:10px"> '+esc(x.kind)+'</span></td><td>'+x.today+'</td><td>'+x.week+'</td><td class="dim">'+x.total+'</td></tr>').join('')
     + '</table></div>'
     + '<div class="card"><h3>工具（'+((c.tools||[]).length)+' 个）</h3>'
-    + (c.tools||[]).map(t => '<span class="chip">'+esc(t)+'</span>').join('')
+    + (c.tools||[]).map(t => '<span class="chip">'+esc(TOOL_ZH[t]||t)+'<span class="dim" style="font-size:9px"> '+esc(t)+'</span></span>').join('')
     + '</div>';
 }
 async function usageBlock(){
@@ -354,7 +400,7 @@ async function renderSys(){
     + await capsBlock()
     + usageBlock()
     + '<div class="card"><h3>能力开关</h3><table>'
-    + Object.entries(s.caps || {}).map(([k,v]) => '<tr><td>'+esc(k)+'</td><td style="text-align:right" class="'+(v?'ok':'dim')+'">'+(v?'开':'关')+'</td></tr>').join('')
+    + Object.entries(s.caps || {}).filter(([k]) => !k.includes('已删')).map(([k,v]) => '<tr><td>'+esc(k)+'</td><td style="text-align:right" class="'+(v?'ok':'dim')+'">'+(v?'开':'关')+'</td></tr>').join('')
     + '</table></div>'
     + '<div class="card"><h3>审计类型</h3>'
     + (kinds.length ? kinds.map(([k,n]) => '<span class="chip">'+esc(k)+' '+n+'</span>').join('') : '<div class="empty">空</div>')

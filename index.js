@@ -56,7 +56,8 @@ import { cleanQzone, parrotOf, extractReply } from "./src/util/misc.js";
 import { OneBotClient } from "./src/onebot/client.js";
 import { SessionManager } from "./src/sessions/manager.js";
 import { textOverlaps, parseDuration, timeContext, todayKey, extractRealInbound, makeEvent, eventTarget, WAKE_KEY } from "./src/util/misc.js";
-import { helpText, renderRecall, handleOwnerNatural, recentDialog } from "./src/features/help.js";
+
+import { unreadInbox, markSeen as markAssistantSeen, reply as assistantReply } from "./src/features/assistant-channel.js";import { helpText, renderRecall, handleOwnerNatural, recentDialog } from "./src/features/help.js";
 import { listSessionFiles, findSessionFile } from "./src/util/session-files.js";
 import { webHtml } from "./src/web/ui.js";
 import { parseReminderTime } from "./src/util/time.js";
@@ -1395,6 +1396,35 @@ const base = ctx.logger ?? {};
   registerMediaTools({ cfg, client, logger, sessions, state, pluginCtx: ctx });
   registerChatTools({ cfg, client, logger, pushLen, sessions, state, pluginCtx: ctx });
   registerMemoryTools({ cfg, logger, recallSearch, pluginCtx: ctx });
+  // ── 助手通道：实时 ──
+  // 创造者（或替他跑活的 agent）往 inbox.jsonl 写一行，这里 5 秒内把她叫醒回一句。
+  // 不走 QQ、不进群，回的内容写进 outbox.jsonl。
+  let assistantBusy = false;
+  setInterval(async () => {
+    if (assistantBusy) return;
+    try {
+      if (state.state === "busy") return;
+      const un = unreadInbox();
+      if (!un.length) return;
+      assistantBusy = true;
+      markAssistantSeen(un.map((m) => m.id));
+      const lines = un.map((m) => `· ${m.from}：${String(m.text || "").slice(0, 800)}`).join("\n");
+      const prompt =
+        "（创造者通过助手通道给你留了话。这条通道不进 QQ、不进群，你直接回他就行。）\n\n" +
+        lines +
+        "\n\n用你自己的话回一两句（可以直接说他问的事、也可以说你在忙什么）。不要发到任何群里。";
+      const out = String((await sessions.runSilent("assistant", prompt)) ?? "").trim();
+      if (out) {
+        assistantReply(out);
+        logger.info?.("[onebot] 助手通道：已回复");
+      }
+    } catch (err) {
+      logger.warn?.("[onebot] 助手通道处理失败：" + (err?.message ?? err));
+    } finally {
+      assistantBusy = false;
+    }
+  }, 5000);
+
   startTimers({ ACTIVITY_KINDS, EXPLORE_LOG, HEALTH_PATH, HOME, INBOUND_TEXT_MAX, NET_DECAY, NET_MAX_DEPTH, NET_MIN_W, NET_VISIT_CAP, OUTAGE_PATH, QZONE_PLAN, RUNTIME_PATH, SELF_ACTIVITY_KEY, SELF_HISTORY_PATH, SELF_MODEL_PATH, TOOL_LOG_SKIP, WEBHIST_PATH, activeHoursOk, audit, auditEnabled, cfg, checkReminders, checkTokenBudget, chmodSync, client, copyFileSync, createWebServer, entryLastTopic, existsSync, fireDuePlan, flushInbox, health, hourlyIntrospect, inQuietHours, join, loadActivities, loadSelfModel, loadWebHistory, logger, maybeCompactAll, maybeQzone, memSeen, mkdirSync, myMsgIds, myMsgOrder, net, nextQzoneTick, nextSelfPlan, noteMyMessage, pendingWhileBooting, pickTarget, pollFriendRequests, pollMissedMentions, qzoneLog, readFileSync, recentIds, refreshQqOnline, rotateAudit, runThinkingCycle, saveSelfModel, scheduleDailyBrief, scheduleDiary, scheduleMorningCatchup, scheduleNextSelfActivity, scheduleProactive, seenState, sessions, sleep, snapshotRuntime, statSync, state, unlinkSync, webClients, webHistory, webPush, webStart, pluginCtx: ctx });
   // 只读统计：每 5 分钟采一次上下文用量与构成（system / tools / messages）
   const usageStats = createUsageStats({ ctx, sessions, logger });
