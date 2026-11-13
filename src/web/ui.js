@@ -459,9 +459,9 @@ async function renderRecords(){
         + '</table></div>';
     };
     body = group('桌面（她写下的文件）', d.desk, '她还什么都没往桌上放')
-      + group('她画的', d.art, '还没画过')
+      + group('她画的图', d.art, '还没画过')
       + group('她写的代码', d.code, '还没写过代码')
-      + group('她做的页面', d.pages, '还没做过');
+      + group('她做的页面', d.pages, '还没做过网页');
   } else if (recTab === 'assistant') {
     const a2 = await api('/api/assistant');
     const thread = a2.thread || [];

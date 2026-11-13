@@ -962,11 +962,14 @@ export function createWebServer(ctx) {
                 }
                 let pagesN = 0;
                 let codeN = 0;
+                let pageImgN = 0;
                 try {
-                  // 页面目录里也放她生成的图：全都算她的产出，和「文件」页口径一致
-                  pagesN = readdirSync(join(ROOT, "workspace/pages")).filter((f) => !f.startsWith(".")).length;
+                  const pf = readdirSync(join(ROOT, "workspace/pages")).filter((f) => !f.startsWith("."));
+                  pagesN = pf.filter((f) => /\.(html?|md)$/i.test(f)).length;
+                  pageImgN = pf.filter((f) => /\.(png|jpe?g|gif|webp)$/i.test(f)).length;
                 } catch {
                   pagesN = 0;
+                  pageImgN = 0;
                 }
                 try {
                   codeN = readdirSync(join(ROOT, "workspace")).filter((f) => /\.(js|mjs|py|sh|css)$/i.test(f)).length;
@@ -1024,7 +1027,7 @@ export function createWebServer(ctx) {
                     plans: countLines("self-plan.jsonl"),
                     explore: countLines("explore-log.jsonl"),
                     stickers: stickerN,
-                    files: deskN + artN + codeN + pagesN,
+                    files: deskN + artN + pageImgN + codeN + pagesN,
                     assistant: asIn + asOut,
                     proposals: propPending,
                     proposalsHidden: propAll - propPending,
@@ -1124,12 +1127,15 @@ export function createWebServer(ctx) {
                 } catch {
                   // 没有
                 }
+                const pageAll = mk(join(ROOT, "workspace/pages"), "page");
+                const pages = pageAll.filter((x) => x.kind === "html" || x.kind === "md");
+                const images = pageAll.filter((x) => x.kind === "img");
                 return json({
                   part,
                   desk: mk(join(ROOT, "desk"), "desk"),
-                  art,
+                  art: art.concat(images),
                   code,
-                  pages: mk(join(ROOT, "workspace/pages"), "page"),
+                  pages,
                 });
               }
               if (part === "explore") {
