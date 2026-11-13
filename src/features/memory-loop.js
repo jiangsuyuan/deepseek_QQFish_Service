@@ -131,7 +131,7 @@ export function createMemoryLoop(ctx) {
       }
     }
 
-  async function thinkPhase(forceAction = null) {
+  async function thinkPhase(forceAction = null, planNote = "") {
       const runKey = SELF_ACTIVITY_KEY;
       const sm = selfModelText();
       const core = loadCore().slice(-12);
@@ -181,6 +181,7 @@ export function createMemoryLoop(ctx) {
         "今天这段是你自己的时间，不是交作业。挑一件你**想做**的，\n" +
         "不是为了「有用」，也不是为了「显得勤奋」。\n" +
         "做完了要是觉得没意思，下次换别的；要是做着做着觉得好玩，那就多玩一会儿。\n" +
+        (planNote ? `（你自己排的：${String(planNote).slice(0, 200)}）\n` : "") +
         sameKindNote +
         (forceAction
           ? `（这次外面指定了要做：${forceAction}。你想想具体想做什么，action 就填 ${forceAction}。）\n`

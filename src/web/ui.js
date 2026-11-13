@@ -93,10 +93,27 @@ const ago = (ts) => { if (!ts) return '—'; const d = (Date.now()-ts)/1000; if 
 const hm = (ts) => new Date(ts).toLocaleString('zh-CN', { hour12: false }).slice(5, 16);
 async function api(p){
   const url = p + (p.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(TOKEN);
-  const r = await fetch(url, { headers: { 'x-webui-token': TOKEN } });
-  if (r.status === 429) throw new Error('被限流锁定了：等一会儿，或重启 dsh-web');
-  if (!r.ok) throw new Error(p + ' → ' + r.status);
-  return r.json();
+  const once = async () => {
+    const r = await fetch(url, { headers: { 'x-webui-token': TOKEN }, cache: 'no-store' });
+    if (r.status === 429) throw new Error('被限流锁定了：等一会儿，或重启 dsh-web');
+    if (!r.ok) throw new Error(p + ' → ' + r.status);
+    return r.json();
+  };
+  try {
+    return await once();
+  } catch (e) {
+    // 隧道抖动/切网时 fetch 会直接抛「Failed to fetch」，隔一下再试一次
+    await new Promise((r) => setTimeout(r, 800));
+    try {
+      return await once();
+    } catch (e2) {
+      const msg = String(e2 && e2.message || e2);
+      if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('load failed')) {
+        throw new Error('连不上服务器：点「重连」或下拉刷新再试');
+      }
+      throw e2;
+    }
+  }
 }
 function spark(el, values, color){
   const max = Math.max(1, ...values);

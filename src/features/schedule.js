@@ -1,7 +1,7 @@
 // 定时任务：提醒、主动分享、日报、日记、反思。
 
 export function createSchedule(app) {
-  const { activeHoursOk, audit, cfg, claimDueSelfPlan, client, enqueueEvent, entryLastTopic, fetchHotNews, findSessionFile, flushSeen, inQuietHours, loadReminders, logger, makeEvent, markSeen, maybeAdjustSelfModel, openWindow, patchSelfState, pickTarget, recentDialog, renderStats, saveReminders, selfViews, sessions, statSync, state, summarizeDay } = app;
+  const { activeHoursOk, audit, cfg, claimDueSelfPlan, client, enqueueEvent, runThinkingCycle, entryLastTopic, fetchHotNews, findSessionFile, flushSeen, inQuietHours, loadReminders, logger, makeEvent, markSeen, maybeAdjustSelfModel, openWindow, patchSelfState, pickTarget, recentDialog, renderStats, saveReminders, selfViews, sessions, statSync, state, summarizeDay } = app;
   const ctx = app.pluginCtx;
   async function checkReminders() {
       if (!client.connected && state.reminders.some((r) => !r.done)) {
@@ -316,16 +316,33 @@ export function createSchedule(app) {
           selfActivityKind: due.kind || "",
           selfActivityNote: due.note || "",
         });
-        enqueueEvent(
-          makeEvent("activity_due", { type: "timer" }, {
-            kind: String(due.kind || ""),
-            note: String(due.note || ""),
-            planId: String(due.id),
-          }),
-        );
         logger.info?.(
           `[onebot] 日程到点：${due.id} ${due.kind || ""} ${String(due.note || "").slice(0, 30)}`,
         );
+        // 4.10：到点就跑完整的三段式（想 → 做 → 回看），这样活动才真的被记下来。
+        // 以前这里只是塞一个 activity_due 事件，等于让这一轮退化成普通对话：
+        // 她会动手，但 activities.jsonl 里什么都不留，看板上就“没有活动”。
+        try {
+          if (typeof runThinkingCycle === "function") {
+            void runThinkingCycle({
+              forceAction: String(due.kind || "") || null,
+              byOwner: false,
+              note: String(due.note || ""),
+            }).catch((err) => {
+              logger.warn?.("[onebot] 到点活动执行失败：" + (err?.message ?? err));
+            });
+          } else {
+            enqueueEvent(
+              makeEvent("activity_due", { type: "timer" }, {
+                kind: String(due.kind || ""),
+                note: String(due.note || ""),
+                planId: String(due.id),
+              }),
+            );
+          }
+        } catch (err) {
+          logger.warn?.("[onebot] 到点活动启动失败：" + (err?.message ?? err));
+        }
         return true;
       } catch (err) {
         logger.debug?.("[onebot] 日程检查失败：" + (err?.message ?? err));

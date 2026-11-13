@@ -526,7 +526,7 @@ export function apply(ctx, _pluginConfig) {
   function wakeNow(...a) { return __init_createChatFeature().wakeNow(...a); }
   function checkQuietGroups(...a) { return __init_createChatFeature().checkQuietGroups(...a); }
   let __mem_createSchedule = null;
-  function __init_createSchedule() { return (__mem_createSchedule ??= createSchedule({ activeHoursOk, audit, cfg, claimDueSelfPlan, client, ctx, enqueueEvent, entryLastTopic, fetchHotNews, findSessionFile, flushSeen, inQuietHours, loadReminders, logger, makeEvent, markSeen, maybeAdjustSelfModel, openWindow, patchSelfState, pickTarget, recentDialog, renderStats, saveReminders, selfViews, sessions, statSync, state, summarizeDay, pluginCtx: ctx })); }
+  function __init_createSchedule() { return (__mem_createSchedule ??= createSchedule({ activeHoursOk, audit, cfg, claimDueSelfPlan, client, ctx, enqueueEvent, runThinkingCycle, entryLastTopic, fetchHotNews, findSessionFile, flushSeen, inQuietHours, loadReminders, logger, makeEvent, markSeen, maybeAdjustSelfModel, openWindow, patchSelfState, pickTarget, recentDialog, renderStats, saveReminders, selfViews, sessions, statSync, state, summarizeDay, pluginCtx: ctx })); }
   function checkReminders(...a) { return __init_createSchedule().checkReminders(...a); }
   function scheduleProactive(...a) { return __init_createSchedule().scheduleProactive(...a); }
   function scheduleDailyBrief(...a) { return __init_createSchedule().scheduleDailyBrief(...a); }

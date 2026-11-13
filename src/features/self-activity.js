@@ -103,7 +103,7 @@ export function createSelfActivity(ctx) {
       let plan = null;
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
-          plan = await thinkPhase(opts.forceAction || null);
+          plan = await thinkPhase(opts.forceAction || null, opts.note || "");
           if (plan) break;
         } catch (err) {
           logger.warn?.(`[onebot] 思考阶段失败：${err?.message ?? err}`);
