@@ -563,7 +563,7 @@ export function apply(ctx, _pluginConfig) {
   function handleOwnerInviteReply(...a) { return __init_createGroupAdmin().handleOwnerInviteReply(...a); }
   function handleOwnerRemember(...a) { return __init_createGroupAdmin().handleOwnerRemember(...a); }
   let __mem_createWebServer = null;
-  function __init_createWebServer() { return (__mem_createWebServer ??= createWebServer({ WEBHIST_PATH, cfg, client, fireDuePlan, loadActivities, logger, state, webClients, webHistory })); }
+  function __init_createWebServer() { return (__mem_createWebServer ??= createWebServer({ WEBHIST_PATH, cfg, client, fireDuePlan, loadActivities, logger, sessions, state, webClients, webHistory, pluginCtx: ctx })); }
   function webStart(...a) { return __init_createWebServer().webStart(...a); }
   function webPush(...a) { return __init_createWebServer().webPush(...a); }
   function loadWebHistory(...a) { return __init_createWebServer().loadWebHistory(...a); }

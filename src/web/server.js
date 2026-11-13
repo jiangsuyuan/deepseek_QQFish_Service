@@ -13,7 +13,7 @@ const HOME = process.env.HOME || homedir();
 const HERE = dirname(fileURLToPath(import.meta.url));
 
 export function createWebServer(ctx) {
-  const { WEBHIST_PATH, cfg, client, fireDuePlan, loadActivities, logger, state, webClients, webHistory } = ctx;
+  const { WEBHIST_PATH, cfg, client, fireDuePlan, loadActivities, logger, pluginCtx, sessions, state, webClients, webHistory } = ctx;
   function loadWebHistory(limit = 120) {
       try {
         const raw = readFileSync(WEBHIST_PATH, "utf8");
@@ -637,6 +637,74 @@ export function createWebServer(ctx) {
               }
               const totals = series.reduce((a, x) => ({ in: a.in + x.in, out: a.out + x.out }), { in: 0, out: 0 });
               return json({ range, series, totals });
+            }
+            if (u.pathname === "/api/context") {
+              const meter = pluginCtx?.get?.("tokenMeter") ?? null;
+              const proj = pluginCtx?.get?.("sessionProjections") ?? null;
+              const rows = [];
+              try {
+                for (const [key, entry] of sessions?.entries ?? []) {
+                  const session = entry?.handle?.agent?.session;
+                  if (!session) continue;
+                  let m = null;
+                  let b = null;
+                  try {
+                    m = meter?.measure?.(session) ?? null;
+                  } catch {
+                    m = null;
+                  }
+                  try {
+                    b = proj?.stateOf?.(session, "contextBreakdown") ?? null;
+                  } catch {
+                    b = null;
+                  }
+                  const total = Number(m?.totalTokens) || 0;
+                  if (!total && !b) continue;
+                  rows.push({
+                    key: String(key),
+                    total,
+                    surface: Number(m?.surfaceTokens) || 0,
+                    system: Number(b?.systemTokens) || 0,
+                    tools: Number(b?.toolsTokens) || 0,
+                    messages: Number(b?.messageTokens) || 0,
+                    events: Number(session?.seq || 0),
+                  });
+                }
+              } catch (err) {
+                return json({ ok: false, reason: String(err?.message ?? err), rows: [] });
+              }
+              // 实时会话拿不到（空闲被卸载）时，退回最近一次采样（有总量、没构成）
+              let fromTick = false;
+              if (!rows.length) {
+                fromTick = true;
+                try {
+                  const lines = readFileSync(join(HOME, ".dsh/onebot-bridge/usage.jsonl"), "utf8").trim().split("\n");
+                  const lastTick = JSON.parse(lines[lines.length - 1]);
+                  for (const it of lastTick?.top || []) {
+                    rows.push({
+                      key: String(it.key || ""),
+                      total: Number(it.total || 0),
+                      surface: 0,
+                      system: Number(lastTick.system || 0),
+                      tools: Number(it.tools || lastTick.tools || 0),
+                      messages: Number(lastTick.messages || 0),
+                      events: 0,
+                    });
+                  }
+                } catch {
+                  // 没有采样就算了
+                }
+              }
+              rows.sort((a, b2) => b2.total - a.total);
+              const total = rows.reduce((a, r) => a + r.total, 0);
+              return json({
+                fromTick,
+                ok: true,
+                total,
+                count: rows.length,
+                rows: rows.slice(0, 20),
+                hasBreakdown: rows.some((r) => r.system || r.tools || r.messages),
+              });
             }
             if (u.pathname === "/api/caps") {
               const now = Date.now();
