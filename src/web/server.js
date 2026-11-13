@@ -895,7 +895,8 @@ export function createWebServer(ctx) {
                 let pagesN = 0;
                 let codeN = 0;
                 try {
-                  pagesN = readdirSync(join(ROOT, "workspace/pages")).filter((f) => f.endsWith(".html")).length;
+                  // 页面目录里也放她生成的图：全都算她的产出，和「文件」页口径一致
+                  pagesN = readdirSync(join(ROOT, "workspace/pages")).filter((f) => !f.startsWith(".")).length;
                 } catch {
                   pagesN = 0;
                 }
@@ -910,6 +911,8 @@ export function createWebServer(ctx) {
                 } catch {
                   deskN = 0;
                 }
+                // 文件数 = 桌面 + 画作 + 代码 + 页面（和「文件」页里看到的一致）
+
                 let artN = 0;
                 for (const f of ["draw.jpg", "svg.png"]) {
                   try {
@@ -996,8 +999,70 @@ export function createWebServer(ctx) {
                 } catch {
                   rows = [];
                 }
-                const list = rows.slice(-40).reverse().map((x) => ({ at: Number(x.at || 0), kind: String(x.kind || ""), note: String(x.note || "").slice(0, 200), status: String(x.status || "") }));
-                return json({ part, total: rows.length, items: list });
+                // 同一件事反复排会留下很多条：按「类型 + 内容」去重，只留最新那条
+                const seenNote = new Set();
+                const dedup = [];
+                for (const x of [...rows].sort((a, b) => Number(b.at || 0) - Number(a.at || 0))) {
+                  const key = String(x.kind || "") + "|" + String(x.note || "").trim().slice(0, 120);
+                  if (seenNote.has(key)) continue;
+                  seenNote.add(key);
+                  dedup.push(x);
+                }
+                const pending = dedup.filter((x) => String(x.status || "") === "pending");
+                const others = dedup.filter((x) => String(x.status || "") !== "pending");
+                const list = pending.concat(others).slice(0, 30).map((x) => ({
+                  at: Number(x.at || 0),
+                  kind: String(x.kind || ""),
+                  note: String(x.note || "").slice(0, 200),
+                  status: String(x.status || ""),
+                }));
+                return json({ part, total: dedup.length, raw: rows.length, pending: pending.length, items: list });
+              }
+              // 文件：和 /api/files 同一份数据
+              if (part === "files") {
+                const mk = (dir2, prefix) => {
+                  try {
+                    return readdirSync(dir2)
+                      .filter((f) => !f.startsWith("."))
+                      .map((f) => {
+                        const st = statSync(join(dir2, f));
+                        if (!st.isFile()) return null;
+                        const ext = (f.split(".").pop() || "").toLowerCase();
+                        return { name: f, path: prefix + "/" + f, size: st.size, at: st.mtimeMs, kind: /^(png|jpg|jpeg|gif|webp)$/.test(ext) ? "img" : ext === "html" ? "html" : ext === "md" ? "md" : "other" };
+                      })
+                      .filter(Boolean)
+                      .sort((a, b) => b.at - a.at);
+                  } catch {
+                    return [];
+                  }
+                };
+                const art = [];
+                for (const f of ["draw.jpg", "svg.png"]) {
+                  try {
+                    const st = statSync(join(ROOT, f));
+                    art.push({ name: f, path: "root/" + f, size: st.size, at: st.mtimeMs, kind: "img" });
+                  } catch {
+                    // 没有
+                  }
+                }
+                const code = [];
+                try {
+                  for (const f of readdirSync(join(ROOT, "workspace"))) {
+                    if (!/\.(js|mjs|py|sh|css|json)$/i.test(f)) continue;
+                    const st = statSync(join(ROOT, "workspace", f));
+                    code.push({ name: f, path: "ws/" + f, size: st.size, at: st.mtimeMs, kind: "code" });
+                  }
+                  code.sort((a, b) => b.at - a.at);
+                } catch {
+                  // 没有
+                }
+                return json({
+                  part,
+                  desk: mk(join(ROOT, "desk"), "desk"),
+                  art,
+                  code,
+                  pages: mk(join(ROOT, "workspace/pages"), "page"),
+                });
               }
               if (part === "explore") {
                 let rows = [];

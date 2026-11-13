@@ -416,8 +416,11 @@ async function renderRecords(){
     body = '<div class="card"><h3>想做的 · 共 '+(d.total||0)+' 条</h3>' + (items.length ? items.map(x =>
       '<div class="msg"><div class="tx">'+esc(x.what)+(x.why?'<div class="small dim">'+esc(x.why)+'</div>':'')+'<div class="small dim">'+ago(x.at)+' · '+esc(x.kind||'')+'</div></div></div>').join('') : '<div class="empty">空</div>') + '</div>';
   } else if (recTab === 'plans') {
-    body = '<div class="card"><h3>日程 · 共 '+(d.total||0)+' 条</h3>' + (items.length ? items.map(x =>
-      '<div class="msg"><div class="who">'+esc(hm(x.at))+'</div><div class="tx">'+esc(x.note)+'<span class="tag">'+esc(x.status)+'</span></div></div>').join('') : '<div class="empty">空</div>') + '</div>';
+    const pend = items.filter(x => x.status === 'pending');
+    const done = items.filter(x => x.status !== 'pending');
+    const row = (x) => '<div class="msg"><div class="who">'+esc(hm(x.at))+'</div><div class="tx">'+esc(x.note)+'<span class="tag">'+esc(x.status)+'</span></div></div>';
+    body = '<div class="card"><h3>待执行 · '+pend.length+' 条</h3>' + (pend.length ? pend.map(row).join('') : '<div class="empty">没有排着的</div>') + '</div>'
+      + '<div class="card"><h3>已执行过 · '+done.length+' 条（去重后）</h3>' + (done.length ? done.slice(0,20).map(row).join('') : '<div class="empty">空</div>') + '</div>';
   } else if (recTab === 'explore') {
     body = items.length ? items.map(x => '<div class="card"><h3>'+esc(hm(x.at))+'</h3>'
       + '<div style="margin-bottom:6px">'+esc(x.topic)+'</div>'
