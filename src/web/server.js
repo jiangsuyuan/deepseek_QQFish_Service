@@ -638,6 +638,26 @@ export function createWebServer(ctx) {
               const totals = series.reduce((a, x) => ({ in: a.in + x.in, out: a.out + x.out }), { in: 0, out: 0 });
               return json({ range, series, totals });
             }
+            if (u.pathname === "/api/commission") {
+              try {
+                const p2 = join(HOME, ".dsh/onebot-bridge/commission.json");
+                if (!existsSync(p2)) return json({ ok: true, active: false });
+                const c = JSON.parse(readFileSync(p2, "utf8"));
+                const exp = Number(c.expiresAt || 0);
+                const active = !!String(c.text || "").trim() && (!exp || Date.now() <= exp);
+                return json({
+                  ok: true,
+                  active,
+                  text: String(c.text || ""),
+                  at: Number(c.at || 0),
+                  by: String(c.by || ""),
+                  expiresAt: exp,
+                  leftHours: exp ? Math.max(0, Math.round((exp - Date.now()) / 3600000)) : 0,
+                });
+              } catch (err) {
+                return json({ ok: false, reason: String(err?.message ?? err) });
+              }
+            }
             if (u.pathname === "/api/context") {
               const meter = pluginCtx?.get?.("tokenMeter") ?? null;
               const proj = pluginCtx?.get?.("sessionProjections") ?? null;

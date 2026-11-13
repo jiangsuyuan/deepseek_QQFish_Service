@@ -1,6 +1,7 @@
 // 记忆沉淀：印象、蒸馏、记忆网络。
 
 import { unreadInbox } from "./assistant-channel.js";
+import { activeCommission } from "./commission.js";
 
 export function createMemoryLoop(ctx) {
   const { MEMLOG_PATH, NET_DECAY, NET_MAX_DEPTH, NET_MAX_LINKS, NET_MIN_W, NET_VISIT_CAP, SELF_ACTIVITY_KEY, audit, cfg, loadActivities, loadCore, loadDigests, loadMemLog, logger, memSeen, memoryLayersIndex, net, netAddNode, recentDigestText, saveCore, saveDigests, selfModelText, sessions, writeFileSync } = ctx;
@@ -151,6 +152,21 @@ export function createMemoryLoop(ctx) {
       } catch {
         sameKindNote = "";
       }
+      // 创造者的临时嘱托：只在活动之前给她看
+      let commissionNote = "";
+      try {
+        const c = activeCommission();
+        if (c) {
+          const when = c.at ? new Date(c.at).toLocaleString("zh-CN", { hour12: false }).slice(5, 16) : "";
+          const leftH = c.expiresAt ? Math.max(1, Math.round((c.expiresAt - Date.now()) / 3600000)) : 0;
+          commissionNote =
+            `[创造者的嘱托${when ? `（${when} 说的）` : ""}]\n${c.text}\n` +
+            (leftH ? `（这条嘱托还有 ${leftH} 小时有效，不是长期任务。）\n` : "") +
+            "\n";
+        }
+      } catch {
+        commissionNote = "";
+      }
       // 创造者通过助手通道留的话：优先看
       let ownerNote = "";
       try {
@@ -163,6 +179,7 @@ export function createMemoryLoop(ctx) {
         ownerNote = "";
       }
       const prompt =
+        commissionNote +
         ownerNote +
         "（这是你自己的时间。先想清楚，再决定做什么。这一轮**只思考，不动手**。）\n\n" +
         "[你能看到的东西]\n" +

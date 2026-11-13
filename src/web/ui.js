@@ -133,12 +133,19 @@ function delta(nowV, oldV){
 async function renderHome(){
   const s = await api('/api/stats');
   const bal = await api('/api/balance').catch(() => null);
+  const com = await api('/api/commission').catch(() => null);
+  const commission = com && com.active ? com : null;
   const c = s.context || { total: 0, sessions: 0 };
   const m = s.mood || { mood: 70, why: '', updatedAt: 0 };
   const t = s.today || { in: 0, out: 0, groups: 0, hourly: [] };
   const y = s.yesterday || { in: 0, out: 0 };
   const moodColor = m.mood >= 70 ? 'var(--ok)' : m.mood >= 45 ? 'var(--warn)' : 'var(--bad)';
   main.innerHTML = ''
+    + (commission ? '<div class="card" style="border-color:#3d2f1a;background:#1d1710"><h3>创造者的嘱托'
+        + (commission.leftHours ? ' · 还有 '+commission.leftHours+' 小时' : '') + '</h3>'
+        + '<div style="white-space:pre-wrap">'+esc(commission.text)+'</div>'
+        + '<div class="small dim" style="margin-top:6px">'+esc(commission.by||'创造者')+' · '+ago(commission.at)
+        + (commission.expiresAt ? ' · 到 '+hm(commission.expiresAt).slice(6)+' 失效' : '')+'</div></div>' : '')
     + '<div class="rowline" style="padding:0 2px 2px"><span class="dot '+(s.online?'ok':'bad')+'"></span>'
     +   '<span class="small '+(s.online?'ok':'bad')+'">'+(s.online?'在线':'离线')+'</span>'
     +   '<span class="fill small dim" style="text-align:right">'+(t.groups||0)+' 个群今天有动静</span></div>'
