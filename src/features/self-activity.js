@@ -120,6 +120,17 @@ export function createSelfActivity(ctx) {
 
       // ── 2. 行动 ──
       let actOut = "";
+      // 记下这一轮她调了哪些工具、什么顺序（活动记录要用）
+      const toolSeq = [];
+      const sessionOf = () => {
+        try {
+          const ent = sessions?.entries?.get(SELF_ACTIVITY_KEY);
+          return ent?.handle?.agent?.session ?? null;
+        } catch {
+          return null;
+        }
+      };
+      const seqBefore = Number(sessionOf()?.seq || 0);
       try {
         if (plan.action === "explore") {
           // 按她说的 intent 去查，而不是从群聊高频词里挑
@@ -133,7 +144,30 @@ export function createSelfActivity(ctx) {
         logger.warn?.(`[onebot] 行动阶段失败：${err?.message ?? err}`);
         actOut = `（做失败了：${String(err?.message ?? err).slice(0, 80)}）`;
       }
-      logger.info?.(`[onebot] 做完：${String(actOut).slice(0, 50)}`);
+      try {
+        const sess = sessionOf();
+        const evs = sess?.snapshotEvents?.(seqBefore) ?? [];
+        for (const ev of evs) {
+          if (ev?.type !== "tool/call") continue;
+          let nm = String(ev?.data?.name || ev?.name || "");
+          // 工具目录模式下她调的是 call_tool，真实工具名在参数里
+          if (nm === "call_tool") {
+            try {
+              const a = JSON.parse(String(ev?.data?.arguments || "{}"));
+              nm = String(a?.name || a?.tool || "call_tool");
+            } catch {
+              nm = "call_tool";
+            }
+          }
+          if (nm) toolSeq.push(nm);
+        }
+      } catch {
+        // 抓不到就算了，不挡活动
+      }
+      logger.info?.(
+        `[onebot] 做完：${String(actOut).slice(0, 50)}` +
+          (toolSeq.length ? `（用了 ${toolSeq.length} 次工具：${toolSeq.slice(0, 8).join("→")}）` : ""),
+      );
 
       // ── 3. 回看 ──
       const reflectRes = await reflectPhase(plan, actOut);
@@ -158,6 +192,7 @@ export function createSelfActivity(ctx) {
         content: String(actOut).slice(0, 3000),
         think: plan,
         reflect: reflectOut,
+        tools: toolSeq.slice(0, 40),
         offline,
         byOwner,
         nextDelayMin: realDelay,

@@ -433,12 +433,14 @@ class SessionManager {
         );
         // 10 分钟上限：只为防"卡死导致永久失声"，不用来卡正常回合
         // （实测对话 P90 19s、活动 P90 70s、最长 619s）
+        // 只是提醒，不掐断：她算协方差那种活本来就慢
         const stuckTimer = setTimeout(() => {
-          this.logger?.warn?.("[onebot] 这一轮已经跑了 120 秒还没结束（可能卡住了）");
-        }, 120000);
+          this.logger?.warn?.("[onebot] 这一轮已经跑了 10 分钟还没结束（还在跑，没掐断）");
+        }, 600000);
         stuckTimer.unref?.();
         try {
-          await withTimeout(agent.whenIdle(), 600000, "silent-turn");
+          // 30 分钟硬上限：只防真的卡死（协方差这类计算可能跑十几分钟）
+          await withTimeout(agent.whenIdle(), 1_800_000, "silent-turn");
         } finally {
           clearTimeout(stuckTimer);
         }

@@ -1051,6 +1051,7 @@ export function createWebServer(ctx) {
                   looked: (Array.isArray(th.looked) ? th.looked : []).map((x) => String(x).slice(0, 40)),
                   did: String(r.content || "").slice(0, 400),
                   reflect: String(r.reflect || "").slice(0, 300),
+                  tools: Array.isArray(r.tools) ? r.tools.slice(0, 40) : [],
                 };
               });
               return json({ part: "acts", total: rows.length, items });
