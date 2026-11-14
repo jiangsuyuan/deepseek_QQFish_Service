@@ -1093,6 +1093,16 @@ const base = ctx.logger ?? {};
     try {
       const info = await client.call("get_login_info", {}, 6000);
       const uid = Number(info?.user_id ?? 0);
+      // 换号后自动跟上：登录的是谁，selfId 就是谁（配置里的旧号会被覆盖）
+      if (uid > 0 && Number(cfg.selfId) !== uid) {
+        logger.info?.(`[onebot] 账号变了：${cfg.selfId} → ${uid}，自动同步 selfId`);
+        cfg.selfId = uid;
+        try {
+          saveConfig();
+        } catch {
+          // 写不进去也不影响本次运行
+        }
+      }
       const was = state.qqOnline;
       state.qqOnline = uid > 0;
       if (was !== state.qqOnline) logger.info?.(`[onebot] QQ 登录状态变为：${state.qqOnline ? "在线" : "离线"}`);
