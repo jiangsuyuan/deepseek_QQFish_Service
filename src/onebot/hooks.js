@@ -1,5 +1,7 @@
 // 重连后的补偿动作。
 
+import { isSelfAt } from "../util/self-ids.js";
+
 export function createOnReconnected(app) {
   const { audit, catchUpPrivate, cfg, client, logger, recentIds, seenState, sessions, sleep, pluginCtx: ctx } = app;
   return async () => {
@@ -52,7 +54,7 @@ export function createOnReconnected(app) {
             if (msgTs && since && msgTs <= since) continue;
             const segs = Array.isArray(m.message) ? m.message : [];
             const atMe = segs.some(
-              (x) => x?.type === "at" && String(x?.data?.qq) === String(cfg.selfId),
+              (x) => x?.type === "at" && isSelfAt(cfg, x?.data?.qq),
             );
             if (!atMe) continue;
             const ev = {

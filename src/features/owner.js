@@ -1,10 +1,12 @@
 // 创造者指令处理。
 
+import { isSelf, isSelfAt } from "../util/self-ids.js";
+
 export function createOwnerCommands(ctx) {
   const { audit, cfg, client, flushSeen, join, loadStickerLabels, logger, markSeen, openWindow, readdirSync, relayDone, sessions } = ctx;
   async function handlePoke(ev) {
       const target = String(ev.target_id ?? ev.target ?? "");
-      if (target && target !== String(cfg.selfId)) return; // 戳的不是我
+      if (target && !isSelf(cfg, target)) return; // 戳的不是我（新旧号都算我）
       const key = ev.group_id ? `group:${ev.group_id}` : `private:${ev.user_id}`;
       const nick = ev.sender?.nickname || ev.user_id;
 
@@ -22,7 +24,7 @@ export function createOwnerCommands(ctx) {
           for (const m of list) {
             const segs = Array.isArray(m?.message) ? m.message : [];
             const hasAt = segs.some(
-              (x) => x?.type === "at" && String(x?.data?.qq) === String(cfg.selfId),
+              (x) => x?.type === "at" && isSelfAt(cfg, x?.data?.qq),
             );
             const txt = segs
               .filter((x) => x?.type === "text")

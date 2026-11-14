@@ -31,7 +31,8 @@ const SEG_LABEL = {
   face: "表情",
 };
 
-function parseCqString(raw, selfId) {
+function parseCqString(raw, selfId, selfIds) {
+    const mine = new Set([String(selfId ?? ""), ...(Array.isArray(selfIds) ? selfIds.map(String) : [])].filter(Boolean));
   const unesc = (s) =>
     String(s)
       .replace(/&#91;/g, "[")
@@ -53,7 +54,7 @@ function parseCqString(raw, selfId) {
     };
     if (kind === "at") {
       const qq = pick("qq");
-      if (qq === "all" || qq === String(selfId)) hasAt = true;
+      if (qq === "all" || mine.has(String(qq))) hasAt = true;
       else if (qq) mentions.push({ qq, name: unesc(pick("name")) });
     } else if (kind === "image") {
       images.push({ url: unesc(pick("url") || pick("file")), file: unesc(pick("file")), summary: "" });
@@ -66,11 +67,12 @@ function parseCqString(raw, selfId) {
   return { text: text || (images.length ? "[图片]" : ""), hasAt, images, forwards: [], files: [], replyIds, replySummary: "", mentions, unk: [] };
 }
 
-function parseMessage(ev, selfId) {
+function parseMessage(ev, selfId, selfIds) {
+    const mine = new Set([String(selfId ?? ""), ...(Array.isArray(selfIds) ? selfIds.map(String) : [])].filter(Boolean));
   try {
     const segs = Array.isArray(ev?.message) ? ev.message : [];
     if (!segs.length && typeof ev?.message === "string" && ev.message) {
-      return parseCqString(ev.message, selfId);
+      return parseCqString(ev.message, selfId, selfIds);
     }
     let text = "";
     let hasAt = false;

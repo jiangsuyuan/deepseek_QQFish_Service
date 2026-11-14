@@ -1094,13 +1094,21 @@ const base = ctx.logger ?? {};
       const info = await client.call("get_login_info", {}, 6000);
       const uid = Number(info?.user_id ?? 0);
       // 换号后自动跟上：登录的是谁，selfId 就是谁（配置里的旧号会被覆盖）
-      if (uid > 0 && Number(cfg.selfId) !== uid) {
-        logger.info?.(`[onebot] 账号变了：${cfg.selfId} → ${uid}，自动同步 selfId`);
-        cfg.selfId = uid;
-        try {
-          saveConfig();
-        } catch {
-          // 写不进去也不影响本次运行
+      if (uid > 0) {
+        // 换号：新号成为当前账号，但旧号仍记在 selfIds 里——旧号的发言也是她说的
+        const known = Array.isArray(cfg.selfIds) ? cfg.selfIds.map((x) => String(x)) : [];
+        const changed = Number(cfg.selfId) !== uid || !known.includes(String(uid));
+        if (Number(cfg.selfId) !== uid) {
+          logger.info?.(`[onebot] 账号变了：${cfg.selfId} → ${uid}，自动同步 selfId`);
+        }
+        if (changed) {
+          cfg.selfId = uid;
+          cfg.selfIds = [...new Set([...known, String(uid)])];
+          try {
+            saveConfig();
+          } catch {
+            // 写不进去也不影响本次运行
+          }
         }
       }
       const was = state.qqOnline;
@@ -1406,6 +1414,31 @@ const base = ctx.logger ?? {};
   registerMediaTools({ cfg, client, logger, sessions, state, pluginCtx: ctx });
   registerChatTools({ cfg, client, logger, pushLen, sessions, state, pluginCtx: ctx });
   registerMemoryTools({ cfg, logger, recallSearch, pluginCtx: ctx });
+  // 让她知道自己有哪些号（换号后不至于把旧号的自己当成别人）
+  try {
+    setInterval(() => {
+      try {
+        const ids = Array.isArray(cfg.selfIds) ? cfg.selfIds.map(String) : [];
+        if (ids.length < 2) return;
+        const key = "self-account-note:" + ids.join(",");
+        if (state.__selfIdsNoted === key) return;
+        state.__selfIdsNoted = key;
+        enqueueEvent(
+          makeEvent("system", { type: "system" }, {
+            text:
+              "换号了：你以前用 " + ids.filter((x) => x !== String(cfg.selfId)).join("、") +
+              "，现在用 " + String(cfg.selfId) + "。两个号都是你，旧号的发言也是你说过的话；" +
+              "群的聊天记录按群存、私聊按人存，所以新旧号看到的是同一份历史，不用重新熟悉。",
+          }),
+        );
+      } catch {
+        // 忽略
+      }
+    }, 60_000).unref?.();
+  } catch {
+    // 忽略
+  }
+
   // ── 助手通道：实时 ──
   // 创造者（或替他跑活的 agent）往 inbox.jsonl 写一行，这里 5 秒内把她叫醒回一句。
   // 不走 QQ、不进群，回的内容写进 outbox.jsonl。

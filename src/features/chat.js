@@ -1,6 +1,8 @@
 import { noteError } from "../core/error-watch.js";
 // 一轮对话的投递与唤醒。
 
+import { isSelf } from "../util/self-ids.js";
+
 export function createChatFeature(ctx) {
   const { LEN_TIER_NAMES, WAKE_KEY, segments, deferredReview, echo, activeHoursOk, activityTimeline, appendMem, audit, bumpWindow, cfg, client, enqueueEvent, eventTarget, flushInbox, flushSeen, followMax, hitWindow, lenTierOf, logger, makeEvent, markRuntimeDirty, markSeen, openWindow, pendingEvents, pendingWhileBooting, processingIds, pushLen, recentIds, renderEventForAgent, promptCore, seenDirty, seenState, sessions, sleep, state, todayKey } = ctx;
   async function wakeNow() {
@@ -184,7 +186,7 @@ export function createChatFeature(ctx) {
             ? msgs.reduce((a, b) => (Number(b?.time) > Number(a?.time) ? b : a))
             : null;
           const newestUid = String(newest?.sender?.user_id ?? newest?.user_id ?? "");
-          if (newestUid && newestUid === String(cfg.selfId)) {
+          if (newestUid && isSelf(cfg, newestUid)) {
             if (ent) ent.topicAwaitHuman = true;
             logger.debug?.(`[onebot] 群 ${key} 最后一条是她自己发的，跳过冷群搭话`);
             continue;

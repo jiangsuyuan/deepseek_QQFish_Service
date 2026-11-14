@@ -1,5 +1,7 @@
 // 主动轮询：漏 @、好友请求、离线补看。
 
+import { isSelf } from "../util/self-ids.js";
+
 export function createPolling(ctx) {
   const { allGroupIds, audit, cfg, client, health, logger, notifiedFriends, pendingFriends, processingIds, recentIds, saveHealth, seenState, sessions } = ctx;
   async function pollFriendRequests() {
@@ -117,7 +119,7 @@ export function createPolling(ctx) {
             if (msgTs && since && msgTs <= since) continue;
             // 跳过自己发的
             const from = String(m?.sender?.user_id ?? m?.user_id ?? "");
-            if (from && from === String(cfg.selfId)) continue;
+            if (from && isSelf(cfg, from)) continue;
             const ev = {
               ...m,
               post_type: "message",

@@ -2,6 +2,7 @@
 import { checkDeps } from "../util/deps.js";
 import { REVIEW_PROMPT } from "../util/review-prompt.js";
 import { cacheMessageImages } from "../store/img-cache.js";
+import { isSelf, isSelfAt, selfIdList } from "../util/self-ids.js";
 
 export function createEventHandler(app) {
   // 这三个以前是可选链，没传就静默失效；现在启动即报错
@@ -56,7 +57,7 @@ export function createEventHandler(app) {
       }
       return;
     }
-    if (String(ev.user_id) === String(cfg.selfId)) return trace("自己发的");
+    if (isSelf(cfg, ev.user_id)) return trace("自己发的");
     if (!dedupe(ev.message_id)) return trace("被去重拦下");
     // agent 还没就绪时先暂存，避免卡在 sessions.ensure
     if (!state.agentReady) {
@@ -71,7 +72,7 @@ export function createEventHandler(app) {
       return trace("agent 未就绪，暂存");
     }
 
-    const parsed = parseMessage(ev, cfg.selfId);
+    const parsed = parseMessage(ev, cfg.selfId, selfIdList(cfg));
     // 旁听与 @ 一视同仁：先落盘，再决定要不要回
     try {
       if (ev && (ev.message_type === "group" || ev.message_type === "private")) recordMessage(ev, parsed);
@@ -109,7 +110,7 @@ export function createEventHandler(app) {
       if (
         !parsed.hasAt &&
         (/@\s*(肥鱼|大鱼|鱼鱼)/.test(String(parsed.text || "")) ||
-          String(parsed.text || "").includes(`@${cfg.selfId}`))
+          selfIdList(cfg).some((id) => String(parsed.text || "").includes(`@${id}`)))
       ) {
         parsed.hasAt = true;
         parsed.textAtMe = true;
@@ -130,7 +131,7 @@ export function createEventHandler(app) {
         !ev.__fromWebUI &&
         ev.message_type === "private" &&
         String(ev.user_id) === String(cfg.ownerId) &&
-        String(ev.user_id) !== String(cfg.selfId)
+        !isSelf(cfg, ev.user_id)
       ) {
         const otxt = String(parsed.text || "").slice(0, 500);
         const hasImg = Array.isArray(parsed.images) && parsed.images.length > 0;

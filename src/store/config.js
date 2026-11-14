@@ -36,6 +36,7 @@ const DEFAULTS = {
   wsUrl: "ws://127.0.0.1:3001",
   token: "",
   selfId: 0,
+  selfIds: [],
   allowUsers: [],
   allowGroups: [],
   groupRequireAt: true,
